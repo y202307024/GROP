@@ -15,6 +15,7 @@
     "@livekit/components-react": "^2.9.21",
     "@livekit/components-styles": "^1.2.0",
     "@supabase/supabase-js": "^2.106.2",
+    "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
     "livekit-client": "^2.19.1",
     "react": "^19.2.6",

@@ -13,6 +13,7 @@ import '@livekit/components-styles';
 import CanvasBoard, { type CanvasBoardHandle } from '../CanvasBoard';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
+import { createMeetingRecordingStream } from '../utils/meetingRecordingCapture';
 import { pickMeetingRecorderMimeType } from '../utils/meetingVideo';
 import { createRecordingBridge, type RecordingBridge } from '../utils/recordingBridge';
 import {
@@ -251,7 +252,7 @@ function MeetingControls({
     <>
       {(isRecording || savingRecording) && (
         <div style={{ textAlign: 'center', padding: '6px', background: '#3a1a1a', color: '#ed4245', fontSize: 12, flexShrink: 0 }}>
-          {savingRecording ? '💾 회의록 저장 중...' : '🔴 캔버스 녹화 중...'}
+          {savingRecording ? '💾 회의록 저장 중...' : '🔴 회의 화면 녹화 중...'}
         </div>
       )}
       <div style={{
@@ -280,7 +281,7 @@ function MeetingControls({
             type="button"
             onClick={onToggleRecord}
             disabled={savingRecording}
-            title={isRecording ? '녹화 종료 및 회의록 저장' : '캔버스 녹화 시작'}
+            title={isRecording ? '녹화 종료 및 회의록 저장' : '회의 화면 녹화 시작'}
             style={{
               width: 36, height: 36, borderRadius: 8, border: 'none', cursor: savingRecording ? 'wait' : 'pointer',
               background: isRecording ? '#ed4245' : '#35373c', color: 'white', fontSize: 16,
@@ -337,7 +338,7 @@ function RoomContent({
   userName: string;
 }) {
   return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+    <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden', position: 'relative', minWidth: 0 }}>
       <RoomAudioRenderer />
       <MeetingAudioSetup />
       <RecordingDataSync
@@ -385,15 +386,20 @@ export default function Room() {
   const [isRecording, setIsRecording] = useState(false);
 
   const canvasBoardRef = useRef<CanvasBoardHandle | null>(null);
+  const recordingAreaRef = useRef<HTMLDivElement | null>(null);
   const recordingBridgeRef = useRef<RecordingBridge | null>(null);
   const recordingSyncRef = useRef<RecordingSyncHandle | null>(null);
+  const recordingCaptureCleanupRef = useRef<(() => void) | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const recorderMimeRef = useRef('video/webm');
   const groupIdRef = useRef(id);
+  const isRecordingRef = useRef(false);
 
   const stopMediaRecorder = () => new Promise<void>((resolve) => {
+    recordingCaptureCleanupRef.current?.();
+    recordingCaptureCleanupRef.current = null;
     const recorder = mediaRecorderRef.current;
     if (!recorder || recorder.state === 'inactive') {
       recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -492,7 +498,12 @@ export default function Room() {
         console.error('회의방 연결 실패:', err);
         const msg = err instanceof Error ? err.message : '알 수 없는 오류';
         alert(
-          `회의방에 연결할 수 없습니다.\n\n${msg}\n\n터미널에서 백엔드가 켜져 있는지 확인하세요:\nnpm run server (포트 3001)`,
+          `회의방에 연결할 수 없습니다.\n\n${msg}\n\n` +
+          '회의방·녹화·음성은 본인 PC에서 백엔드가 켜져 있어야 합니다.\n' +
+          '(localhost:3001은 다른 사람 컴퓨터가 아니라, 지금 쓰는 PC를 가리킵니다.)\n\n' +
+          '1) 프로젝트 루트에 .env 파일 설정\n' +
+          '2) 터미널: npm start  (또는 npm run server + npm run dev)\n' +
+          '3) http://localhost:3001/health 가 열리는지 확인',
         );
         setLoading(false);
         navigate(id ? `/group/${id}` : '/main');
@@ -511,6 +522,7 @@ export default function Room() {
     await stopMediaRecorder();
     await new Promise((resolve) => setTimeout(resolve, 300));
     mediaRecorderRef.current = null;
+    isRecordingRef.current = false;
     setIsRecording(false);
     if (discardChunks) recordedChunksRef.current = [];
   };
@@ -518,17 +530,30 @@ export default function Room() {
   const startRecording = async (opts?: { remote?: boolean }) => {
     if (isRecording || savingRecording) return;
 
+    const container = recordingAreaRef.current;
     const canvasEl = canvasBoardRef.current?.getCanvasElement();
-    if (!canvasEl || !('captureStream' in canvasEl)) {
-      alert('캔버스 녹화를 시작할 수 없습니다. 잠시 후 다시 시도해 주세요.');
+    if (!container || !canvasEl || !('captureStream' in canvasEl)) {
+      if (!opts?.remote) {
+        alert('회의 화면 녹화를 시작할 수 없습니다. 잠시 후 다시 시도해 주세요.');
+      }
       return;
     }
 
     try {
-      const canvasStream = canvasEl.captureStream(24);
-      const videoTracks = canvasStream.getVideoTracks();
+      isRecordingRef.current = true;
+      setIsRecording(true);
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      const capture = await createMeetingRecordingStream(container, canvasEl);
+      recordingCaptureCleanupRef.current = capture.cleanup;
+
+      const videoTracks = capture.stream.getVideoTracks();
       if (videoTracks.length === 0) {
-        alert('캔버스 영상 트랙을 만들 수 없습니다.');
+        capture.cleanup();
+        recordingCaptureCleanupRef.current = null;
+        if (!opts?.remote) alert('회의 영상 트랙을 만들 수 없습니다.');
         return;
       }
 
@@ -559,12 +584,17 @@ export default function Room() {
       };
 
       mediaRecorder.start(1000);
-      setIsRecording(true);
       if (!opts?.remote) {
         recordingSyncRef.current?.broadcastStart();
       }
     } catch (err) {
-      console.error('캔버스 녹화 시작 실패:', err);
+      console.error('회의 화면 녹화 시작 실패:', err);
+      recordingCaptureCleanupRef.current?.();
+      recordingCaptureCleanupRef.current = null;
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+      isRecordingRef.current = false;
+      setIsRecording(false);
       if (!opts?.remote) {
         alert('마이크 권한이 필요합니다. 브라우저에서 마이크를 허용해 주세요.');
       }
@@ -671,23 +701,28 @@ export default function Room() {
           console.error('LiveKit 오류:', err);
         }}
       >
-        <RoomTopHeader groupName={groupName} />
-        <RoomContent
-          groupId={id}
-          groupName={groupName}
-          userId={userId}
-          canvasBoardRef={canvasBoardRef}
-          recordingBridgeRef={recordingBridgeRef}
-          recordingSyncRef={recordingSyncRef}
-          onLeave={handleLeave}
-          onToggleRecord={toggleRecording}
-          onRemoteStartRecording={() => { void startRecording({ remote: true }); }}
-          onRemoteStopRecording={() => { void stopRecordingAndSave({ save: false }); }}
-          isRecording={isRecording}
-          savingRecording={savingRecording}
-          avatar={avatar}
-          userName={userName}
-        />
+        <div
+          ref={recordingAreaRef}
+          style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}
+        >
+          <RoomTopHeader groupName={groupName} />
+          <RoomContent
+            groupId={id}
+            groupName={groupName}
+            userId={userId}
+            canvasBoardRef={canvasBoardRef}
+            recordingBridgeRef={recordingBridgeRef}
+            recordingSyncRef={recordingSyncRef}
+            onLeave={handleLeave}
+            onToggleRecord={toggleRecording}
+            onRemoteStartRecording={() => { void startRecording({ remote: true }); }}
+            onRemoteStopRecording={() => { void stopRecordingAndSave({ save: false }); }}
+            isRecording={isRecording}
+            savingRecording={savingRecording}
+            avatar={avatar}
+            userName={userName}
+          />
+        </div>
       </LiveKitRoom>
     </div>
   );

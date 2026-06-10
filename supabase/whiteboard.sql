@@ -46,6 +46,8 @@ create index if not exists board_events_board_ts_idx on public.board_events(boar
 create or replace function public.init_board_seq()
 returns trigger
 language plpgsql
+security definer
+set search_path = public
 as $$
 begin
   insert into public.board_seq(board_id, next_seq)
@@ -64,6 +66,8 @@ for each row execute function public.init_board_seq();
 create or replace function public.assign_board_event_seq()
 returns trigger
 language plpgsql
+security definer
+set search_path = public
 as $$
 declare
   v_seq bigint;
