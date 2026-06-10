@@ -1,0 +1,90 @@
+.timelapse-empty {
+  padding: 48px 24px;
+  text-align: center;
+  color: #888;
+  font-size: 14px;
+  line-height: 1.7;
+  background: #fff;
+  border: 1px dashed #ddd;
+  border-radius: 12px;
+}
+
+.timelapse-error {
+  color: #a32d2d;
+}
+
+.timelapse-board-section {
+  margin-bottom: 28px;
+}
+
+.timelapse-other-board-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 10px;
+}
+
+
+.timelapse-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.timelapse-card {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timelapse-card-icon {
+  font-size: 24px;
+}
+
+.timelapse-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #222;
+}
+
+.timelapse-card-meta {
+  font-size: 12px;
+  color: #888;
+}
+
+.timelapse-card-range {
+  font-size: 11px;
+  color: #aaa;
+  line-height: 1.5;
+}
+
+.timelapse-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.timelapse-btn {
+  padding: 6px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.timelapse-btn-primary {
+  border: none;
+  background: #10b981;
+  color: #fff;
+}
+
+.timelapse-btn-danger {
+  color: #dc2626;
+  border-color: #fecaca;
+}
