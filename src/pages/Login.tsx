@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { supabase } from '../supabaseClient';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { explainAuthError } from '../authErrors';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const navigate = useNavigate();
+  const location = useLocation();
+  const afterLogin = (location.state as { afterLogin?: string } | null)?.afterLogin;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,7 +18,7 @@ export default function Login() {
       alert(`로그인 실패: ${explainAuthError(error.message)}`);
     } else {
       alert('로그인 성공했습니다!');
-      navigate('/main');
+      navigate(afterLogin || '/main');
     }
   };
 

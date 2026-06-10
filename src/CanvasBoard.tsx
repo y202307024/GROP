@@ -17,9 +17,13 @@ const MIN_EVENT_GAP_MS = 1;
 
 type Tool = ExcalidrawTool;
 
+const GROUP_BOARD_TITLE_PREFIX = '__group__:';
+
 type Props = {
   onBack?: () => void;
   embedded?: boolean;
+  groupId?: string;
+  groupName?: string;
   initialBoardId?: string;
   initialTimelapseSaveId?: string;
   autoPlayTimelapse?: boolean;
@@ -115,10 +119,13 @@ function isHistoryCommitEvent(type: EventType): boolean {
 export default function CanvasBoard({
   onBack,
   embedded = false,
+  groupId,
+  groupName,
   initialBoardId,
   initialTimelapseSaveId,
   autoPlayTimelapse = false,
 }: Props) {
+  const isGroupCanvas = Boolean(groupId);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasAreaRef = useRef<HTMLDivElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -150,6 +157,7 @@ export default function CanvasBoard({
   const historyRef = useRef<ImageData[]>([]);
   const historyIndexRef = useRef(-1);
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const lastSavedTitleRef = useRef<Record<string, string>>({});
   const replaySpeedRef = useRef(10);
   const compressGapsRef = useRef(true);
   const maxGapMsRef = useRef(200);
@@ -429,6 +437,86 @@ export default function CanvasBoard({
     };
   }, []);
 
+  const formatBoardTitle = (title: string) => {
+    if (title.startsWith(GROUP_BOARD_TITLE_PREFIX)) {
+      return `${groupName || '그룹'} 캔버스`;
+    }
+    return title;
+  };
+
+  const fetchGroupBoards = async (targetGroupId: string): Promise<Board[]> => {
+    const { data: byGroupId, error: groupColError } = await supabase
+      .from('boards')
+      .select('id,title,created_at')
+      .eq('group_id', targetGroupId)
+      .order('created_at', { ascending: false });
+
+    if (!groupColError && byGroupId?.length) {
+      return byGroupId as Board[];
+    }
+
+    const { data: byTitle } = await supabase
+      .from('boards')
+      .select('id,title,created_at')
+      .eq('title', `${GROUP_BOARD_TITLE_PREFIX}${targetGroupId}`)
+      .order('created_at', { ascending: false });
+
+    return (byTitle as Board[] | null) ?? [];
+  };
+
+  const loadGroupBoards = async () => {
+    if (!groupId) return;
+
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData.user) {
+      alert('보드를 사용하려면 로그인이 필요합니다.');
+      return;
+    }
+
+    setIsLoadingBoards(true);
+    let list = await fetchGroupBoards(groupId);
+
+    if (list.length === 0) {
+      const defaultTitle = `${groupName || '그룹'} 캔버스`;
+      const insertPayload: { title: string; group_id?: string } = {
+        title: defaultTitle,
+        group_id: groupId,
+      };
+      let { data, error } = await supabase
+        .from('boards')
+        .insert(insertPayload)
+        .select('id,title,created_at')
+        .single();
+
+      if (error?.message?.includes('group_id')) {
+        ({ data, error } = await supabase
+          .from('boards')
+          .insert({ title: `${GROUP_BOARD_TITLE_PREFIX}${groupId}` })
+          .select('id,title,created_at')
+          .single());
+      }
+
+      if (error || !data) {
+        setIsLoadingBoards(false);
+        alert(`그룹 캔버스 생성 실패: ${explainBoardError(error?.message ?? 'unknown')}`);
+        return;
+      }
+      list = [data as Board];
+    }
+
+    const deduped = dedupeBoardsById(list);
+    setBoards(deduped);
+    const preferredId = boardId || initialBoardId;
+    const selected = deduped.find((b) => b.id === preferredId) ?? deduped[0];
+    if (selected) {
+      const title = formatBoardTitle(selected.title);
+      setBoardId(selected.id);
+      setBoardTitle(title);
+      lastSavedTitleRef.current[selected.id] = title;
+    }
+    setIsLoadingBoards(false);
+  };
+
   const loadBoards = async () => {
     const { data: userData } = await supabase.auth.getUser();
     if (!userData.user) {
@@ -457,9 +545,13 @@ export default function CanvasBoard({
   };
 
   useEffect(() => {
-    loadBoards();
+    if (isGroupCanvas) {
+      void loadGroupBoards();
+    } else {
+      loadBoards();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [groupId, groupName]);
 
   const createBoard = async () => {
     const { data: userData } = await supabase.auth.getUser();
@@ -468,16 +560,48 @@ export default function CanvasBoard({
       return;
     }
 
-    const title = boardTitle.trim() || '새 보드';
-    const { data, error } = await supabase.from('boards').insert({ title }).select('id,title,created_at').single();
+    const title = boardTitle.trim() || (isGroupCanvas ? `${groupName || '그룹'} 보드` : '새 보드');
+    const insertPayload: { title: string; group_id?: string } = { title };
+    if (isGroupCanvas && groupId) insertPayload.group_id = groupId;
+
+    let { data, error } = await supabase.from('boards').insert(insertPayload).select('id,title,created_at').single();
+    if (error?.message?.includes('group_id') && isGroupCanvas && groupId) {
+      ({ data, error } = await supabase
+        .from('boards')
+        .insert({ title: `${GROUP_BOARD_TITLE_PREFIX}${groupId}-${Date.now()}` })
+        .select('id,title,created_at')
+        .single());
+    }
+
     if (error) {
       alert(`보드 생성 실패: ${explainBoardError(error.message)}`);
       return;
     }
     const b = data as Board;
+    const savedTitle = formatBoardTitle(b.title);
     setBoards((prev) => [b, ...prev]);
     setBoardId(b.id);
-    setBoardTitle(b.title);
+    setBoardTitle(savedTitle);
+    lastSavedTitleRef.current[b.id] = savedTitle;
+  };
+
+  const saveBoardTitle = async () => {
+    if (!boardId) return;
+    const title = boardTitle.trim() || '새 보드';
+    if (lastSavedTitleRef.current[boardId] === title) return;
+
+    const { error } = await supabase.from('boards').update({ title }).eq('id', boardId);
+    if (error) {
+      alert(`보드 이름 저장 실패: ${explainBoardError(error.message)}`);
+      return;
+    }
+    lastSavedTitleRef.current[boardId] = title;
+    setBoards((prev) => prev.map((b) => (b.id === boardId ? { ...b, title } : b)));
+  };
+
+  const refreshBoards = () => {
+    if (isGroupCanvas) void loadGroupBoards();
+    else void loadBoards();
   };
 
   const applyStrokeSegment = (p1: Point, p2: Point, strokeTool: StrokeTool, strokeColor: string, strokeSize: number) => {
@@ -849,7 +973,11 @@ export default function CanvasBoard({
   useEffect(() => {
     if (!boardId) return;
     const b = boards.find((x) => x.id === boardId);
-    if (b) setBoardTitle(b.title);
+    if (b) {
+      const title = formatBoardTitle(b.title);
+      setBoardTitle(title);
+      lastSavedTitleRef.current[boardId] = title;
+    }
     if (!initialTimelapseSaveId) {
       loadAndRenderBoard(boardId);
     }
@@ -1250,35 +1378,48 @@ export default function CanvasBoard({
               ← 뒤로
             </button>
           ) : null}
-          <h2 style={{ margin: 0 }}>캔버스</h2>
+          <div>
+            <h2 style={{ margin: 0 }}>{isGroupCanvas ? `${boardTitle || '그룹 캔버스'}` : '캔버스'}</h2>
+            {isGroupCanvas ? (
+              <div style={{ fontSize: 12, color: '#6366f1', marginTop: 4 }}>초대코드 멤버와 실시간 공유 중</div>
+            ) : null}
+          </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ color: '#6b7280', fontSize: 12 }}>보드</span>
+            <span style={{ color: '#6b7280', fontSize: 12 }}>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
             <select
               value={boardId}
               onChange={(e) => setBoardId(e.target.value)}
               disabled={isLoadingBoards}
-              style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white' }}
+              style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white', minWidth: 140 }}
             >
               <option value="">선택...</option>
               {boards.map((b) => (
                 <option key={b.id} value={b.id}>
-                  {getBoardOptionLabel(b, boards)}
+                  {getBoardOptionLabel({ ...b, title: formatBoardTitle(b.title) }, boards.map((x) => ({ ...x, title: formatBoardTitle(x.title) })))}
                 </option>
               ))}
             </select>
             <input
               value={boardTitle}
               onChange={(e) => setBoardTitle(e.target.value)}
+              onBlur={() => void saveBoardTitle()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void saveBoardTitle();
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
               placeholder="보드 이름"
               style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white', width: 160 }}
             />
             <button type="button" onClick={createBoard} style={{ padding: '8px 10px', border: 'none', background: '#111827', color: 'white', cursor: 'pointer' }}>
               새 보드
             </button>
-            <button type="button" onClick={loadBoards} style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white', cursor: 'pointer' }}>
+            <button type="button" onClick={refreshBoards} style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white', cursor: 'pointer' }}>
               새로고침
             </button>
           </div>

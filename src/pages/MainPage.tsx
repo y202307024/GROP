@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
+import { joinGroupByInviteCode } from '../utils/joinGroup';
 import './MainPage.css';
 
 function rndCode() {
@@ -26,9 +27,10 @@ type Group = {
 
 export default function MainPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [groupName, setGroupName] = useState('');
   const [groups, setGroups] = useState<Group[]>([]);
-  const [inviteInput, setInviteInput] = useState('');
+  const [inviteInput, setInviteInput] = useState(searchParams.get('code')?.toUpperCase() ?? '');
   const [joinMsg, setJoinMsg] = useState('');
   const [joinSuccess, setJoinSuccess] = useState(false);
   const [nickname, setNickname] = useState('');
@@ -79,24 +81,19 @@ export default function MainPage() {
   };
 
   const joinGroup = async () => {
-    const v = inviteInput.trim().toUpperCase();
-    if (!v) { setJoinMsg('코드를 입력해주세요'); setJoinSuccess(false); return; }
+    if (!userId) return;
+    const result = await joinGroupByInviteCode(inviteInput, userId);
+    if (!result.ok) {
+      setJoinMsg(result.error);
+      setJoinSuccess(false);
+      return;
+    }
 
-    const { data: group } = await supabase
-      .from('groups').select('id, name').eq('invite_code', v).maybeSingle();
-
-    if (!group) { setJoinMsg('그룹을 찾을 수 없어요'); setJoinSuccess(false); return; }
-
-    const { error: joinError } = await supabase
-      .from('group_members').insert({ group_id: group.id, user_id: userId });
-
-    if (joinError) { setJoinMsg('이미 참여한 그룹이에요'); setJoinSuccess(false); return; }
-
-    setJoinMsg(`${group.name}에 참여했어요!`);
+    setJoinMsg(result.alreadyMember ? `이미 ${result.group.name}에 참여 중이에요` : `${result.group.name}에 참여했어요!`);
     setJoinSuccess(true);
     setInviteInput('');
     fetchGroups(userId);
-    setTimeout(() => navigate(`/group/${group.id}`), 800);
+    setTimeout(() => navigate(`/group/${result.group.id}`), 800);
   };
 
   return (

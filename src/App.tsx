@@ -13,12 +13,14 @@ import MeetingList from './pages/MeetingList'
 import MeetingDetail from './pages/MeetingDetail'
 import MemberList from './pages/MemberList'
 import CanvasPage from './pages/CanvasPage'
+import JoinGroupPage from './pages/JoinGroupPage'
 
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        <Route path="/join/:code" element={<JoinGroupPage />} />
         <Route path="/" element={<Login />} />
         <Route path="/signup" element={<SignUp />} />
         <Route path="/main" element={<MainPage />} />
@@ -31,6 +33,7 @@ export default function App() {
         <Route path="/group/:id/meetings" element={<MeetingList />} />
         <Route path="/group/:id/meeting/:meetingId" element={<MeetingDetail />} />
         <Route path="/group/:id/members" element={<MemberList />} />
+        <Route path="/group/:id/canvas" element={<CanvasPage />} />
         <Route path="/canvas" element={<CanvasPage />} />
       </Routes>
     </BrowserRouter>

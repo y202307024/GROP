@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import CanvasBoard from '../CanvasBoard';
 import { supabase } from '../services/supabaseClient';
 
 export default function CanvasPage() {
   const navigate = useNavigate();
+  const { id: groupId } = useParams();
   const [searchParams] = useSearchParams();
   const [authReady, setAuthReady] = useState(false);
+  const [groupName, setGroupName] = useState('');
 
   const initialBoardId = searchParams.get('boardId') ?? undefined;
   const initialTimelapseSaveId = searchParams.get('saveId') ?? undefined;
@@ -14,19 +16,50 @@ export default function CanvasPage() {
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
+
+    const init = async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
       if (!mounted) return;
-      if (!data.session) {
+
+      if (!sessionData.session) {
         alert('캔버스를 사용하려면 로그인이 필요합니다.');
         navigate('/');
         return;
       }
+
+      if (groupId) {
+        const userId = sessionData.session.user.id;
+        const { data: membership } = await supabase
+          .from('group_members')
+          .select('group_id')
+          .eq('group_id', groupId)
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (!membership) {
+          alert('이 그룹 멤버만 캔버스를 사용할 수 있습니다.\n초대코드로 그룹에 참여한 뒤 다시 시도해 주세요.');
+          navigate('/main');
+          return;
+        }
+
+        const { data: group } = await supabase
+          .from('groups')
+          .select('name')
+          .eq('id', groupId)
+          .maybeSingle();
+
+        if (group?.name) setGroupName(group.name);
+      }
+
       setAuthReady(true);
-    });
+    };
+
+    void init();
+
     return () => {
       mounted = false;
     };
-  }, [navigate]);
+  }, [groupId, navigate]);
 
   if (!authReady) {
     return (
@@ -39,7 +72,9 @@ export default function CanvasPage() {
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: '#fff' }}>
       <CanvasBoard
-        onBack={() => navigate('/main')}
+        onBack={() => navigate(groupId ? `/group/${groupId}` : '/main')}
+        groupId={groupId}
+        groupName={groupName}
         initialBoardId={initialBoardId}
         initialTimelapseSaveId={initialTimelapseSaveId}
         autoPlayTimelapse={autoPlayTimelapse}
