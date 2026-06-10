@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '../supabaseClient';
-import AppSidebar from '../components/AppSidebar';
+import { supabase } from '../services/supabaseClient';
 import './MainPage.css';
 
 function rndCode() {
@@ -10,6 +9,14 @@ function rndCode() {
   for (let i = 0; i < 5; i++) s += c[Math.floor(Math.random() * c.length)];
   return s;
 }
+
+const menuItems = [
+  { icon: '🏠', label: '홈', path: '/main' },
+  { icon: '👥', label: '내 그룹', path: '/main' },
+  { icon: '📹', label: '회의', path: '/main' },
+  { icon: '📄', label: '문서', path: '/main' },
+  { icon: '✏️', label: '캔버스', path: '/canvas' },
+];
 
 type Group = {
   id: string;
@@ -24,6 +31,8 @@ export default function MainPage() {
   const [inviteInput, setInviteInput] = useState('');
   const [joinMsg, setJoinMsg] = useState('');
   const [joinSuccess, setJoinSuccess] = useState(false);
+  const [nickname, setNickname] = useState('');
+  const [avatar, setAvatar] = useState('🐱');
   const [userId, setUserId] = useState('');
 
   useEffect(() => {
@@ -31,6 +40,11 @@ export default function MainPage() {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) { navigate('/'); return; }
       setUserId(userData.user.id);
+
+      const { data: profile } = await supabase
+        .from('profiles').select('nickname, avatar')
+        .eq('id', userData.user.id).maybeSingle();
+      if (profile) { setNickname(profile.nickname ?? ''); setAvatar(profile.avatar ?? '🐱'); }
 
       fetchGroups(userData.user.id);
     };
@@ -54,9 +68,9 @@ export default function MainPage() {
     const { data, error } = await supabase
       .from('groups')
       .insert({ name: groupName, invite_code: code, created_by: userId })
-      .select().single();
+      .select().maybeSingle();
 
-    if (error) { alert(`생성 실패: ${error.message}`); return; }
+    if (error || !data) { alert(`생성 실패: ${error?.message}`); return; }
 
     await supabase.from('group_members').insert({ group_id: data.id, user_id: userId });
     setGroupName('');
@@ -68,10 +82,10 @@ export default function MainPage() {
     const v = inviteInput.trim().toUpperCase();
     if (!v) { setJoinMsg('코드를 입력해주세요'); setJoinSuccess(false); return; }
 
-    const { data: group, error } = await supabase
-      .from('groups').select('id, name').eq('invite_code', v).single();
+    const { data: group } = await supabase
+      .from('groups').select('id, name').eq('invite_code', v).maybeSingle();
 
-    if (error || !group) { setJoinMsg('그룹을 찾을 수 없어요'); setJoinSuccess(false); return; }
+    if (!group) { setJoinMsg('그룹을 찾을 수 없어요'); setJoinSuccess(false); return; }
 
     const { error: joinError } = await supabase
       .from('group_members').insert({ group_id: group.id, user_id: userId });
@@ -87,7 +101,36 @@ export default function MainPage() {
 
   return (
     <div className="main-wrap">
-      <AppSidebar />
+      <div className="sidebar">
+        <div className="sidebar-logo">
+          <div className="sidebar-logo-icon">G</div>
+          <span className="sidebar-logo-text">Groupop</span>
+        </div>
+        <div className="sidebar-menu">
+          {menuItems.map((item, i) => (
+            <button
+              key={i}
+              type="button"
+              className={`menu-item ${item.label === '홈' ? 'active' : ''}`}
+              onClick={() => navigate(item.path)}
+            >
+              <span>{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="sidebar-profile" onClick={() => navigate('/profile')} style={{ cursor: 'pointer' }}>
+          <div className="profile-avatar">
+            <div className="avatar-circle">{avatar}</div>
+            <div className="online-dot" />
+          </div>
+          <div className="profile-info">
+            <div className="profile-name">{nickname || '...'}</div>
+            <div className="profile-status">온라인</div>
+          </div>
+          <button className="logout-btn" onClick={(e) => { e.stopPropagation(); navigate('/'); }} title="로그아웃">🚪</button>
+        </div>
+      </div>
 
       <div className="content">
         <div className="content-header">

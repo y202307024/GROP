@@ -1,7 +1,17 @@
-import { supabase } from './supabaseClient';
-import type { TimelapseSave } from './components/TimelapseSavePanel';
+import { supabase } from './services/supabaseClient';
 
 type BoardRow = { id: string; title: string; created_at: string };
+
+export type TimelapseSave = {
+  id: string;
+  board_id: string;
+  title: string;
+  max_seq: number;
+  event_count: number;
+  start_ts: string | null;
+  end_ts: string | null;
+  created_at: string;
+};
 
 export type TimelapseSaveWithBoard = TimelapseSave & {
   boards: { title: string } | null;

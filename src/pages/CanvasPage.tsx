@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import CanvasBoard from '../CanvasBoard';
-import { supabase } from '../supabaseClient';
+import { supabase } from '../services/supabaseClient';
 
 export default function CanvasPage() {
   const navigate = useNavigate();

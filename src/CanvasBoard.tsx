@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { supabase } from './supabaseClient';
+import { supabase } from './services/supabaseClient';
 import ExcalidrawToolbar, { toolShortcutMap, type ExcalidrawTool } from './components/ExcalidrawToolbar';
 // import TimelapseSidePanel from './components/TimelapseSidePanel';
 import CanvasViewportControls from './components/CanvasViewportControls';
@@ -30,7 +30,17 @@ type Point = { x: number; y: number };
 type Board = { id: string; title: string; created_at: string };
 
 type StrokeTool = 'pen' | 'eraser';
-type EventType = 'stroke.begin' | 'stroke.append' | 'stroke.end' | 'board.clear' | 'shape.add';
+type EventType =
+  | 'stroke.begin'
+  | 'stroke.append'
+  | 'stroke.end'
+  | 'board.clear'
+  | 'shape.add'
+  | 'image.add'
+  | 'text.add'
+  | 'stamp.add';
+
+const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024;
 
 type BoardEventRow = {
   id: string;
@@ -66,6 +76,41 @@ type ShapeAddPayload = {
   color: string;
   size: number;
 };
+
+type ImageAddPayload = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+};
+
+type TextAddPayload = {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  size: number;
+};
+
+type StampAddPayload = {
+  x: number;
+  y: number;
+  kind: 'rect' | 'circle' | 'triangle';
+  color: string;
+  size: number;
+};
+
+function isHistoryCommitEvent(type: EventType): boolean {
+  return (
+    type === 'stroke.end' ||
+    type === 'shape.add' ||
+    type === 'image.add' ||
+    type === 'text.add' ||
+    type === 'stamp.add' ||
+    type === 'board.clear'
+  );
+}
 
 export default function CanvasBoard({
   onBack,
@@ -104,6 +149,7 @@ export default function CanvasBoard({
   const deepLinkHandledRef = useRef(false);
   const historyRef = useRef<ImageData[]>([]);
   const historyIndexRef = useRef(-1);
+  const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const replaySpeedRef = useRef(10);
   const compressGapsRef = useRef(true);
   const maxGapMsRef = useRef(200);
@@ -407,9 +453,6 @@ export default function CanvasBoard({
         setBoardId(selected.id);
         setBoardTitle(selected.title);
       }
-    } else if (list[0]) {
-      setBoardId(list[0].id);
-      setBoardTitle(list[0].title);
     }
   };
 
@@ -462,6 +505,25 @@ export default function CanvasBoard({
     ctx.restore();
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, w, h);
+  };
+
+  const loadCachedImage = (dataUrl: string): Promise<HTMLImageElement> => {
+    const cached = imageCacheRef.current.get(dataUrl);
+    if (cached) return Promise.resolve(cached);
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        imageCacheRef.current.set(dataUrl, img);
+        resolve(img);
+      };
+      img.onerror = () => reject(new Error('이미지 로드 실패'));
+      img.src = dataUrl;
+    });
+  };
+
+  const drawImagePayload = async (ctx: CanvasRenderingContext2D, payload: ImageAddPayload) => {
+    const img = await loadCachedImage(payload.dataUrl);
+    ctx.drawImage(img, payload.x, payload.y, payload.width, payload.height);
   };
 
   const reportInsertError = (message: string) => {
@@ -662,7 +724,7 @@ export default function CanvasBoard({
     }
   }; */
 
-  const seekReplay = (index: number) => {
+  const seekReplay = async (index: number) => {
     const events = replayEventsRef.current;
     if (events.length === 0) return;
 
@@ -675,7 +737,7 @@ export default function CanvasBoard({
 
     for (let k = 0; k < clamped; k += 1) {
       primeEventStyle(events[k]);
-      applyEvent(events[k]);
+      await applyEvent(events[k]);
     }
 
     replayIndexRef.current = clamped;
@@ -713,7 +775,7 @@ export default function CanvasBoard({
         const at = timeline[i];
         if (at == null || at > virtualMs) break;
         primeEventStyle(events[i]);
-        applyEvent(events[i]);
+        void applyEvent(events[i]);
         i += 1;
         processed += 1;
         if (processed >= maxPerFrame) break;
@@ -776,10 +838,12 @@ export default function CanvasBoard({
       return;
     }
     const events = (data ?? []) as BoardEventRow[];
+    resetHistory();
     for (const ev of events) {
-      applyEvent(ev);
+      await applyEvent(ev);
+      if (isHistoryCommitEvent(ev.type)) commitHistory();
     }
-    initHistory();
+    if (historyRef.current.length === 0) initHistory();
   };
 
   useEffect(() => {
@@ -801,7 +865,9 @@ export default function CanvasBoard({
           if (isReplayingRef.current) return;
           // 내가 보낸 이벤트는 이미 로컬에서 그렸으므로 중복 적용하지 않음
           if (row.actor_id === actorIdRef.current) return;
-          applyEvent(row);
+          void applyEvent(row).then(() => {
+            if (isHistoryCommitEvent(row.type)) commitHistory();
+          });
         },
       )
       .subscribe();
@@ -842,7 +908,7 @@ export default function CanvasBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, initialBoardId, initialTimelapseSaveId, autoPlayTimelapse]);
 
-  const applyEvent = (ev: BoardEventRow) => {
+  const applyEvent = async (ev: BoardEventRow) => {
     if (ev.type === 'board.clear') {
       clearAllLocal();
       remoteLastPointByStrokeRef.current = new Map();
@@ -883,6 +949,30 @@ export default function CanvasBoard({
       const ctx = ctxRef.current ?? ensureContext();
       if (!ctx) return;
       drawShapeTool(ctx, p.tool, p.from, p.to, { strokeStyle: p.color, lineWidth: p.size }, false);
+      return;
+    }
+
+    if (ev.type === 'image.add') {
+      const p = ev.payload as ImageAddPayload;
+      const ctx = ctxRef.current ?? ensureContext();
+      if (!ctx || !p.dataUrl) return;
+      await drawImagePayload(ctx, p);
+      return;
+    }
+
+    if (ev.type === 'text.add') {
+      const p = ev.payload as TextAddPayload;
+      const ctx = ctxRef.current ?? ensureContext();
+      if (!ctx) return;
+      drawText(ctx, { x: p.x, y: p.y }, p.text, { strokeStyle: p.color, lineWidth: p.size });
+      return;
+    }
+
+    if (ev.type === 'stamp.add') {
+      const p = ev.payload as StampAddPayload;
+      const ctx = ctxRef.current ?? ensureContext();
+      if (!ctx) return;
+      drawStamp(ctx, { x: p.x, y: p.y }, p.kind, { strokeStyle: p.color, lineWidth: p.size });
     }
   };
 
@@ -917,18 +1007,33 @@ export default function CanvasBoard({
     const point = pendingImagePointRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!point || !ctx) return;
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      const w = Math.min(240, img.width);
-      const h = (img.height / img.width) * w;
-      ctx.drawImage(img, point.x, point.y, w, h);
-      URL.revokeObjectURL(url);
+    if (file.size > MAX_IMAGE_BYTES) {
+      alert('이미지는 1.5MB 이하만 올릴 수 있어요.');
       pendingImagePointRef.current = null;
-      commitHistory();
-      if (!locked) setTool('pen');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      if (typeof dataUrl !== 'string') return;
+
+      const img = new Image();
+      img.onload = () => {
+        const w = Math.min(240, img.width);
+        const h = (img.height / img.width) * w;
+        ctx.drawImage(img, point.x, point.y, w, h);
+        imageCacheRef.current.set(dataUrl, img);
+        pendingImagePointRef.current = null;
+
+        const payload: ImageAddPayload = { x: point.x, y: point.y, width: w, height: h, dataUrl };
+        void insertEvent('image.add', payload);
+        commitHistory();
+        if (!locked) setTool('pen');
+      };
+      img.src = dataUrl;
     };
-    img.src = url;
+    reader.readAsDataURL(file);
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -943,10 +1048,19 @@ export default function CanvasBoard({
     }
 
     if (pendingStampRef.current) {
-      drawStamp(ctxRef.current ?? ensureContext()!, p, pendingStampRef.current, getDrawStyle());
+      const kind = pendingStampRef.current;
+      const style = getDrawStyle();
+      drawStamp(ctxRef.current ?? ensureContext()!, p, kind, style);
       pendingStampRef.current = null;
       setPendingStampKind(null);
       setShowLibrary(false);
+      void insertEvent('stamp.add', {
+        x: p.x,
+        y: p.y,
+        kind,
+        color: style.strokeStyle,
+        size: style.lineWidth,
+      } satisfies StampAddPayload);
       commitHistory();
       return;
     }
@@ -954,7 +1068,15 @@ export default function CanvasBoard({
     if (activeTool === 'text') {
       const text = window.prompt('텍스트 입력');
       if (text) {
-        drawText(ctxRef.current ?? ensureContext()!, p, text, getDrawStyle());
+        const style = getDrawStyle();
+        drawText(ctxRef.current ?? ensureContext()!, p, text, style);
+        void insertEvent('text.add', {
+          x: p.x,
+          y: p.y,
+          text,
+          color: style.strokeStyle,
+          size: style.lineWidth,
+        } satisfies TextAddPayload);
         commitHistory();
       }
       if (!locked) setTool('pen');
