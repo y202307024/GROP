@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
 import { supabase } from './services/supabaseClient';
 import ExcalidrawToolbar, { toolShortcutMap, type ExcalidrawTool } from './components/ExcalidrawToolbar';
 // import TimelapseSidePanel from './components/TimelapseSidePanel';
@@ -22,11 +22,18 @@ const GROUP_BOARD_TITLE_PREFIX = '__group__:';
 type Props = {
   onBack?: () => void;
   embedded?: boolean;
+  meetingMode?: boolean;
+  meetingHeaderExtra?: ReactNode;
   groupId?: string;
   groupName?: string;
   initialBoardId?: string;
   initialTimelapseSaveId?: string;
   autoPlayTimelapse?: boolean;
+};
+
+export type CanvasBoardHandle = {
+  clearBoard: () => void;
+  getCanvasElement: () => HTMLCanvasElement | null;
 };
 
 type Point = { x: number; y: number };
@@ -116,15 +123,18 @@ function isHistoryCommitEvent(type: EventType): boolean {
   );
 }
 
-export default function CanvasBoard({
+const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   onBack,
   embedded = false,
+  meetingMode = false,
+  meetingHeaderExtra,
   groupId,
   groupName,
   initialBoardId,
   initialTimelapseSaveId,
   autoPlayTimelapse = false,
-}: Props) {
+}, ref) {
+  const isEmbedded = embedded || meetingMode;
   const isGroupCanvas = Boolean(groupId);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasAreaRef = useRef<HTMLDivElement | null>(null);
@@ -132,9 +142,13 @@ export default function CanvasBoard({
   const drawingRef = useRef(false);
   const lastPointRef = useRef<Point | null>(null);
   const localStrokeIdRef = useRef<string | null>(null);
+  const strokeStartPointRef = useRef<Point | null>(null);
   const pendingChunkRef = useRef<Point[]>([]);
   const chunkTimerRef = useRef<number | null>(null);
+  const strokeWriteChainRef = useRef<Promise<void>>(Promise.resolve());
   const remoteLastPointByStrokeRef = useRef<Map<string, Point>>(new Map());
+  const remotePendingAppendsRef = useRef<Map<string, Point[][]>>(new Map());
+  const remotePendingEndsRef = useRef<Set<string>>(new Set());
   const replayTimerRef = useRef<number | null>(null);
   const isReplayingRef = useRef(false);
   const strokeStyleByIdRef = useRef<Map<string, { tool: StrokeTool; color: string; size: number }>>(new Map());
@@ -617,6 +631,47 @@ export default function CanvasBoard({
     ctx.stroke();
   };
 
+  const applyStrokeDot = (p: Point, strokeTool: StrokeTool, strokeColor: string, strokeSize: number) => {
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx) return;
+    ctx.fillStyle = strokeTool === 'eraser' ? '#ffffff' : strokeColor;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, Math.max(strokeSize / 2, 1), 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  const applyStrokeAppendPoints = (strokeId: string, points: Point[]) => {
+    const last = remoteLastPointByStrokeRef.current.get(strokeId);
+    if (!last) return false;
+    const style = strokeStyleByIdRef.current.get(strokeId);
+    if (!style) return false;
+    for (const next of points) {
+      if (last.x === next.x && last.y === next.y) {
+        applyStrokeDot(next, style.tool, style.color, style.size);
+      } else {
+        applyStrokeSegment(last, next, style.tool, style.color, style.size);
+      }
+      last.x = next.x;
+      last.y = next.y;
+    }
+    return true;
+  };
+
+  const flushRemotePendingStroke = (strokeId: string) => {
+    const pending = remotePendingAppendsRef.current.get(strokeId);
+    if (pending) {
+      remotePendingAppendsRef.current.delete(strokeId);
+      for (const points of pending) {
+        applyStrokeAppendPoints(strokeId, points);
+      }
+    }
+    if (remotePendingEndsRef.current.has(strokeId)) {
+      remotePendingEndsRef.current.delete(strokeId);
+      remoteLastPointByStrokeRef.current.delete(strokeId);
+      strokeStyleByIdRef.current.delete(strokeId);
+    }
+  };
+
   const clearAllLocal = () => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
@@ -671,12 +726,21 @@ export default function CanvasBoard({
     if (error) reportInsertError(error.message);
   };
 
+  const enqueueStrokeWrite = (type: EventType, payload: unknown): Promise<void> => {
+    const task = strokeWriteChainRef.current.then(() => insertEvent(type, payload));
+    strokeWriteChainRef.current = task.catch(() => {});
+    return task;
+  };
+
   const flushChunk = async () => {
     if (!localStrokeIdRef.current) return;
     const points = pendingChunkRef.current;
     if (points.length === 0) return;
     pendingChunkRef.current = [];
-    await insertEvent('stroke.append', { strokeId: localStrokeIdRef.current, points } satisfies StrokeAppendPayload);
+    await enqueueStrokeWrite('stroke.append', {
+      strokeId: localStrokeIdRef.current,
+      points,
+    } satisfies StrokeAppendPayload);
   };
 
   const scheduleChunkFlush = () => {
@@ -949,6 +1013,8 @@ export default function CanvasBoard({
     setIsLoadingBoard(true);
     clearAllLocal();
     remoteLastPointByStrokeRef.current = new Map();
+    remotePendingAppendsRef.current = new Map();
+    remotePendingEndsRef.current = new Set();
 
     const { data, error } = await supabase
       .from('board_events')
@@ -1040,6 +1106,8 @@ export default function CanvasBoard({
     if (ev.type === 'board.clear') {
       clearAllLocal();
       remoteLastPointByStrokeRef.current = new Map();
+      remotePendingAppendsRef.current = new Map();
+      remotePendingEndsRef.current = new Set();
       strokeStyleByIdRef.current = new Map();
       return;
     }
@@ -1048,25 +1116,28 @@ export default function CanvasBoard({
       const p = ev.payload as StrokeBeginPayload;
       remoteLastPointByStrokeRef.current.set(p.strokeId, { x: p.point.x, y: p.point.y });
       strokeStyleByIdRef.current.set(p.strokeId, { tool: p.tool, color: p.color, size: p.size });
+      flushRemotePendingStroke(p.strokeId);
       return;
     }
 
     if (ev.type === 'stroke.append') {
       const p = ev.payload as StrokeAppendPayload;
-      const last = remoteLastPointByStrokeRef.current.get(p.strokeId);
-      if (!last) return;
-      for (const next of p.points) {
-        const style = strokeStyleByIdRef.current.get(p.strokeId);
-        if (!style) return;
-        applyStrokeSegment(last, next, style.tool, style.color, style.size);
-        last.x = next.x;
-        last.y = next.y;
+      if (!remoteLastPointByStrokeRef.current.has(p.strokeId)) {
+        const list = remotePendingAppendsRef.current.get(p.strokeId) ?? [];
+        list.push(p.points);
+        remotePendingAppendsRef.current.set(p.strokeId, list);
+        return;
       }
+      applyStrokeAppendPoints(p.strokeId, p.points);
       return;
     }
 
     if (ev.type === 'stroke.end') {
       const p = ev.payload as StrokeEndPayload;
+      if (!remoteLastPointByStrokeRef.current.has(p.strokeId)) {
+        remotePendingEndsRef.current.add(p.strokeId);
+        return;
+      }
       remoteLastPointByStrokeRef.current.delete(p.strokeId);
       strokeStyleByIdRef.current.delete(p.strokeId);
       return;
@@ -1232,6 +1303,7 @@ export default function CanvasBoard({
 
     drawingRef.current = true;
     lastPointRef.current = p;
+    strokeStartPointRef.current = p;
     localStrokeIdRef.current = crypto.randomUUID();
     pendingChunkRef.current = [];
 
@@ -1239,7 +1311,7 @@ export default function CanvasBoard({
     strokeStyleByIdRef.current.set(localStrokeIdRef.current, { tool: strokeTool, color, size });
     remoteLastPointByStrokeRef.current.set(localStrokeIdRef.current, { ...p });
     if (boardId) {
-      void insertEvent('stroke.begin', {
+      void enqueueStrokeWrite('stroke.begin', {
         strokeId: localStrokeIdRef.current,
         tool: strokeTool,
         color,
@@ -1321,6 +1393,8 @@ export default function CanvasBoard({
     drawingRef.current = false;
     lastPointRef.current = null;
     const sid = localStrokeIdRef.current;
+    const startPoint = strokeStartPointRef.current;
+    strokeStartPointRef.current = null;
     localStrokeIdRef.current = null;
 
     if (chunkTimerRef.current != null) {
@@ -1328,17 +1402,31 @@ export default function CanvasBoard({
       chunkTimerRef.current = null;
     }
     void (async () => {
+      if (pendingChunkRef.current.length === 0 && startPoint) {
+        const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
+        applyStrokeDot(startPoint, strokeTool, effectiveStrokeStyle, size);
+        pendingChunkRef.current.push(startPoint);
+      }
       await flushChunk();
-      if (sid) await insertEvent('stroke.end', { strokeId: sid } satisfies StrokeEndPayload);
+      if (sid) await enqueueStrokeWrite('stroke.end', { strokeId: sid } satisfies StrokeEndPayload);
       commitHistory();
     })();
   };
+
+  const clearAllRef = useRef<() => void>(() => {});
 
   const clearAll = () => {
     clearAllLocal();
     commitHistory();
     void insertEvent('board.clear', {});
   };
+
+  clearAllRef.current = clearAll;
+
+  useImperativeHandle(ref, () => ({
+    clearBoard: () => clearAllRef.current(),
+    getCanvasElement: () => canvasRef.current,
+  }));
 
   /* const downloadPng = () => {
     const canvas = canvasRef.current;
@@ -1358,42 +1446,58 @@ export default function CanvasBoard({
         height: '100%',
         width: '100%',
         fontFamily: 'sans-serif',
-        background: '#f3f4f6',
+        background: meetingMode ? '#313338' : '#f3f4f6',
         overflow: 'hidden',
       }}
     >
       <div
         style={{
           flexShrink: 0,
-          padding: '12px 16px',
-          borderBottom: '1px solid #e5e7eb',
-          background: '#fff',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+          padding: meetingMode ? '8px 12px' : '12px 16px',
+          borderBottom: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
+          background: meetingMode ? '#2b2d31' : '#fff',
+          boxShadow: meetingMode ? 'none' : '0 1px 3px rgba(0,0,0,0.06)',
         }}
       >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: meetingMode ? 0 : 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {!embedded && onBack ? (
+          {!isEmbedded && onBack ? (
             <button type="button" onClick={onBack} style={{ padding: '10px 12px', border: '1px solid #e5e7eb', background: 'white', cursor: 'pointer' }}>
               ← 뒤로
             </button>
           ) : null}
-          <div>
-            <h2 style={{ margin: 0 }}>{isGroupCanvas ? `${boardTitle || '그룹 캔버스'}` : '캔버스'}</h2>
-            {isGroupCanvas ? (
-              <div style={{ fontSize: 12, color: '#6366f1', marginTop: 4 }}>초대코드 멤버와 실시간 공유 중</div>
-            ) : null}
-          </div>
+          {!meetingMode ? (
+            <div>
+              <h2 style={{ margin: 0 }}>{isGroupCanvas ? `${boardTitle || '그룹 캔버스'}` : '캔버스'}</h2>
+              {isGroupCanvas ? (
+                <div style={{ fontSize: 12, color: '#6366f1', marginTop: 4 }}>초대코드 멤버와 실시간 공유 중</div>
+              ) : null}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, gap: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#dbdee1', flexShrink: 0 }}>
+                ✏️ 회의 캔버스 {groupName ? `· ${groupName}` : ''}
+              </div>
+              {meetingHeaderExtra}
+            </div>
+          )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: meetingMode ? 6 : 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ color: '#6b7280', fontSize: 12 }}>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
+            <span style={{ color: meetingMode ? '#949ba4' : '#6b7280', fontSize: 12 }}>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
             <select
               value={boardId}
               onChange={(e) => setBoardId(e.target.value)}
               disabled={isLoadingBoards}
-              style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white', minWidth: 140 }}
+              style={{
+                padding: meetingMode ? '6px 8px' : '8px 10px',
+                border: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
+                background: meetingMode ? '#313338' : 'white',
+                color: meetingMode ? '#dbdee1' : 'inherit',
+                minWidth: 120,
+                fontSize: meetingMode ? 12 : undefined,
+              }}
             >
               <option value="">선택...</option>
               {boards.map((b) => (
@@ -1414,14 +1518,23 @@ export default function CanvasBoard({
                 }
               }}
               placeholder="보드 이름"
-              style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white', width: 160 }}
+              style={{
+                padding: meetingMode ? '6px 8px' : '8px 10px',
+                border: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
+                background: meetingMode ? '#313338' : 'white',
+                color: meetingMode ? '#dbdee1' : 'inherit',
+                width: meetingMode ? 120 : 160,
+                fontSize: meetingMode ? 12 : undefined,
+              }}
             />
-            <button type="button" onClick={createBoard} style={{ padding: '8px 10px', border: 'none', background: '#111827', color: 'white', cursor: 'pointer' }}>
+            <button type="button" onClick={createBoard} style={{ padding: meetingMode ? '6px 8px' : '8px 10px', border: 'none', background: meetingMode ? '#5865f2' : '#111827', color: 'white', cursor: 'pointer', fontSize: meetingMode ? 12 : undefined }}>
               새 보드
             </button>
+            {!meetingMode ? (
             <button type="button" onClick={refreshBoards} style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white', cursor: 'pointer' }}>
               새로고침
             </button>
+            ) : null}
           </div>
 
           <div style={{ display: 'flex', gap: 6, flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -1577,4 +1690,6 @@ export default function CanvasBoard({
       </div>
     </div>
   );
-}
+});
+
+export default CanvasBoard;

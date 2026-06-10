@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
-import { joinGroupByInviteCode } from '../utils/joinGroup';
+import { addGroupMember, joinGroupByInviteCode } from '../utils/joinGroup';
 import './MainPage.css';
 
 function rndCode() {
@@ -59,7 +59,15 @@ export default function MainPage() {
       .select('group_id, groups(id, name, invite_code)')
       .eq('user_id', uid);
     if (data) {
-      const list = data.map((d: any) => d.groups).filter(Boolean);
+      const seen = new Set<string>();
+      const list: Group[] = [];
+      for (const row of data as { groups: Group | Group[] | null }[]) {
+        const raw = row.groups;
+        const g = Array.isArray(raw) ? raw[0] : raw;
+        if (!g?.id || seen.has(g.id)) continue;
+        seen.add(g.id);
+        list.push(g);
+      }
       setGroups(list);
     }
   };
@@ -74,7 +82,11 @@ export default function MainPage() {
 
     if (error || !data) { alert(`생성 실패: ${error?.message}`); return; }
 
-    await supabase.from('group_members').insert({ group_id: data.id, user_id: userId });
+    const memberResult = await addGroupMember(data.id, userId);
+    if (!memberResult.ok) {
+      alert(`그룹은 만들어졌지만 멤버 등록 실패: ${memberResult.error}`);
+      return;
+    }
     setGroupName('');
     fetchGroups(userId);
     navigate(`/group/${data.id}`);

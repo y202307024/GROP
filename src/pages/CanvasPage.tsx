@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import CanvasBoard from '../CanvasBoard';
 import { supabase } from '../services/supabaseClient';
+import { ensureGroupCanvasAccess } from '../utils/groupAccess';
 
 export default function CanvasPage() {
   const navigate = useNavigate();
@@ -29,16 +30,15 @@ export default function CanvasPage() {
 
       if (groupId) {
         const userId = sessionData.session.user.id;
-        const { data: membership } = await supabase
-          .from('group_members')
-          .select('group_id')
-          .eq('group_id', groupId)
-          .eq('user_id', userId)
-          .maybeSingle();
+        const access = await ensureGroupCanvasAccess(groupId, userId);
 
-        if (!membership) {
-          alert('이 그룹 멤버만 캔버스를 사용할 수 있습니다.\n초대코드로 그룹에 참여한 뒤 다시 시도해 주세요.');
-          navigate('/main');
+        if (!access.ok) {
+          if (access.error === 'not_member') {
+            alert('이 그룹 멤버만 캔버스를 사용할 수 있습니다.\n메인에서 초대코드로 그룹에 참여한 뒤 다시 시도해 주세요.');
+          } else {
+            alert(`멤버 확인 실패: ${access.error}`);
+          }
+          navigate(groupId ? `/group/${groupId}` : '/main');
           return;
         }
 

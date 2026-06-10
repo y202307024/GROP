@@ -28,15 +28,22 @@ app.get('/health', (req, res) => {
 
 app.post('/api/livekit-token', async (req, res) => {
   try {
-    const { roomName, userName } = req.body
-    console.log('토큰 발급 요청:', roomName, userName)
+    const { roomName, userName, userId } = req.body
+    const identity = String(userId || userName || 'guest')
+    console.log('토큰 발급 요청:', roomName, identity)
 
     const token = new AccessToken(
       process.env.LIVEKIT_API_KEY,
       process.env.LIVEKIT_API_SECRET,
-      { identity: userName }
+      { identity, name: userName || identity }
     )
-    token.addGrant({ roomJoin: true, room: roomName })
+    token.addGrant({
+      roomJoin: true,
+      room: roomName,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    })
 
     const jwt = await token.toJwt()
     console.log('토큰 발급 성공!')

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
+import { resolveMeetingVideoUrl } from '../utils/meetingVideo';
 
 type Meeting = {
   id: string;
@@ -21,10 +22,30 @@ export default function MeetingDetail() {
   const [summaryInput, setSummaryInput] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const [aiStep, setAiStep] = useState('');
+  const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
+  const [playbackError, setPlaybackError] = useState('');
 
   useEffect(() => {
     fetchMeeting();
   }, [meetingId]);
+
+  useEffect(() => {
+    if (!meeting?.video_url) {
+      setPlaybackUrl(null);
+      setPlaybackError('');
+      return;
+    }
+    let mounted = true;
+    void resolveMeetingVideoUrl(meeting.video_url).then((url) => {
+      if (!mounted) return;
+      setPlaybackUrl(url);
+      setPlaybackError('');
+    }).catch(() => {
+      if (!mounted) return;
+      setPlaybackError('녹화 파일을 불러올 수 없습니다.');
+    });
+    return () => { mounted = false; };
+  }, [meeting?.video_url]);
 
   const fetchMeeting = async () => {
     const { data } = await supabase
@@ -59,10 +80,11 @@ export default function MeetingDetail() {
 
     try {
       setAiStep('🎙️ 음성 변환 중...');
+      const playableUrl = await resolveMeetingVideoUrl(meeting.video_url);
       const res = await fetch(`${getApiBase()}/api/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl: meeting.video_url })
+        body: JSON.stringify({ videoUrl: playableUrl })
       });
 
       if (!res.ok) throw new Error('서버 오류');
@@ -152,11 +174,19 @@ export default function MeetingDetail() {
       <div style={{ background: '#fff', border: '0.5px solid #eee', borderRadius: 12, padding: 24, marginBottom: 20 }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>🎬 회의 녹화</div>
         {meeting.video_url ? (
-          <video
-            src={meeting.video_url}
-            controls
-            style={{ width: '100%', borderRadius: 8, background: '#000', maxHeight: 400 }}
-          />
+          playbackUrl ? (
+            <video
+              key={playbackUrl}
+              src={playbackUrl}
+              controls
+              playsInline
+              style={{ width: '100%', borderRadius: 8, background: '#000', maxHeight: 400 }}
+            />
+          ) : (
+            <div style={{ textAlign: 'center', padding: '32px 0', color: '#888', fontSize: 13 }}>
+              {playbackError || '녹화 파일 불러오는 중...'}
+            </div>
+          )
         ) : (
           <div style={{ textAlign: 'center', padding: '40px 0', color: '#aaa' }}>
             <div style={{ fontSize: 36, marginBottom: 10 }}>🎬</div>
