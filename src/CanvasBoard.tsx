@@ -8,6 +8,201 @@ import { explainBoardError } from './boardErrors';
 import { dedupeBoardsById, getBoardOptionLabel } from './timelapseApi';
 // import './components/TimelapseSidePanel.css';
 import './components/CanvasViewportControls.css';
+import { RoomEvent } from 'livekit-client';
+import { useLocalParticipant, useRoomContext } from '@livekit/components-react';
+
+const MEETING_CHAT_TOPIC = 'meeting-chat';
+
+type MeetingChatMessage = {
+  id: string;
+  from: string;
+  name: string;
+  text: string;
+  ts: number;
+};
+
+function encodeMeetingChatMessage(msg: MeetingChatMessage): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+function decodeMeetingChatMessage(payload: Uint8Array): MeetingChatMessage | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(payload));
+    if (parsed && typeof parsed.text === 'string') return parsed as MeetingChatMessage;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function formatChatTime(ts: number) {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// 회의방 안에서만 렌더되는 채팅 패널. LiveKit 데이터 채널로 참여자 전원에게 브로드캐스트한다.
+function MeetingChatPanel({ onClose }: { onClose: () => void }) {
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
+  const [draft, setDraft] = useState('');
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handler = (payload: Uint8Array, _participant?: unknown, _kind?: unknown, topic?: string) => {
+      if (topic && topic !== MEETING_CHAT_TOPIC) return;
+      const msg = decodeMeetingChatMessage(payload);
+      if (!msg) return;
+      setMessages((prev) => [...prev, msg].slice(-300));
+    };
+    room.on(RoomEvent.DataReceived, handler);
+    return () => { room.off(RoomEvent.DataReceived, handler); };
+  }, [room]);
+
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages]);
+
+  const sendMessage = () => {
+    const text = draft.trim();
+    if (!text) return;
+
+    const msg: MeetingChatMessage = {
+      id: crypto.randomUUID(),
+      from: localParticipant.identity,
+      name: localParticipant.name?.trim() || '익명',
+      text,
+      ts: Date.now(),
+    };
+
+    setMessages((prev) => [...prev, msg].slice(-300));
+    void localParticipant.publishData(encodeMeetingChatMessage(msg), {
+      reliable: true,
+      topic: MEETING_CHAT_TOPIC,
+    });
+    setDraft('');
+  };
+
+  return (
+    <div
+      style={{
+        width: 260,
+        flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        background: '#2b2d31',
+        borderLeft: '1px solid #1e1f22',
+        minHeight: 0,
+      }}
+    >
+      <div
+        style={{
+          flexShrink: 0,
+          padding: '10px 12px',
+          borderBottom: '1px solid #1e1f22',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#dbdee1' }}>💬 채팅</span>
+        <button
+          type="button"
+          onClick={onClose}
+          title="채팅 닫기"
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: '#949ba4',
+            cursor: 'pointer',
+            fontSize: 13,
+          }}
+        >
+          닫기 ✕
+        </button>
+      </div>
+
+      <div
+        ref={listRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          padding: '10px 12px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
+        {messages.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#6b7280', textAlign: 'center', marginTop: 20 }}>
+            아직 채팅이 없어요.
+          </div>
+        ) : (
+          messages.map((m) => (
+            <div key={m.id}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#f2f3f5' }}>{m.name}</span>
+                <span style={{ fontSize: 10, color: '#6b7280' }}>{formatChatTime(m.ts)}</span>
+              </div>
+              <div style={{ fontSize: 13, color: '#dbdee1', wordBreak: 'break-word', marginTop: 2 }}>
+                {m.text}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div
+        style={{
+          flexShrink: 0,
+          display: 'flex',
+          gap: 6,
+          padding: 10,
+          borderTop: '1px solid #1e1f22',
+        }}
+      >
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              sendMessage();
+            }
+          }}
+          placeholder="메시지 입력..."
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: '8px 10px',
+            border: '1px solid #1e1f22',
+            borderRadius: 6,
+            background: '#1e1f22',
+            color: '#dbdee1',
+            fontSize: 13,
+          }}
+        />
+        <button
+          type="button"
+          onClick={sendMessage}
+          style={{
+            padding: '8px 12px',
+            border: 'none',
+            borderRadius: 6,
+            background: '#5865f2',
+            color: 'white',
+            cursor: 'pointer',
+            fontSize: 12,
+            flexShrink: 0,
+          }}
+        >
+          전송
+        </button>
+      </div>
+    </div>
+  );
+}
 
 const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3] as const;
 const DEFAULT_ZOOM_INDEX = 3;
@@ -190,6 +385,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [spacePressed, setSpacePressed] = useState(false);
   const [color, setColor] = useState('#111827');
   const [size, setSize] = useState(6);
+  const [chatOpen, setChatOpen] = useState(false);
 
   const [actorId, setActorId] = useState<string>('unknown');
 
@@ -865,53 +1061,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     return true;
   };
 
-  /* const handleTimelapsePlay = async () => {
-    if (!boardId) return;
-    if (replayBoardIdRef.current !== boardId || replayEventsRef.current.length === 0) {
-      const ok = await prepareReplaySession(boardId);
-      if (!ok) return;
-    } else {
-      replayAdjustedMsRef.current = buildAdjustedMs(replayEventsRef.current);
-      setReplaySession((prev) =>
-        prev
-          ? {
-              ...prev,
-              durationMs: replayAdjustedMsRef.current[replayAdjustedMsRef.current.length - 1] ?? 0,
-            }
-          : prev,
-      );
-    }
-
-    if (replayIndexRef.current >= replayEventsRef.current.length) {
-      seekReplay(0);
-    }
-    startReplay();
-  };
-
-  const handleTimelapseLoad = async () => {
-    if (!boardId) return;
-    const ok = await prepareReplaySession(boardId);
-    if (ok) seekReplay(0);
-  };
-
-  const handleSaveTimelapse = async () => {
-    if (!boardId) return;
-
-    const title = timelapseSaveDraft.trim() || window.prompt('타임랩스 카테고리 이름')?.trim();
-    if (!title) return;
-
-    setIsSavingTimelapse(true);
-    try {
-      await saveTimelapseCategory(boardId, title);
-      setTimelapseSaveDraft('');
-      alert(`「${title}」 타임랩스가 저장됐어요.\n사이드바 「타임랩스」 메뉴에서 확인할 수 있어요.`);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : '저장 실패');
-    } finally {
-      setIsSavingTimelapse(false);
-    }
-  }; */
-
   const seekReplay = async (index: number) => {
     const events = replayEventsRef.current;
     if (events.length === 0) return;
@@ -1484,6 +1633,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: meetingMode ? 6 : 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ color: meetingMode ? '#949ba4' : '#6b7280', fontSize: 12 }}>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
             <select
@@ -1535,6 +1685,25 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               새로고침
             </button>
             ) : null}
+          </div>
+
+          {meetingMode ? (
+            <button
+              type="button"
+              onClick={() => setChatOpen((v) => !v)}
+              style={{
+                padding: '6px 8px',
+                border: '1px solid #1e1f22',
+                borderRadius: 6,
+                background: chatOpen ? '#5865f2' : '#313338',
+                color: '#dbdee1',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              {chatOpen ? '💬 채팅 닫기' : '💬 채팅 열기'}
+            </button>
+          ) : null}
           </div>
 
           <div style={{ display: 'flex', gap: 6, flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -1687,6 +1856,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         onSaveDraftTitleChange={setTimelapseSaveDraft}
         onSave={() => void handleSaveTimelapse()}
       /> */}
+
+      {meetingMode && chatOpen ? <MeetingChatPanel onClose={() => setChatOpen(false)} /> : null}
       </div>
     </div>
   );
