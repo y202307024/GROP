@@ -1,17 +1,18 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
 import { supabase } from './services/supabaseClient';
 import ExcalidrawToolbar, { toolShortcutMap, type ExcalidrawTool } from './components/ExcalidrawToolbar';
-// import TimelapseSidePanel from './components/TimelapseSidePanel';
+// 타임랩스 사이드 패널 컴포넌트 import (현재 비활성화)
 import CanvasViewportControls from './components/CanvasViewportControls';
 import { drawShapeTool, drawStamp, drawText, type ShapeTool } from './canvasShapeUtils';
 import { explainBoardError } from './boardErrors';
 import { dedupeBoardsById, getBoardOptionLabel } from './timelapseApi';
-// import './components/TimelapseSidePanel.css';
+// 타임랩스 사이드 패널 CSS import (현재 비활성화)
 import './components/CanvasViewportControls.css';
 import { RoomEvent } from 'livekit-client';
 import { useLocalParticipant, useRoomContext } from '@livekit/components-react';
 
 const MEETING_CHAT_TOPIC = 'meeting-chat';
+const MEETING_BOARD_TOPIC = 'meeting-board';
 
 type MeetingChatMessage = {
   id: string;
@@ -19,6 +20,13 @@ type MeetingChatMessage = {
   name: string;
   text: string;
   ts: number;
+};
+
+type MeetingBoardMessage = {
+  type: 'board:selected';
+  boardId: string;
+  title?: string;
+  from: string;
 };
 
 function encodeMeetingChatMessage(msg: MeetingChatMessage): Uint8Array {
@@ -35,12 +43,43 @@ function decodeMeetingChatMessage(payload: Uint8Array): MeetingChatMessage | nul
   }
 }
 
+function encodeMeetingBoardMessage(msg: MeetingBoardMessage): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+function decodeMeetingBoardMessage(payload: Uint8Array): MeetingBoardMessage | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(payload));
+    if (parsed && parsed.type === 'board:selected' && typeof parsed.boardId === 'string') {
+      return parsed as MeetingBoardMessage;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeMeetingBoardMetadata(metadata?: string): MeetingBoardMessage | null {
+  if (!metadata) return null;
+  try {
+    const parsed = JSON.parse(metadata);
+    if (parsed && parsed.type === 'board:selected' && typeof parsed.boardId === 'string') {
+      return parsed as MeetingBoardMessage;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function formatChatTime(ts: number) {
   const d = new Date(ts);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-// 회의방 안에서만 렌더되는 채팅 패널. LiveKit 데이터 채널로 참여자 전원에게 브로드캐스트한다.
+// 회의방 안에서만 보이는 채팅 패널입니다.
+// 이 컴포넌트는 같은 회의방에 있는 사람들끼리 텍스트 메시지를 주고받게 해줍니다.
+// LiveKit 데이터 채널을 이용해서 다른 참가자에게 메시지를 보내고, 받은 메시지를 화면에 표시합니다.
 function MeetingChatPanel({ onClose }: { onClose: () => void }) {
   const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
@@ -318,6 +357,9 @@ function isHistoryCommitEvent(type: EventType): boolean {
   );
 }
 
+// 캔버스 메인 컴포넌트입니다.
+// 이 파일은 사용자가 그림을 그리거나, 보드를 선택하거나, 회의방에서 다른 사람과 같은 캔버스를 공유하는 기능을 모두 담당합니다.
+// 즉, 화면 UI + 그리기 로직 + 데이터 저장/불러오기 + 회의방 동기화까지 한 파일에서 처리합니다.
 const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   onBack,
   embedded = false,
@@ -389,6 +431,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const [actorId, setActorId] = useState<string>('unknown');
 
+  // 사용자 ID를 초기화하는 영역입니다.
+  // 이 값은 나중에 어떤 사람이 그린 선인지 구분할 때 사용됩니다.
+  // 로그인되어 있으면 계정 ID를 쓰고, 없으면 브라우저에 저장된 값이나 임시 ID를 사용합니다.
   useEffect(() => {
     actorIdRef.current = actorId;
   }, [actorId]);
@@ -398,6 +443,197 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [boardTitle, setBoardTitle] = useState<string>('새 보드');
   const [isLoadingBoards, setIsLoadingBoards] = useState(false);
   const [, setIsLoadingBoard] = useState(false);
+
+  // 아래부터는 회의방 전용 상태와 보드 선택 로직입니다.
+  // 회의 모드일 때는 첫 참가자에게 새 보드를 만들지, 기존 보드를 불러올지 선택하게 합니다.
+  // 이 과정은 같은 회의방의 다른 사람들과 보드 상태를 맞추기 위해 필요합니다.
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const [showInitChoice, setShowInitChoice] = useState(false);
+  const initChoiceHandledRef = useRef(false);
+  const latestBoardSelectionRef = useRef<MeetingBoardMessage | null>(null);
+
+  const publishBoardSelection = (payload: MeetingBoardMessage) => {
+    if (!localParticipant) return;
+    void localParticipant.publishData(encodeMeetingBoardMessage(payload), {
+      reliable: true,
+      topic: MEETING_BOARD_TOPIC,
+    });
+    void localParticipant.setMetadata(JSON.stringify(payload)).catch((err) => {
+      console.warn('LiveKit metadata update failed:', err);
+    });
+  };
+
+  // 회의방 접속 상태를 확인해서, 첫 참가자일 때만 초기 선택창을 띄웁니다.
+  // 방에 아무도 없던 시점에 첫 사람이 들어오면 이 모달이 보이고,
+  // 이후 참가자들은 이미 선택된 보드를 따라가게 됩니다.
+  useEffect(() => {
+    if (!room) return;
+
+    const ensureInitChoice = () => {
+      if (!meetingMode || room.state !== 'connected') return;
+      if (room.remoteParticipants.size !== 0 || initChoiceHandledRef.current) return;
+      setShowInitChoice(true);
+    };
+
+    if (room.state !== 'connected') {
+      initChoiceHandledRef.current = false;
+    }
+
+    ensureInitChoice();
+
+    const onStateChange = () => {
+      ensureInitChoice();
+    };
+
+    room.on(RoomEvent.ConnectionStateChanged, onStateChange);
+    return () => {
+      room.off(RoomEvent.ConnectionStateChanged, onStateChange);
+    };
+  }, [room, room?.state, room?.remoteParticipants.size, meetingMode]);
+
+  useEffect(() => {
+    if (!showInitChoice) return;
+    clearAllLocal();
+    setBoardId('');
+    setBoardTitle('새 보드');
+  }, [showInitChoice]);
+
+  // LiveKit으로 보드 선택 정보를 주고받는 영역입니다.
+  // 다른 참가자에게 현재 선택된 보드를 알려주고, 누가 새로 들어오거나 다시 들어와도
+  // 같은 보드를 보도록 상태를 맞춰줍니다.
+  useEffect(() => {
+    if (!room) return;
+    if (!meetingMode) return;
+
+    const applyBoardSelection = (msg: MeetingBoardMessage) => {
+      if (!msg.boardId) return;
+      setShowInitChoice(false);
+      initChoiceHandledRef.current = true;
+      setBoardId(msg.boardId);
+      if (msg.title) setBoardTitle(msg.title);
+      latestBoardSelectionRef.current = msg;
+      publishBoardSelection(msg);
+    };
+
+    const handler = (payload: Uint8Array, participant?: unknown, _kind?: unknown, topic?: string) => {
+      if (topic && topic !== MEETING_BOARD_TOPIC) return;
+      const msg = decodeMeetingBoardMessage(payload);
+      if (!msg) return;
+      if (participant && 'identity' in (participant as any) && (participant as any).identity === localParticipant.identity) {
+        return;
+      }
+      applyBoardSelection(msg);
+    };
+
+    const participantMetadataHandler = (metadata: string | undefined, participant?: unknown) => {
+      if (!participant || !room) return;
+      if (!('identity' in (participant as any))) return;
+      const remote = participant as { identity: string; metadata?: string };
+      if (remote.identity === localParticipant.identity) return;
+      const msg = decodeMeetingBoardMetadata(metadata);
+      if (!msg) return;
+      applyBoardSelection(msg);
+    };
+
+    const syncFromExistingParticipants = () => {
+      for (const participant of room.remoteParticipants.values()) {
+        const msg = decodeMeetingBoardMetadata(participant.metadata);
+        if (msg) {
+          applyBoardSelection(msg);
+          return;
+        }
+      }
+    };
+
+    const publishCurrentBoardSelection = () => {
+      const payload = latestBoardSelectionRef.current;
+      if (payload) publishBoardSelection(payload);
+    };
+
+    const onParticipantConnected = (participant: unknown) => {
+      if (!localParticipant) return;
+      if (!participant || !('identity' in (participant as any))) return;
+      const remote = participant as { identity: string };
+      if (remote.identity === localParticipant.identity) return;
+      publishCurrentBoardSelection();
+    };
+
+    syncFromExistingParticipants();
+    room.on(RoomEvent.DataReceived, handler);
+    room.on(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    return () => {
+      room.off(RoomEvent.DataReceived, handler);
+      room.off(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+    };
+  }, [room, meetingMode, localParticipant.identity]);
+
+  // 초기 선택창에서 '새 보드 생성'을 눌렀을 때 실행되는 함수입니다.
+  // 새 보드를 데이터베이스에 만들고, 그 보드 ID를 현재 캔버스에 연결합니다.
+  const handleCreateNewBoardChoice = async () => {
+    setShowInitChoice(false);
+    initChoiceHandledRef.current = true;
+    try {
+      const title = isGroupCanvas ? `${GROUP_BOARD_TITLE_PREFIX}${groupId ?? ''}${Date.now()}` : '새 보드';
+      const { data, error } = await supabase.from('boards').insert([{ title }]).select().limit(1).single();
+      if (error) throw error;
+      if (data && data.id) {
+        const board = data as Board;
+        const title = board.title ?? '새 보드';
+        setBoards((prev) => [board, ...prev]);
+        setBoardId(board.id);
+        setBoardTitle(title);
+        if (localParticipant) {
+          const payload: MeetingBoardMessage = {
+            type: 'board:selected',
+            boardId: board.id,
+            title,
+            from: localParticipant.identity,
+          };
+          latestBoardSelectionRef.current = payload;
+          publishBoardSelection(payload);
+        }
+      }
+    } catch (e) {
+      console.error('failed to create board on choice', e);
+      // 대체로 기존 createBoard 흐름을 호출합니다. 이때 인증 요청이 나올 수 있습니다.
+      try {
+        await createBoard();
+      } catch {
+        // 무시합니다.
+      }
+    }
+  };
+
+  // 초기 선택창에서 '기존 보드 불러오기'를 눌렀을 때 실행되는 함수입니다.
+  // 이미 저장된 보드 중 가장 최근 보드를 찾아서 현재 캔버스에 연결합니다.
+  const handleUseExistingBoardChoice = async () => {
+    setShowInitChoice(false);
+    initChoiceHandledRef.current = true;
+    try {
+      const { data, error } = await supabase.from('boards').select('*').order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (!error && data && data.id) {
+        const board = data as Board;
+        const title = board.title ?? '보드';
+        setBoardId(board.id);
+        setBoardTitle(title);
+        if (localParticipant) {
+          const payload: MeetingBoardMessage = {
+            type: 'board:selected',
+            boardId: board.id,
+            title,
+            from: localParticipant.identity,
+          };
+          latestBoardSelectionRef.current = payload;
+          publishBoardSelection(payload);
+        }
+      }
+    } catch (e) {
+      console.error('failed to load existing board on choice', e);
+    }
+  };
 
   const [, setIsReplaying] = useState(false);
   const [replaySpeed] = useState(10);
@@ -483,7 +719,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
     if (canvas.width === wantW && canvas.height === wantH) return;
 
-    // Preserve drawing on resize
+    // 리사이즈 시 기존 그림을 유지합니다.
     const prev = document.createElement('canvas');
     prev.width = canvas.width;
     prev.height = canvas.height;
@@ -501,11 +737,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
 
-    // White background (so eraser works & export isn't transparent)
+    // 흰 배경을 채워서 지우개가 정상 동작하고 내보내기 결과가 투명하지 않게 합니다.
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, nextWidth, nextHeight);
 
-    // Draw previous content back (best-effort)
+    // 기존 내용을 최대한 복원합니다.
     if (prev.width > 0 && prev.height > 0) {
       const prevCssW = prev.width / dpr;
       const prevCssH = prev.height / dpr;
@@ -618,7 +854,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   }, [replaySession]);
 
   useEffect(() => {
-    // actorId: 로그인 유저가 있으면 user.id, 없으면 브라우저 세션 id
+    // actorId: 로그인한 사용자가 있으면 user.id를 사용하고, 없으면 브라우저 세션 ID를 사용합니다.
     let isMounted = true;
     supabase.auth
       .getUser()
@@ -1156,6 +1392,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compressGaps, maxGapMs]);
 
+  // Supabase에 저장된 보드 이벤트를 읽어서 캔버스에 다시 그리는 함수입니다.
+  // 예를 들어 이전에 그린 선이나 도형이 있다면, 새로 들어왔을 때 다시 화면에 그려줍니다.
   const loadAndRenderBoard = async (targetBoardId: string) => {
     if (!targetBoardId) return;
     clearReplaySession();
@@ -1587,6 +1825,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     a.click();
   }; */
 
+  // 아래부터는 화면에 실제 UI를 그려주는 영역입니다.
+  // 상단에 보드 이름, 도구 버튼, 색상/굵기 선택, 캔버스 영역을 한 번에 보여줍니다.
+  // 이 JSX가 실제로 사용자가 보는 화면을 구성합니다.
   return (
     <div
       style={{
@@ -1856,6 +2097,52 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         onSaveDraftTitleChange={setTimelapseSaveDraft}
         onSave={() => void handleSaveTimelapse()}
       /> */}
+
+      {showInitChoice ? (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(0,0,0,0.4)',
+            zIndex: 60,
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            style={{
+              width: 420,
+              padding: 18,
+              borderRadius: 10,
+              background: meetingMode ? '#2b2d31' : '#fff',
+              color: meetingMode ? '#dbdee1' : '#111827',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>새 보드 생성 또는 기존 보드 불러오기</div>
+            <div style={{ fontSize: 13, color: meetingMode ? '#c7c9cc' : '#374151' }}>원하는 작업을 선택하세요.</div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={handleUseExistingBoardChoice}
+                style={{ padding: '8px 12px', border: '1px solid #e5e7eb', background: meetingMode ? '#313338' : 'white', cursor: 'pointer' }}
+              >
+                기존 보드 불러오기
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateNewBoardChoice}
+                style={{ padding: '8px 12px', border: 'none', background: '#111827', color: 'white', cursor: 'pointer' }}
+              >
+                새 보드 생성
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {meetingMode && chatOpen ? <MeetingChatPanel onClose={() => setChatOpen(false)} /> : null}
       </div>
