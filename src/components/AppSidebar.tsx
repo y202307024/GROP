@@ -2,7 +2,7 @@ import { useEffect, useState, type MouseEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
 import { isSidebarItemActive, sidebarMenuItems } from '../config/sidebarMenu';
-import '../pages/MainPage.css';
+import s from './AppSidebar.module.css';
 
 type Props = {
   onLogout?: () => void;
@@ -22,11 +22,10 @@ export default function AppSidebar({ onLogout }: Props) {
         .from('profiles')
         .select('nickname, avatar')
         .eq('id', data.user.id)
-        .single();
-      if (profile) {
-        setNickname(profile.nickname ?? '');
-        setAvatar(profile.avatar ?? '🐱');
-      }
+        .maybeSingle();
+      if (!mounted || !profile) return;
+      setNickname(profile.nickname ?? '');
+      setAvatar(profile.avatar ?? '🐱');
     });
     return () => {
       mounted = false;
@@ -41,34 +40,39 @@ export default function AppSidebar({ onLogout }: Props) {
   };
 
   return (
-    <div className="sidebar">
-      <div className="sidebar-logo">
-        <div className="sidebar-logo-icon">G</div>
-        <span className="sidebar-logo-text">Groupop</span>
+    <div className={s.sidebar}>
+      <div className={s.logo}>
+        <div className={s.logoIcon}>G</div>
+        <span className={s.logoText}>Groupop</span>
       </div>
-      <div className="sidebar-menu">
+
+      <div className={s.menu}>
         {sidebarMenuItems.map((item, i) => (
           <button
             key={`${item.label}-${i}`}
             type="button"
-            className={`menu-item ${isSidebarItemActive(pathname, item, i) ? 'active' : ''}`}
+            className={`${s.menuItem} ${isSidebarItemActive(pathname, item) ? s.menuItemActive : ''}`}
             onClick={() => navigate(item.path)}
+            disabled={item.comingSoon}
+            title={item.comingSoon ? '아직 준비 중인 기능입니다' : undefined}
           >
             <span>{item.icon}</span>
-            <span>{item.label}</span>
+            <span className={s.menuItemLabel}>{item.label}</span>
+            {item.comingSoon && <span className={s.comingSoon}>준비중</span>}
           </button>
         ))}
       </div>
-      <div className="sidebar-profile" onClick={() => navigate('/profile')} style={{ cursor: 'pointer' }}>
-        <div className="profile-avatar">
-          <div className="avatar-circle">{avatar}</div>
-          <div className="online-dot" />
+
+      <div className={s.profile} onClick={() => navigate('/profile')}>
+        <div className={s.avatar}>
+          <div className={s.avatarCircle}>{avatar}</div>
+          <div className={s.onlineDot} />
         </div>
-        <div className="profile-info">
-          <div className="profile-name">{nickname || '...'}</div>
-          <div className="profile-status">온라인</div>
+        <div className={s.profileInfo}>
+          <div className={s.profileName}>{nickname || '...'}</div>
+          <div className={s.profileStatus}>온라인</div>
         </div>
-        <button type="button" className="logout-btn" onClick={handleLogout} title="로그아웃">
+        <button type="button" className={s.logoutBtn} onClick={handleLogout} title="로그아웃">
           🚪
         </button>
       </div>

@@ -7,7 +7,7 @@ import { drawShapeTool, drawStamp, drawText, type ShapeTool } from './canvasShap
 import { explainBoardError } from './boardErrors';
 import { dedupeBoardsById, getBoardOptionLabel } from './timelapseApi';
 // 타임랩스 사이드 패널 CSS import (현재 비활성화)
-import './components/CanvasViewportControls.css';
+import cb from './CanvasBoard.module.css';
 import { RoomEvent } from 'livekit-client';
 import { useLocalParticipant, useRoomContext } from '@livekit/components-react';
 
@@ -1978,10 +1978,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       </div>
       </div>
 
-      <div className="canvas-main-row">
+      <div className={cb.mainRow}>
       <div
         ref={canvasAreaRef}
-        className="canvas-area"
+        className={cb.area}
         style={{
           position: 'relative',
           background: '#fff',

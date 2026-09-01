@@ -1,8 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
-import { resolveMeetingVideoUrl } from '../utils/meetingVideo';
+import { primeWebmSeeking, resolveMeetingVideoUrl } from '../utils/meetingVideo';
+import {
+  findActiveChapterIndex,
+  formatTimestamp,
+  normalizeChapters,
+  parseTimestamp,
+  type MeetingChapter,
+} from '../utils/meetingChapters';
 
 type Meeting = {
   id: string;
@@ -11,7 +18,55 @@ type Meeting = {
   summary: string | null;
   video_url: string | null;
   group_id: string;
+  chapters?: unknown;
 };
+
+/** 요약 본문 안의 [MM:SS] 를 클릭 가능한 버튼으로 바꿔서 렌더링 */
+function SummaryWithTimestamps({
+  text,
+  onSeek,
+}: {
+  text: string;
+  onSeek: (seconds: number) => void;
+}) {
+  // [00:00] 또는 [1:02:03] 패턴으로 쪼갭니다.
+  const parts = text.split(/(\[\d{1,2}(?::\d{2}){1,2}\])/g);
+
+  return (
+    <>
+      {parts.map((part, i) => {
+        const match = /^\[(\d{1,2}(?::\d{2}){1,2})\]$/.exec(part);
+        if (!match) return <span key={i}>{part}</span>;
+
+        const seconds = parseTimestamp(match[1]);
+        if (seconds === null) return <span key={i}>{part}</span>;
+
+        return (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onSeek(seconds)}
+            title={`${match[1]} 지점으로 이동`}
+            style={{
+              background: '#E1F5EE',
+              color: '#085041',
+              border: 'none',
+              borderRadius: 4,
+              padding: '1px 6px',
+              margin: '0 2px',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {match[1]}
+          </button>
+        );
+      })}
+    </>
+  );
+}
 
 export default function MeetingDetail() {
   const { id: groupId, meetingId } = useParams();
@@ -24,6 +79,15 @@ export default function MeetingDetail() {
   const [aiStep, setAiStep] = useState('');
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState('');
+
+  // 챕터 타임라인 관련
+  const [chapters, setChapters] = useState<MeetingChapter[]>([]);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const seekPrimedRef = useRef(false);
+
+  const activeIndex = findActiveChapterIndex(chapters, currentTime);
 
   useEffect(() => {
     fetchMeeting();
@@ -56,6 +120,7 @@ export default function MeetingDetail() {
     if (data) {
       setMeeting(data);
       setSummaryInput(data.summary || '');
+      setChapters(normalizeChapters(data.chapters));
     }
     setLoading(false);
   };
@@ -69,7 +134,38 @@ export default function MeetingDetail() {
     fetchMeeting();
   };
 
-  // AI 요약 생성
+  /**
+   * MediaRecorder webm은 길이 정보가 없어 seek이 막힙니다.
+   * 메타데이터가 잡히는 시점에 한 번 보정해 둡니다.
+   */
+  const handleLoadedMetadata = async () => {
+    const video = videoRef.current;
+    if (!video || seekPrimedRef.current) return;
+    seekPrimedRef.current = true;
+    const resolved = await primeWebmSeeking(video);
+    setDuration(resolved);
+  };
+
+  /** 챕터/타임스탬프 클릭 → 해당 시점으로 점프 후 재생 */
+  const seekTo = async (seconds: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (!seekPrimedRef.current) {
+      seekPrimedRef.current = true;
+      const resolved = await primeWebmSeeking(video);
+      setDuration(resolved);
+    }
+
+    video.currentTime = seconds;
+    setCurrentTime(seconds);
+    void video.play().catch(() => {
+      // 자동재생이 막혀도 이동 자체는 됐으므로 무시
+    });
+    video.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  // AI 요약 생성 (챕터 포함)
   const generateAiSummary = async () => {
     if (!meeting?.video_url) {
       alert('녹화 파일이 없어요!');
@@ -87,60 +183,101 @@ export default function MeetingDetail() {
         body: JSON.stringify({ videoUrl: playableUrl })
       });
 
-      if (!res.ok) throw new Error('서버 오류');
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error((errBody as { error?: string }).error || `서버 오류 (${res.status})`);
+      }
 
-      setAiStep('📝 요약 생성 중...');
+      setAiStep('📝 요약·타임라인 생성 중...');
       const data = await res.json();
+      const nextChapters = normalizeChapters(data.chapters, data.duration);
 
-      // Supabase에 저장
       setAiStep('💾 저장 중...');
-      await supabase
+      // chapters 컬럼이 아직 없는 DB에서도 요약은 저장되도록 분리 처리
+      const { error } = await supabase
         .from('meetings')
-        .update({ summary: data.summary })
+        .update({ summary: data.summary, chapters: nextChapters })
         .eq('id', meetingId);
 
+      if (error?.message?.includes('chapters')) {
+        await supabase
+          .from('meetings')
+          .update({ summary: data.summary })
+          .eq('id', meetingId);
+        setChapters(nextChapters);
+        alert(
+          '요약은 저장했지만 타임라인은 저장하지 못했어요.\n' +
+          'supabase/meeting_chapters.sql 을 실행하면 다음부터 저장됩니다.'
+        );
+      } else if (error) {
+        throw new Error(error.message);
+      }
+
       await fetchMeeting();
-      alert('AI 요약이 완성됐어요! 🎉');
+      alert(
+        nextChapters.length > 0
+          ? `AI 요약 완성! 타임라인 ${nextChapters.length}개가 만들어졌어요 🎉`
+          : 'AI 요약이 완성됐어요! 🎉'
+      );
 
     } catch (err) {
       console.error('AI 요약 실패:', err);
-      alert('AI 요약 실패했어요. 다시 시도해주세요.');
+      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      alert(`AI 요약 실패: ${msg}`);
     }
 
     setAiLoading(false);
     setAiStep('');
   };
 
- const downloadSummary = () => {
-  if (!meeting?.summary) return;
+  const downloadSummary = () => {
+    if (!meeting?.summary) return;
 
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) return;
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
 
-  printWindow.document.write(`
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>${meeting.title}_회의록</title>
-        <style>
-          body { font-family: 'Malgun Gothic', sans-serif; padding: 40px; line-height: 1.8; color: #333; }
-          h1 { font-size: 22px; margin-bottom: 6px; color: #111; }
-          .date { color: #888; font-size: 13px; margin-bottom: 28px; }
-          hr { border: none; border-top: 1px solid #eee; margin-bottom: 24px; }
-          .content { font-size: 14px; white-space: pre-wrap; line-height: 2; }
-        </style>
-      </head>
-      <body>
-        <h1>${meeting.title}</h1>
-        <div class="date">📅 ${formatDate(meeting.date)} · 🕐 ${formatTime(meeting.date)}</div>
-        <hr />
-        <div class="content">${meeting.summary}</div>
-        <script>window.onload = () => { window.print(); }</script>
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
-};
+    // 사용자가 수정할 수 있는 값이라 반드시 이스케이프합니다.
+    const escapeHtml = (s: string) =>
+      s.replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    const chapterRows = chapters.length > 0
+      ? `<div class="chapters"><div class="chapters-title">🕘 타임라인</div>${chapters
+          .map((c) => `<div class="chapter"><span class="t">${formatTimestamp(c.time)}</span> ${escapeHtml(c.title)}</div>`)
+          .join('')}</div>`
+      : '';
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${escapeHtml(meeting.title)}_회의록</title>
+          <style>
+            body { font-family: 'Malgun Gothic', sans-serif; padding: 40px; line-height: 1.8; color: #333; }
+            h1 { font-size: 22px; margin-bottom: 6px; color: #111; }
+            .date { color: #888; font-size: 13px; margin-bottom: 28px; }
+            hr { border: none; border-top: 1px solid #eee; margin-bottom: 24px; }
+            .chapters { margin-bottom: 24px; }
+            .chapters-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+            .chapter { font-size: 13px; margin-bottom: 4px; }
+            .chapter .t { display: inline-block; min-width: 54px; color: #085041; font-weight: 600; }
+            .content { font-size: 14px; white-space: pre-wrap; line-height: 2; }
+          </style>
+        </head>
+        <body>
+          <h1>${escapeHtml(meeting.title)}</h1>
+          <div class="date">📅 ${formatDate(meeting.date)} · 🕐 ${formatTime(meeting.date)}</div>
+          <hr />
+          ${chapterRows}
+          <div class="content">${escapeHtml(meeting.summary)}</div>
+          <script>window.onload = () => { window.print(); }</script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
@@ -176,10 +313,14 @@ export default function MeetingDetail() {
         {meeting.video_url ? (
           playbackUrl ? (
             <video
+              ref={videoRef}
               key={playbackUrl}
               src={playbackUrl}
               controls
               playsInline
+              preload="metadata"
+              onLoadedMetadata={handleLoadedMetadata}
+              onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
               style={{ width: '100%', borderRadius: 8, background: '#000', maxHeight: 400 }}
             />
           ) : (
@@ -192,6 +333,72 @@ export default function MeetingDetail() {
             <div style={{ fontSize: 36, marginBottom: 10 }}>🎬</div>
             <div style={{ fontSize: 14, color: '#555' }}>녹화 파일이 없어요</div>
             <div style={{ fontSize: 12, marginTop: 4 }}>회의가 끝나면 자동으로 저장돼요</div>
+          </div>
+        )}
+
+        {/* 챕터 타임라인 — 누르면 해당 지점으로 점프 */}
+        {chapters.length > 0 && (
+          <div style={{ marginTop: 20, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>🕘 타임라인</div>
+              <div style={{ fontSize: 11, color: '#aaa' }}>
+                {duration > 0 ? `총 ${formatTimestamp(duration)}` : `${chapters.length}개 구간`}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {chapters.map((c, i) => {
+                const isActive = i === activeIndex;
+                return (
+                  <button
+                    key={`${c.time}-${i}`}
+                    type="button"
+                    onClick={() => void seekTo(c.time)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 10,
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      border: 'none',
+                      borderRadius: 8,
+                      borderLeft: isActive ? '3px solid #1D9E75' : '3px solid transparent',
+                      background: isActive ? '#F2FBF7' : 'transparent',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s',
+                    }}
+                  >
+                    <span style={{
+                      flexShrink: 0,
+                      minWidth: 46,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: isActive ? '#085041' : '#1D9E75',
+                      fontVariantNumeric: 'tabular-nums',
+                      paddingTop: 1,
+                    }}>
+                      {formatTimestamp(c.time)}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{
+                        display: 'block',
+                        fontSize: 13,
+                        fontWeight: isActive ? 600 : 500,
+                        color: '#333',
+                      }}>
+                        {c.title}
+                      </span>
+                      {c.summary && (
+                        <span style={{ display: 'block', fontSize: 12, color: '#999', marginTop: 2, lineHeight: 1.5 }}>
+                          {c.summary}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
@@ -249,10 +456,10 @@ export default function MeetingDetail() {
           </div>
         )}
 
-        {/* 요약 내용 표시 */}
+        {/* 요약 내용 표시 — [MM:SS] 는 눌러서 이동 가능 */}
         {!aiLoading && !editingSummary && meeting.summary && (
           <div style={{ fontSize: 13, lineHeight: 1.9, color: '#333', background: '#f9f9f9', padding: '16px 18px', borderRadius: 8, borderLeft: '3px solid #1D9E75', whiteSpace: 'pre-wrap' }}>
-            {meeting.summary}
+            <SummaryWithTimestamps text={meeting.summary} onSeek={(s) => void seekTo(s)} />
           </div>
         )}
 

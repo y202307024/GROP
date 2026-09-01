@@ -12,9 +12,9 @@ import {
   saveTimelapseCategory,
   type TimelapseSaveWithBoard,
 } from '../timelapseApi';
-import './TimelapsePage.css';
-import './MainPage.css';
-import '../components/TimelapseSavePanel.css';
+import layout from '../styles/pageLayout.module.css';
+import tbtn from '../components/timelapseButton.module.css';
+import s from './TimelapsePage.module.css';
 
 export default function TimelapsePage() {
   const navigate = useNavigate();
@@ -140,22 +140,22 @@ export default function TimelapsePage() {
   };
 
   return (
-    <div className="main-wrap">
+    <div className={layout.wrap}>
       <AppSidebar />
 
-      <div className="content">
-        <div className="content-header">
+      <div className={layout.content}>
+        <div className={layout.contentHeader}>
           <div>
-            <div className="page-title">타임랩스</div>
-            <div className="page-sub">캔버스 그리기 기록을 카테고리별로 저장하고 재생합니다</div>
+            <div className={layout.pageTitle}>타임랩스</div>
+            <div className={layout.pageSub}>캔버스 그리기 기록을 카테고리별로 저장하고 재생합니다</div>
           </div>
-          <button type="button" className="btn-primary" onClick={() => navigate(boardId ? `/canvas?boardId=${boardId}` : '/canvas')}>
+          <button type="button" className={layout.btnPrimary} onClick={() => navigate(boardId ? `/canvas?boardId=${boardId}` : '/canvas')}>
             캔버스 열기
           </button>
         </div>
 
         {loadError ? (
-          <div className="timelapse-empty timelapse-error">
+          <div className={`${s.empty} ${s.error}`}>
             {loadError}
             <br />
             Supabase에서 <code>supabase/timelapse_saves.sql</code> 실행 여부를 확인해 주세요.
@@ -181,25 +181,25 @@ export default function TimelapsePage() {
 
         {otherBoardGroups.length > 0 ? (
           <>
-            <div className="section-label">다른 보드 타임랩스</div>
+            <div className={layout.sectionLabel}>다른 보드 타임랩스</div>
             {otherBoardGroups.map(([id, group]) => (
-              <section key={id} className="timelapse-board-section">
-                <div className="timelapse-other-board-title">{group.boardTitle}</div>
-                <div className="timelapse-grid">
+              <section key={id} className={s.boardSection}>
+                <div className={s.otherBoardTitle}>{group.boardTitle}</div>
+                <div className={s.grid}>
                   {group.items.map((save) => (
-                    <div key={save.id} className="timelapse-card">
-                      <div className="timelapse-card-icon">⏪</div>
-                      <div className="timelapse-card-title">{save.title}</div>
-                      <div className="timelapse-card-meta">이벤트 {save.event_count}개</div>
-                      <div className="timelapse-card-meta">저장 {new Date(save.created_at).toLocaleString()}</div>
-                      <div className="timelapse-card-actions">
-                        <button type="button" className="timelapse-btn" onClick={() => openInCanvas(save, false)}>
+                    <div key={save.id} className={s.card}>
+                      <div className={s.cardIcon}>⏪</div>
+                      <div className={s.cardTitle}>{save.title}</div>
+                      <div className={s.cardMeta}>이벤트 {save.event_count}개</div>
+                      <div className={s.cardMeta}>저장 {new Date(save.created_at).toLocaleString()}</div>
+                      <div className={s.cardActions}>
+                        <button type="button" className={tbtn.btn} onClick={() => openInCanvas(save, false)}>
                           불러오기
                         </button>
-                        <button type="button" className="timelapse-btn timelapse-btn-primary" onClick={() => openInCanvas(save, true)}>
+                        <button type="button" className={`${tbtn.btn} ${tbtn.primary}`} onClick={() => openInCanvas(save, true)}>
                           재생
                         </button>
-                        <button type="button" className="timelapse-btn timelapse-btn-danger" onClick={() => void handleDelete(save)}>
+                        <button type="button" className={`${tbtn.btn} ${tbtn.danger}`} onClick={() => void handleDelete(save)}>
                           삭제
                         </button>
                       </div>

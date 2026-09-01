@@ -1,3 +1,4 @@
+import s from './TimelapseSidePanel.module.css';
 type ReplaySession = {
   total: number;
   index: number;
@@ -50,34 +51,34 @@ export default function TimelapseSidePanel({
   onSave,
 }: Props) {
   return (
-    <aside className="timelapse-side-panel">
-      <div className="timelapse-side-panel-head">
-        <div className="timelapse-side-panel-title">타임랩스</div>
+    <aside className={s.panel}>
+      <div className={s.head}>
+        <div className={s.title}>타임랩스</div>
       </div>
 
-      <div className="timelapse-side-section">
-        <div className="timelapse-side-label">보드</div>
+      <div className={s.section}>
+        <div className={s.label}>보드</div>
         {boardId ? (
-          <code className="timelapse-side-board-id">{boardId}</code>
+          <code className={s.boardId}>{boardId}</code>
         ) : (
-          <div className="timelapse-side-hint">보드를 선택해 주세요</div>
+          <div className={s.hint}>보드를 선택해 주세요</div>
         )}
-        {isLoadingBoard ? <div className="timelapse-side-hint">로딩 중…</div> : null}
+        {isLoadingBoard ? <div className={s.hint}>로딩 중…</div> : null}
       </div>
 
-      <div className="timelapse-side-section">
-        <button type="button" className="timelapse-side-btn timelapse-side-btn-outline" onClick={onResync} disabled={!boardId}>
+      <div className={s.section}>
+        <button type="button" className={`${s.btn} ${s.btnOutline}`} onClick={onResync} disabled={!boardId}>
           재동기화
         </button>
-        <button type="button" className="timelapse-side-btn timelapse-side-btn-outline" onClick={onLoad} disabled={!boardId}>
+        <button type="button" className={`${s.btn} ${s.btnOutline}`} onClick={onLoad} disabled={!boardId}>
           타임랩스 불러오기
         </button>
       </div>
 
-      <div className="timelapse-side-section">
-        <div className="timelapse-side-label">저장</div>
+      <div className={s.section}>
+        <div className={s.label}>저장</div>
         <input
-          className="timelapse-side-input"
+          className={s.input}
           value={saveDraftTitle}
           onChange={(e) => onSaveDraftTitleChange(e.target.value)}
           placeholder="카테고리 이름 (예: 1차 시안)"
@@ -85,7 +86,7 @@ export default function TimelapseSidePanel({
         />
         <button
           type="button"
-          className="timelapse-side-btn timelapse-side-btn-save"
+          className={`${s.btn} ${s.btnSave}`}
           onClick={onSave}
           disabled={!boardId || isSaving}
         >
@@ -93,23 +94,23 @@ export default function TimelapseSidePanel({
         </button>
       </div>
 
-      <div className="timelapse-side-section">
-        <label className="timelapse-side-field">
+      <div className={s.section}>
+        <label className={s.field}>
           <span>재생 속도</span>
-          <div className="timelapse-side-range-row">
+          <div className={s.rangeRow}>
             <input type="range" min={1} max={50} value={replaySpeed} onChange={(e) => onReplaySpeedChange(Number(e.target.value))} />
             <span>{replaySpeed}x</span>
           </div>
         </label>
 
-        <label className="timelapse-side-check">
+        <label className={s.check}>
           <input type="checkbox" checked={compressGaps} onChange={(e) => onCompressGapsChange(e.target.checked)} />
           <span>공백 압축</span>
         </label>
 
-        <label className={`timelapse-side-field ${compressGaps ? '' : 'is-disabled'}`}>
+        <label className={`${s.field} ${compressGaps ? '' : s.isDisabled}`}>
           <span>최대 공백</span>
-          <div className="timelapse-side-range-row">
+          <div className={s.rangeRow}>
             <input
               type="range"
               min={0}
@@ -124,28 +125,28 @@ export default function TimelapseSidePanel({
         </label>
       </div>
 
-      <div className="timelapse-side-section timelapse-side-play-row">
+      <div className={`${s.section} ${s.playRow}`}>
         <button
           type="button"
-          className="timelapse-side-btn timelapse-side-btn-play"
+          className={`${s.btn} ${s.btnPlay}`}
           onClick={onPlay}
           disabled={isReplaying || !boardId}
         >
           {isReplaying ? '재생 중' : '타임랩스 재생'}
         </button>
-        <button type="button" className="timelapse-side-btn timelapse-side-btn-outline" onClick={onPause} disabled={!isReplaying}>
+        <button type="button" className={`${s.btn} ${s.btnOutline}`} onClick={onPause} disabled={!isReplaying}>
           일시정지
         </button>
       </div>
 
       {replaySession ? (
-        <div className="timelapse-side-section timelapse-side-timeline">
-          <div className="timelapse-side-label">타임라인</div>
-          <div className="timelapse-side-meta">
+        <div className={`${s.section} ${s.timeline}`}>
+          <div className={s.label}>타임라인</div>
+          <div className={s.meta}>
             {replaySession.startTs ? new Date(replaySession.startTs).toLocaleString() : '-'} →{' '}
             {replaySession.endTs ? new Date(replaySession.endTs).toLocaleString() : '-'}
           </div>
-          <div className="timelapse-side-meta">
+          <div className={s.meta}>
             진행 {replaySession.index}/{replaySession.total} (
             {replaySession.total ? Math.min(100, Math.floor((replaySession.index / replaySession.total) * 100)) : 0}%)
             {isReplaying ? ' · 재생 중' : ' · 정지'}
@@ -157,7 +158,7 @@ export default function TimelapseSidePanel({
             step={1}
             value={replaySession.index}
             onChange={(e) => onSeek(Number(e.target.value))}
-            className="timelapse-side-seek"
+            className={s.seek}
           />
         </div>
       ) : null}

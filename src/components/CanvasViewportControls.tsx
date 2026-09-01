@@ -1,3 +1,5 @@
+import s from './CanvasViewportControls.module.css';
+
 type Props = {
   zoomPercent: number;
   canUndo: boolean;
@@ -18,20 +20,20 @@ export default function CanvasViewportControls({
   onRedo,
 }: Props) {
   return (
-    <div className="canvas-viewport-controls">
-      <div className="canvas-viewport-group">
-        <button type="button" className="canvas-viewport-btn" onClick={onZoomOut} title="축소" aria-label="축소">
+    <div className={s.controls}>
+      <div className={s.group}>
+        <button type="button" className={s.btn} onClick={onZoomOut} title="축소" aria-label="축소">
           −
         </button>
-        <span className="canvas-viewport-zoom">{zoomPercent}%</span>
-        <button type="button" className="canvas-viewport-btn" onClick={onZoomIn} title="확대" aria-label="확대">
+        <span className={s.zoom}>{zoomPercent}%</span>
+        <button type="button" className={s.btn} onClick={onZoomIn} title="확대" aria-label="확대">
           +
         </button>
       </div>
-      <div className="canvas-viewport-group">
+      <div className={s.group}>
         <button
           type="button"
-          className="canvas-viewport-btn canvas-viewport-icon"
+          className={`${s.btn} ${s.icon}`}
           onClick={onUndo}
           disabled={!canUndo}
           title="실행 취소"
@@ -41,7 +43,7 @@ export default function CanvasViewportControls({
         </button>
         <button
           type="button"
-          className="canvas-viewport-btn canvas-viewport-icon"
+          className={`${s.btn} ${s.icon}`}
           onClick={onRedo}
           disabled={!canRedo}
           title="다시 실행"

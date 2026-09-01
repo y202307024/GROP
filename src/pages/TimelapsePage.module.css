@@ -1,0 +1,67 @@
+/* 타임랩스 화면 고유 스타일
+   - 껍데기는 styles/pageLayout.module.css
+   - 항목 버튼은 components/timelapseButton.module.css */
+
+.empty {
+  padding: var(--space-24) var(--space-12);
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  line-height: var(--leading-relaxed);
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-xl);
+}
+
+.error {
+  color: var(--color-danger-text);
+}
+
+.boardSection {
+  margin-bottom: var(--space-14);
+}
+
+.otherBoardTitle {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-body);
+  margin-bottom: var(--space-5);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-7);
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--space-9);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.cardIcon {
+  font-size: var(--text-4xl);
+}
+
+.cardTitle {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.cardMeta {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.cardActions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-4);
+}

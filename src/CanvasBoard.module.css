@@ -1,0 +1,15 @@
+/* 캔버스 보드 레이아웃
+   (컨트롤 버튼 스타일은 components/CanvasViewportControls.module.css) */
+
+.mainRow {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.area {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
