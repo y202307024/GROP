@@ -5,7 +5,8 @@ import SignUp from './pages/SignUp'
 import MainPage from './pages/MainPage'
 import CreateRoom from './pages/CreateRoom'
 import Room from './pages/Room'
-import Profile from './pages/Profile'
+import GroupProfile from './pages/GroupProfile'
+import DefaultProfile from './pages/DefaultProfile'
 import SetupProfile from './pages/SetupProfile';
 import GroupPage from './pages/GroupPage'
 import GroupSettings from './pages/GroupSettings'
@@ -26,7 +27,8 @@ export default function App() {
         <Route path="/main" element={<MainPage />} />
         <Route path="/create" element={<CreateRoom />} />
         <Route path="/room/:id" element={<Room />} />
-        <Route path="/profile" element={<Profile />} />
+        <Route path="/profile" element={<DefaultProfile />} />
+        <Route path="/group/:groupId/profile" element={<GroupProfile />} />
         <Route path="/setup-profile" element={<SetupProfile />} />
         <Route path="/group/:id" element={<GroupPage />} />
         <Route path="/group/:id/settings" element={<GroupSettings />} />
