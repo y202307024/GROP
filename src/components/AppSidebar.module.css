@@ -1,0 +1,167 @@
+/* 좌측 고정 사이드바 — AppSidebar.tsx 전용 */
+
+.sidebar {
+  width: var(--sidebar-width);
+  background: var(--color-dark-bg);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  height: 100vh;
+}
+
+/* ── 로고 ── */
+.logo {
+  padding: var(--space-9) var(--space-8);
+  border-bottom: 1px solid var(--color-dark-border);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.logoIcon {
+  width: 30px;
+  height: 30px;
+  background: var(--color-primary);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-surface);
+  font-weight: var(--weight-bold);
+  font-size: var(--text-md);
+}
+
+.logoText {
+  color: var(--color-surface);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-lg);
+}
+
+/* ── 메뉴 ── */
+.menu {
+  padding: var(--space-6) var(--space-4);
+  flex: 1;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  margin-bottom: var(--space-1);
+  font-size: var(--text-base);
+  color: var(--color-dark-text-faint);
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.menuItem:hover {
+  background: var(--color-dark-border);
+  color: var(--color-surface);
+}
+
+.menuItemActive {
+  background: var(--color-dark-border);
+  color: var(--color-surface);
+}
+
+.menuItemLabel {
+  flex: 1;
+  text-align: left;
+}
+
+/* 아직 화면이 없는 메뉴 — 고장이 아니라 미구현임을 알립니다 */
+.menuItem:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.menuItem:disabled:hover {
+  background: transparent;
+  color: var(--color-dark-text-faint);
+}
+
+.comingSoon {
+  font-size: var(--text-2xs);
+  padding: 1px var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--color-dark-surface-3);
+  color: var(--color-dark-text-muted);
+  flex-shrink: 0;
+}
+
+/* ── 하단 프로필 ── */
+.profile {
+  border-top: 1px solid var(--color-dark-border);
+  padding: var(--space-6) var(--space-5);
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  cursor: pointer;
+}
+
+.avatar {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.avatarCircle {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xl);
+}
+
+.onlineDot {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-online);
+  border: 2px solid var(--color-dark-bg);
+}
+
+.profileInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.profileName {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profileStatus {
+  font-size: var(--text-xs);
+  color: var(--color-dark-text-faint);
+}
+
+.logoutBtn {
+  background: transparent;
+  border: none;
+  color: var(--color-dark-text-faint);
+  cursor: pointer;
+  font-size: var(--text-xl);
+  padding: var(--space-2);
+  border-radius: var(--radius-xs);
+}
+
+.logoutBtn:hover {
+  background: var(--color-dark-surface-3);
+  color: var(--color-surface);
+}

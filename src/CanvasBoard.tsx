@@ -1,0 +1,2153 @@
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
+import { supabase } from './services/supabaseClient';
+import ExcalidrawToolbar, { toolShortcutMap, type ExcalidrawTool } from './components/ExcalidrawToolbar';
+// 타임랩스 사이드 패널 컴포넌트 import (현재 비활성화)
+import CanvasViewportControls from './components/CanvasViewportControls';
+import { drawShapeTool, drawStamp, drawText, type ShapeTool } from './canvasShapeUtils';
+import { explainBoardError } from './boardErrors';
+import { dedupeBoardsById, getBoardOptionLabel } from './timelapseApi';
+// 타임랩스 사이드 패널 CSS import (현재 비활성화)
+import cb from './CanvasBoard.module.css';
+import { RoomEvent } from 'livekit-client';
+import { useLocalParticipant, useRoomContext } from '@livekit/components-react';
+
+const MEETING_CHAT_TOPIC = 'meeting-chat';
+const MEETING_BOARD_TOPIC = 'meeting-board';
+
+type MeetingChatMessage = {
+  id: string;
+  from: string;
+  name: string;
+  text: string;
+  ts: number;
+};
+
+type MeetingBoardMessage = {
+  type: 'board:selected';
+  boardId: string;
+  title?: string;
+  from: string;
+};
+
+function encodeMeetingChatMessage(msg: MeetingChatMessage): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+function decodeMeetingChatMessage(payload: Uint8Array): MeetingChatMessage | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(payload));
+    if (parsed && typeof parsed.text === 'string') return parsed as MeetingChatMessage;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function encodeMeetingBoardMessage(msg: MeetingBoardMessage): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+function decodeMeetingBoardMessage(payload: Uint8Array): MeetingBoardMessage | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(payload));
+    if (parsed && parsed.type === 'board:selected' && typeof parsed.boardId === 'string') {
+      return parsed as MeetingBoardMessage;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeMeetingBoardMetadata(metadata?: string): MeetingBoardMessage | null {
+  if (!metadata) return null;
+  try {
+    const parsed = JSON.parse(metadata);
+    if (parsed && parsed.type === 'board:selected' && typeof parsed.boardId === 'string') {
+      return parsed as MeetingBoardMessage;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function formatChatTime(ts: number) {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// 회의방 안에서만 보이는 채팅 패널입니다.
+// 이 컴포넌트는 같은 회의방에 있는 사람들끼리 텍스트 메시지를 주고받게 해줍니다.
+// LiveKit 데이터 채널을 이용해서 다른 참가자에게 메시지를 보내고, 받은 메시지를 화면에 표시합니다.
+function MeetingChatPanel({ onClose }: { onClose: () => void }) {
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
+  const [draft, setDraft] = useState('');
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handler = (payload: Uint8Array, _participant?: unknown, _kind?: unknown, topic?: string) => {
+      if (topic && topic !== MEETING_CHAT_TOPIC) return;
+      const msg = decodeMeetingChatMessage(payload);
+      if (!msg) return;
+      setMessages((prev) => [...prev, msg].slice(-300));
+    };
+    room.on(RoomEvent.DataReceived, handler);
+    return () => { room.off(RoomEvent.DataReceived, handler); };
+  }, [room]);
+
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages]);
+
+  const sendMessage = () => {
+    const text = draft.trim();
+    if (!text) return;
+
+    const msg: MeetingChatMessage = {
+      id: crypto.randomUUID(),
+      from: localParticipant.identity,
+      name: localParticipant.name?.trim() || '익명',
+      text,
+      ts: Date.now(),
+    };
+
+    setMessages((prev) => [...prev, msg].slice(-300));
+    void localParticipant.publishData(encodeMeetingChatMessage(msg), {
+      reliable: true,
+      topic: MEETING_CHAT_TOPIC,
+    });
+    setDraft('');
+  };
+
+  return (
+    <div
+      style={{
+        width: 260,
+        flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        background: '#2b2d31',
+        borderLeft: '1px solid #1e1f22',
+        minHeight: 0,
+      }}
+    >
+      <div
+        style={{
+          flexShrink: 0,
+          padding: '10px 12px',
+          borderBottom: '1px solid #1e1f22',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#dbdee1' }}>💬 채팅</span>
+        <button
+          type="button"
+          onClick={onClose}
+          title="채팅 닫기"
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: '#949ba4',
+            cursor: 'pointer',
+            fontSize: 13,
+          }}
+        >
+          닫기 ✕
+        </button>
+      </div>
+
+      <div
+        ref={listRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          padding: '10px 12px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
+        {messages.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#6b7280', textAlign: 'center', marginTop: 20 }}>
+            아직 채팅이 없어요.
+          </div>
+        ) : (
+          messages.map((m) => (
+            <div key={m.id}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#f2f3f5' }}>{m.name}</span>
+                <span style={{ fontSize: 10, color: '#6b7280' }}>{formatChatTime(m.ts)}</span>
+              </div>
+              <div style={{ fontSize: 13, color: '#dbdee1', wordBreak: 'break-word', marginTop: 2 }}>
+                {m.text}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div
+        style={{
+          flexShrink: 0,
+          display: 'flex',
+          gap: 6,
+          padding: 10,
+          borderTop: '1px solid #1e1f22',
+        }}
+      >
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              sendMessage();
+            }
+          }}
+          placeholder="메시지 입력..."
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: '8px 10px',
+            border: '1px solid #1e1f22',
+            borderRadius: 6,
+            background: '#1e1f22',
+            color: '#dbdee1',
+            fontSize: 13,
+          }}
+        />
+        <button
+          type="button"
+          onClick={sendMessage}
+          style={{
+            padding: '8px 12px',
+            border: 'none',
+            borderRadius: 6,
+            background: '#5865f2',
+            color: 'white',
+            cursor: 'pointer',
+            fontSize: 12,
+            flexShrink: 0,
+          }}
+        >
+          전송
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3] as const;
+const DEFAULT_ZOOM_INDEX = 3;
+const MAX_HISTORY = 50;
+const STROKE_CHUNK_MS = 40;
+const MIN_EVENT_GAP_MS = 1;
+
+type Tool = ExcalidrawTool;
+
+const GROUP_BOARD_TITLE_PREFIX = '__group__:';
+
+type Props = {
+  onBack?: () => void;
+  embedded?: boolean;
+  meetingMode?: boolean;
+  meetingHeaderExtra?: ReactNode;
+  groupId?: string;
+  groupName?: string;
+  initialBoardId?: string;
+  initialTimelapseSaveId?: string;
+  autoPlayTimelapse?: boolean;
+};
+
+export type CanvasBoardHandle = {
+  clearBoard: () => void;
+  getCanvasElement: () => HTMLCanvasElement | null;
+};
+
+type Point = { x: number; y: number };
+
+type Board = { id: string; title: string; created_at: string };
+
+type StrokeTool = 'pen' | 'eraser';
+type EventType =
+  | 'stroke.begin'
+  | 'stroke.append'
+  | 'stroke.end'
+  | 'board.clear'
+  | 'shape.add'
+  | 'image.add'
+  | 'text.add'
+  | 'stamp.add';
+
+const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024;
+
+type BoardEventRow = {
+  id: string;
+  board_id: string;
+  seq: number;
+  ts: string;
+  actor_id: string;
+  type: EventType;
+  payload: unknown;
+};
+
+type StrokeBeginPayload = {
+  strokeId: string;
+  tool: StrokeTool;
+  color: string;
+  size: number;
+  point: Point;
+};
+
+type StrokeAppendPayload = {
+  strokeId: string;
+  points: Point[];
+};
+
+type StrokeEndPayload = {
+  strokeId: string;
+};
+
+type ShapeAddPayload = {
+  tool: ShapeTool;
+  from: Point;
+  to: Point;
+  color: string;
+  size: number;
+};
+
+type ImageAddPayload = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+};
+
+type TextAddPayload = {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  size: number;
+};
+
+type StampAddPayload = {
+  x: number;
+  y: number;
+  kind: 'rect' | 'circle' | 'triangle';
+  color: string;
+  size: number;
+};
+
+function isHistoryCommitEvent(type: EventType): boolean {
+  return (
+    type === 'stroke.end' ||
+    type === 'shape.add' ||
+    type === 'image.add' ||
+    type === 'text.add' ||
+    type === 'stamp.add' ||
+    type === 'board.clear'
+  );
+}
+
+// 캔버스 메인 컴포넌트입니다.
+// 이 파일은 사용자가 그림을 그리거나, 보드를 선택하거나, 회의방에서 다른 사람과 같은 캔버스를 공유하는 기능을 모두 담당합니다.
+// 즉, 화면 UI + 그리기 로직 + 데이터 저장/불러오기 + 회의방 동기화까지 한 파일에서 처리합니다.
+const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
+  onBack,
+  embedded = false,
+  meetingMode = false,
+  meetingHeaderExtra,
+  groupId,
+  groupName,
+  initialBoardId,
+  initialTimelapseSaveId,
+  autoPlayTimelapse = false,
+}, ref) {
+  const isEmbedded = embedded || meetingMode;
+  const isGroupCanvas = Boolean(groupId);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasAreaRef = useRef<HTMLDivElement | null>(null);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const drawingRef = useRef(false);
+  const lastPointRef = useRef<Point | null>(null);
+  const localStrokeIdRef = useRef<string | null>(null);
+  const strokeStartPointRef = useRef<Point | null>(null);
+  const pendingChunkRef = useRef<Point[]>([]);
+  const chunkTimerRef = useRef<number | null>(null);
+  const strokeWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  const remoteLastPointByStrokeRef = useRef<Map<string, Point>>(new Map());
+  const remotePendingAppendsRef = useRef<Map<string, Point[][]>>(new Map());
+  const remotePendingEndsRef = useRef<Set<string>>(new Set());
+  const replayTimerRef = useRef<number | null>(null);
+  const isReplayingRef = useRef(false);
+  const strokeStyleByIdRef = useRef<Map<string, { tool: StrokeTool; color: string; size: number }>>(new Map());
+  const replayRafRef = useRef<number | null>(null);
+  const lastReplayUiUpdateMsRef = useRef<number>(0);
+  const replayEventsRef = useRef<BoardEventRow[]>([]);
+  const replayAdjustedMsRef = useRef<number[]>([]);
+  const replayIndexRef = useRef(0);
+  const replayBoardIdRef = useRef<string>('');
+  const shapeStartRef = useRef<Point | null>(null);
+  const snapshotRef = useRef<ImageData | null>(null);
+  const panningRef = useRef(false);
+  const panAnchorRef = useRef<{ x: number; y: number } | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingImagePointRef = useRef<Point | null>(null);
+  const pendingStampRef = useRef<'rect' | 'circle' | 'triangle' | null>(null);
+  const actorIdRef = useRef('unknown');
+  const lastInsertErrorAlertMsRef = useRef(0);
+  const deepLinkHandledRef = useRef(false);
+  const historyRef = useRef<ImageData[]>([]);
+  const historyIndexRef = useRef(-1);
+  const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const lastSavedTitleRef = useRef<Record<string, string>>({});
+  const replaySpeedRef = useRef(10);
+  const compressGapsRef = useRef(true);
+  const maxGapMsRef = useRef(200);
+  const replayLastTickMsRef = useRef(0);
+  const replayLastVirtualMsRef = useRef(0);
+  const replayClockRef = useRef({ anchorVirtualMs: 0, anchorWallMs: 0, speed: 10 });
+
+  const [tool, setTool] = useState<Tool>('pen');
+  const [locked, setLocked] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [pendingStampKind, setPendingStampKind] = useState<'rect' | 'circle' | 'triangle' | null>(null);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [zoomIndex, setZoomIndex] = useState(DEFAULT_ZOOM_INDEX);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const [spacePressed, setSpacePressed] = useState(false);
+  const [color, setColor] = useState('#111827');
+  const [size, setSize] = useState(6);
+  const [chatOpen, setChatOpen] = useState(false);
+
+  const [actorId, setActorId] = useState<string>('unknown');
+
+  // 사용자 ID를 초기화하는 영역입니다.
+  // 이 값은 나중에 어떤 사람이 그린 선인지 구분할 때 사용됩니다.
+  // 로그인되어 있으면 계정 ID를 쓰고, 없으면 브라우저에 저장된 값이나 임시 ID를 사용합니다.
+  useEffect(() => {
+    actorIdRef.current = actorId;
+  }, [actorId]);
+
+  const [boards, setBoards] = useState<Board[]>([]);
+  const [boardId, setBoardId] = useState<string>(initialBoardId ?? '');
+  const [boardTitle, setBoardTitle] = useState<string>('새 보드');
+  const [isLoadingBoards, setIsLoadingBoards] = useState(false);
+  const [, setIsLoadingBoard] = useState(false);
+
+  // 아래부터는 회의방 전용 상태와 보드 선택 로직입니다.
+  // 회의 모드일 때는 첫 참가자에게 새 보드를 만들지, 기존 보드를 불러올지 선택하게 합니다.
+  // 이 과정은 같은 회의방의 다른 사람들과 보드 상태를 맞추기 위해 필요합니다.
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const [showInitChoice, setShowInitChoice] = useState(false);
+  const initChoiceHandledRef = useRef(false);
+  const latestBoardSelectionRef = useRef<MeetingBoardMessage | null>(null);
+
+  const publishBoardSelection = (payload: MeetingBoardMessage) => {
+    if (!localParticipant) return;
+    void localParticipant.publishData(encodeMeetingBoardMessage(payload), {
+      reliable: true,
+      topic: MEETING_BOARD_TOPIC,
+    });
+    void localParticipant.setMetadata(JSON.stringify(payload)).catch((err) => {
+      console.warn('LiveKit metadata update failed:', err);
+    });
+  };
+
+  // 회의방 접속 상태를 확인해서, 첫 참가자일 때만 초기 선택창을 띄웁니다.
+  // 방에 아무도 없던 시점에 첫 사람이 들어오면 이 모달이 보이고,
+  // 이후 참가자들은 이미 선택된 보드를 따라가게 됩니다.
+  useEffect(() => {
+    if (!room) return;
+
+    const ensureInitChoice = () => {
+      if (!meetingMode || room.state !== 'connected') return;
+      if (room.remoteParticipants.size !== 0 || initChoiceHandledRef.current) return;
+      setShowInitChoice(true);
+    };
+
+    if (room.state !== 'connected') {
+      initChoiceHandledRef.current = false;
+    }
+
+    ensureInitChoice();
+
+    const onStateChange = () => {
+      ensureInitChoice();
+    };
+
+    room.on(RoomEvent.ConnectionStateChanged, onStateChange);
+    return () => {
+      room.off(RoomEvent.ConnectionStateChanged, onStateChange);
+    };
+  }, [room, room?.state, room?.remoteParticipants.size, meetingMode]);
+
+  useEffect(() => {
+    if (!showInitChoice) return;
+    clearAllLocal();
+    setBoardId('');
+    setBoardTitle('새 보드');
+  }, [showInitChoice]);
+
+  // LiveKit으로 보드 선택 정보를 주고받는 영역입니다.
+  // 다른 참가자에게 현재 선택된 보드를 알려주고, 누가 새로 들어오거나 다시 들어와도
+  // 같은 보드를 보도록 상태를 맞춰줍니다.
+  useEffect(() => {
+    if (!room) return;
+    if (!meetingMode) return;
+
+    const applyBoardSelection = (msg: MeetingBoardMessage) => {
+      if (!msg.boardId) return;
+      setShowInitChoice(false);
+      initChoiceHandledRef.current = true;
+      setBoardId(msg.boardId);
+      if (msg.title) setBoardTitle(msg.title);
+      latestBoardSelectionRef.current = msg;
+      publishBoardSelection(msg);
+    };
+
+    const handler = (payload: Uint8Array, participant?: unknown, _kind?: unknown, topic?: string) => {
+      if (topic && topic !== MEETING_BOARD_TOPIC) return;
+      const msg = decodeMeetingBoardMessage(payload);
+      if (!msg) return;
+      if (participant && 'identity' in (participant as any) && (participant as any).identity === localParticipant.identity) {
+        return;
+      }
+      applyBoardSelection(msg);
+    };
+
+    const participantMetadataHandler = (metadata: string | undefined, participant?: unknown) => {
+      if (!participant || !room) return;
+      if (!('identity' in (participant as any))) return;
+      const remote = participant as { identity: string; metadata?: string };
+      if (remote.identity === localParticipant.identity) return;
+      const msg = decodeMeetingBoardMetadata(metadata);
+      if (!msg) return;
+      applyBoardSelection(msg);
+    };
+
+    const syncFromExistingParticipants = () => {
+      for (const participant of room.remoteParticipants.values()) {
+        const msg = decodeMeetingBoardMetadata(participant.metadata);
+        if (msg) {
+          applyBoardSelection(msg);
+          return;
+        }
+      }
+    };
+
+    const publishCurrentBoardSelection = () => {
+      const payload = latestBoardSelectionRef.current;
+      if (payload) publishBoardSelection(payload);
+    };
+
+    const onParticipantConnected = (participant: unknown) => {
+      if (!localParticipant) return;
+      if (!participant || !('identity' in (participant as any))) return;
+      const remote = participant as { identity: string };
+      if (remote.identity === localParticipant.identity) return;
+      publishCurrentBoardSelection();
+    };
+
+    syncFromExistingParticipants();
+    room.on(RoomEvent.DataReceived, handler);
+    room.on(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    return () => {
+      room.off(RoomEvent.DataReceived, handler);
+      room.off(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+    };
+  }, [room, meetingMode, localParticipant.identity]);
+
+  // 초기 선택창에서 '새 보드 생성'을 눌렀을 때 실행되는 함수입니다.
+  // 새 보드를 데이터베이스에 만들고, 그 보드 ID를 현재 캔버스에 연결합니다.
+  const handleCreateNewBoardChoice = async () => {
+    setShowInitChoice(false);
+    initChoiceHandledRef.current = true;
+    try {
+      const title = isGroupCanvas ? `${GROUP_BOARD_TITLE_PREFIX}${groupId ?? ''}${Date.now()}` : '새 보드';
+      const { data, error } = await supabase.from('boards').insert([{ title }]).select().limit(1).single();
+      if (error) throw error;
+      if (data && data.id) {
+        const board = data as Board;
+        const title = board.title ?? '새 보드';
+        setBoards((prev) => [board, ...prev]);
+        setBoardId(board.id);
+        setBoardTitle(title);
+        if (localParticipant) {
+          const payload: MeetingBoardMessage = {
+            type: 'board:selected',
+            boardId: board.id,
+            title,
+            from: localParticipant.identity,
+          };
+          latestBoardSelectionRef.current = payload;
+          publishBoardSelection(payload);
+        }
+      }
+    } catch (e) {
+      console.error('failed to create board on choice', e);
+      // 대체로 기존 createBoard 흐름을 호출합니다. 이때 인증 요청이 나올 수 있습니다.
+      try {
+        await createBoard();
+      } catch {
+        // 무시합니다.
+      }
+    }
+  };
+
+  // 초기 선택창에서 '기존 보드 불러오기'를 눌렀을 때 실행되는 함수입니다.
+  // 이미 저장된 보드 중 가장 최근 보드를 찾아서 현재 캔버스에 연결합니다.
+  const handleUseExistingBoardChoice = async () => {
+    setShowInitChoice(false);
+    initChoiceHandledRef.current = true;
+    try {
+      const { data, error } = await supabase.from('boards').select('*').order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (!error && data && data.id) {
+        const board = data as Board;
+        const title = board.title ?? '보드';
+        setBoardId(board.id);
+        setBoardTitle(title);
+        if (localParticipant) {
+          const payload: MeetingBoardMessage = {
+            type: 'board:selected',
+            boardId: board.id,
+            title,
+            from: localParticipant.identity,
+          };
+          latestBoardSelectionRef.current = payload;
+          publishBoardSelection(payload);
+        }
+      }
+    } catch (e) {
+      console.error('failed to load existing board on choice', e);
+    }
+  };
+
+  const [, setIsReplaying] = useState(false);
+  const [replaySpeed] = useState(10);
+  const [compressGaps] = useState(true);
+  const [maxGapMs] = useState(200);
+  // const [timelapseSaveDraft, setTimelapseSaveDraft] = useState('');
+  // const [isSavingTimelapse, setIsSavingTimelapse] = useState(false);
+  const [replaySession, setReplaySession] = useState<{
+    total: number;
+    index: number;
+    startTs?: string;
+    endTs?: string;
+    durationMs: number;
+  } | null>(null);
+
+  const effectiveStrokeStyle = useMemo(() => {
+    return tool === 'eraser' ? '#ffffff' : color;
+  }, [tool, color]);
+
+  const activeTool = spacePressed ? 'hand' : tool;
+  const zoomScale = ZOOM_STEPS[zoomIndex];
+  const zoomPercent = Math.round(zoomScale * 100);
+  const isShapeTool = (t: Tool): t is ShapeTool =>
+    t === 'rectangle' || t === 'diamond' || t === 'ellipse' || t === 'arrow' || t === 'line';
+
+  const pickTool = (next: ExcalidrawTool) => {
+    if (next !== 'hand' && tool === 'hand') {
+      setPanOffset({ x: 0, y: 0 });
+    }
+    setTool(next);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setSpacePressed(true);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undoHistory();
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault();
+        redoHistory();
+      }
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const mapped = toolShortcutMap[e.key];
+      if (mapped) pickTool(mapped);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') setSpacePressed(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
+  const ensureContext = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctxRef.current = ctx;
+    return ctx;
+  };
+
+  const resizeCanvasIfNeeded = () => {
+    const canvas = canvasRef.current;
+    const area = canvasAreaRef.current;
+    if (!canvas || !area) return;
+
+    const rect = area.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const nextWidth = Math.max(1, Math.floor(rect.width));
+    const nextHeight = Math.max(1, Math.floor(rect.height));
+
+    const wantW = Math.floor(nextWidth * dpr);
+    const wantH = Math.floor(nextHeight * dpr);
+
+    if (canvas.width === wantW && canvas.height === wantH) return;
+
+    // 리사이즈 시 기존 그림을 유지합니다.
+    const prev = document.createElement('canvas');
+    prev.width = canvas.width;
+    prev.height = canvas.height;
+    const prevCtx = prev.getContext('2d');
+    if (prevCtx) prevCtx.drawImage(canvas, 0, 0);
+
+    canvas.width = wantW;
+    canvas.height = wantH;
+    canvas.style.width = `${nextWidth}px`;
+    canvas.style.height = `${nextHeight}px`;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctxRef.current = ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+
+    // 흰 배경을 채워서 지우개가 정상 동작하고 내보내기 결과가 투명하지 않게 합니다.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, nextWidth, nextHeight);
+
+    // 기존 내용을 최대한 복원합니다.
+    if (prev.width > 0 && prev.height > 0) {
+      const prevCssW = prev.width / dpr;
+      const prevCssH = prev.height / dpr;
+      ctx.drawImage(prev, 0, 0, prev.width, prev.height, 0, 0, prevCssW, prevCssH);
+    }
+
+    initHistory();
+  };
+
+  const captureCanvasState = (): ImageData | null => {
+    const canvas = canvasRef.current;
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!canvas || !ctx || canvas.width === 0 || canvas.height === 0) return null;
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  };
+
+  const applyCanvasState = (data: ImageData) => {
+    const canvas = canvasRef.current;
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!canvas || !ctx) return;
+    ctx.putImageData(data, 0, 0);
+  };
+
+  const syncHistoryUi = () => {
+    setCanUndo(historyIndexRef.current > 0);
+    setCanRedo(historyIndexRef.current >= 0 && historyIndexRef.current < historyRef.current.length - 1);
+  };
+
+  const resetHistory = () => {
+    historyRef.current = [];
+    historyIndexRef.current = -1;
+    syncHistoryUi();
+  };
+
+  const initHistory = () => {
+    const snap = captureCanvasState();
+    if (!snap) {
+      resetHistory();
+      return;
+    }
+    historyRef.current = [snap];
+    historyIndexRef.current = 0;
+    syncHistoryUi();
+  };
+
+  const commitHistory = () => {
+    const snap = captureCanvasState();
+    if (!snap) return;
+
+    const idx = historyIndexRef.current;
+    if (idx >= 0) {
+      historyRef.current = historyRef.current.slice(0, idx + 1);
+    }
+
+    historyRef.current.push(snap);
+    if (historyRef.current.length > MAX_HISTORY) {
+      historyRef.current.shift();
+    } else {
+      historyIndexRef.current += 1;
+    }
+    syncHistoryUi();
+  };
+
+  const undoHistory = () => {
+    if (historyIndexRef.current <= 0) return;
+    historyIndexRef.current -= 1;
+    const state = historyRef.current[historyIndexRef.current];
+    if (state) applyCanvasState(state);
+    syncHistoryUi();
+  };
+
+  const redoHistory = () => {
+    if (historyIndexRef.current >= historyRef.current.length - 1) return;
+    historyIndexRef.current += 1;
+    const state = historyRef.current[historyIndexRef.current];
+    if (state) applyCanvasState(state);
+    syncHistoryUi();
+  };
+
+  const zoomOut = () => {
+    setZoomIndex((i) => Math.max(0, i - 1));
+  };
+
+  const zoomIn = () => {
+    setZoomIndex((i) => Math.min(ZOOM_STEPS.length - 1, i + 1));
+  };
+
+  useEffect(() => {
+    const runResize = () => {
+      requestAnimationFrame(() => resizeCanvasIfNeeded());
+    };
+
+    runResize();
+
+    const onResize = () => runResize();
+    window.addEventListener('resize', onResize);
+
+    const area = canvasAreaRef.current;
+    const observer = area ? new ResizeObserver(() => runResize()) : null;
+    if (area && observer) observer.observe(area);
+
+    return () => {
+      window.removeEventListener('resize', onResize);
+      observer?.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    requestAnimationFrame(() => resizeCanvasIfNeeded());
+  }, [replaySession]);
+
+  useEffect(() => {
+    // actorId: 로그인한 사용자가 있으면 user.id를 사용하고, 없으면 브라우저 세션 ID를 사용합니다.
+    let isMounted = true;
+    supabase.auth
+      .getUser()
+      .then(({ data }) => {
+        if (!isMounted) return;
+        const uid = data.user?.id;
+        if (uid) {
+          setActorId(uid);
+          return;
+        }
+        const key = 'wb_actor_id';
+        const existing = localStorage.getItem(key);
+        if (existing) {
+          setActorId(existing);
+        } else {
+          const rnd = crypto.randomUUID();
+          localStorage.setItem(key, rnd);
+          setActorId(rnd);
+        }
+      })
+      .catch(() => {
+        // ignore
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const formatBoardTitle = (title: string) => {
+    if (title.startsWith(GROUP_BOARD_TITLE_PREFIX)) {
+      return `${groupName || '그룹'} 캔버스`;
+    }
+    return title;
+  };
+
+  const fetchGroupBoards = async (targetGroupId: string): Promise<Board[]> => {
+    const { data: byGroupId, error: groupColError } = await supabase
+      .from('boards')
+      .select('id,title,created_at')
+      .eq('group_id', targetGroupId)
+      .order('created_at', { ascending: false });
+
+    if (!groupColError && byGroupId?.length) {
+      return byGroupId as Board[];
+    }
+
+    const { data: byTitle } = await supabase
+      .from('boards')
+      .select('id,title,created_at')
+      .eq('title', `${GROUP_BOARD_TITLE_PREFIX}${targetGroupId}`)
+      .order('created_at', { ascending: false });
+
+    return (byTitle as Board[] | null) ?? [];
+  };
+
+  const loadGroupBoards = async () => {
+    if (!groupId) return;
+
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData.user) {
+      alert('보드를 사용하려면 로그인이 필요합니다.');
+      return;
+    }
+
+    setIsLoadingBoards(true);
+    let list = await fetchGroupBoards(groupId);
+
+    if (list.length === 0) {
+      const defaultTitle = `${groupName || '그룹'} 캔버스`;
+      const insertPayload: { title: string; group_id?: string } = {
+        title: defaultTitle,
+        group_id: groupId,
+      };
+      let { data, error } = await supabase
+        .from('boards')
+        .insert(insertPayload)
+        .select('id,title,created_at')
+        .single();
+
+      if (error?.message?.includes('group_id')) {
+        ({ data, error } = await supabase
+          .from('boards')
+          .insert({ title: `${GROUP_BOARD_TITLE_PREFIX}${groupId}` })
+          .select('id,title,created_at')
+          .single());
+      }
+
+      if (error || !data) {
+        setIsLoadingBoards(false);
+        alert(`그룹 캔버스 생성 실패: ${explainBoardError(error?.message ?? 'unknown')}`);
+        return;
+      }
+      list = [data as Board];
+    }
+
+    const deduped = dedupeBoardsById(list);
+    setBoards(deduped);
+    const preferredId = boardId || initialBoardId;
+    const selected = deduped.find((b) => b.id === preferredId) ?? deduped[0];
+    if (selected) {
+      const title = formatBoardTitle(selected.title);
+      setBoardId(selected.id);
+      setBoardTitle(title);
+      lastSavedTitleRef.current[selected.id] = title;
+    }
+    setIsLoadingBoards(false);
+  };
+
+  const loadBoards = async () => {
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData.user) {
+      alert('보드 목록을 불러오려면 로그인이 필요합니다.');
+      return;
+    }
+
+    setIsLoadingBoards(true);
+    const { data, error } = await supabase.from('boards').select('id,title,created_at').order('created_at', { ascending: false });
+    setIsLoadingBoards(false);
+    if (error) {
+      console.error('loadBoards error:', error);
+      alert(`보드 목록 로드 실패: ${explainBoardError(error.message)}`);
+      return;
+    }
+    const list = dedupeBoardsById((data ?? []) as Board[]);
+    setBoards(list);
+    const preferredId = boardId || initialBoardId;
+    if (preferredId) {
+      const selected = list.find((b) => b.id === preferredId);
+      if (selected) {
+        setBoardId(selected.id);
+        setBoardTitle(selected.title);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (isGroupCanvas) {
+      void loadGroupBoards();
+    } else {
+      loadBoards();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupId, groupName]);
+
+  const createBoard = async () => {
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData.user) {
+      alert('보드를 만들려면 로그인이 필요합니다.\n메인에서 로그인한 뒤 캔버스로 다시 들어와 주세요.');
+      return;
+    }
+
+    const title = boardTitle.trim() || (isGroupCanvas ? `${groupName || '그룹'} 보드` : '새 보드');
+    const insertPayload: { title: string; group_id?: string } = { title };
+    if (isGroupCanvas && groupId) insertPayload.group_id = groupId;
+
+    let { data, error } = await supabase.from('boards').insert(insertPayload).select('id,title,created_at').single();
+    if (error?.message?.includes('group_id') && isGroupCanvas && groupId) {
+      ({ data, error } = await supabase
+        .from('boards')
+        .insert({ title: `${GROUP_BOARD_TITLE_PREFIX}${groupId}-${Date.now()}` })
+        .select('id,title,created_at')
+        .single());
+    }
+
+    if (error) {
+      alert(`보드 생성 실패: ${explainBoardError(error.message)}`);
+      return;
+    }
+    const b = data as Board;
+    const savedTitle = formatBoardTitle(b.title);
+    setBoards((prev) => [b, ...prev]);
+    setBoardId(b.id);
+    setBoardTitle(savedTitle);
+    lastSavedTitleRef.current[b.id] = savedTitle;
+  };
+
+  const saveBoardTitle = async () => {
+    if (!boardId) return;
+    const title = boardTitle.trim() || '새 보드';
+    if (lastSavedTitleRef.current[boardId] === title) return;
+
+    const { error } = await supabase.from('boards').update({ title }).eq('id', boardId);
+    if (error) {
+      alert(`보드 이름 저장 실패: ${explainBoardError(error.message)}`);
+      return;
+    }
+    lastSavedTitleRef.current[boardId] = title;
+    setBoards((prev) => prev.map((b) => (b.id === boardId ? { ...b, title } : b)));
+  };
+
+  const refreshBoards = () => {
+    if (isGroupCanvas) void loadGroupBoards();
+    else void loadBoards();
+  };
+
+  const applyStrokeSegment = (p1: Point, p2: Point, strokeTool: StrokeTool, strokeColor: string, strokeSize: number) => {
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx) return;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = strokeTool === 'eraser' ? '#ffffff' : strokeColor;
+    ctx.lineWidth = strokeSize;
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+  };
+
+  const applyStrokeDot = (p: Point, strokeTool: StrokeTool, strokeColor: string, strokeSize: number) => {
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx) return;
+    ctx.fillStyle = strokeTool === 'eraser' ? '#ffffff' : strokeColor;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, Math.max(strokeSize / 2, 1), 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  const applyStrokeAppendPoints = (strokeId: string, points: Point[]) => {
+    const last = remoteLastPointByStrokeRef.current.get(strokeId);
+    if (!last) return false;
+    const style = strokeStyleByIdRef.current.get(strokeId);
+    if (!style) return false;
+    for (const next of points) {
+      if (last.x === next.x && last.y === next.y) {
+        applyStrokeDot(next, style.tool, style.color, style.size);
+      } else {
+        applyStrokeSegment(last, next, style.tool, style.color, style.size);
+      }
+      last.x = next.x;
+      last.y = next.y;
+    }
+    return true;
+  };
+
+  const flushRemotePendingStroke = (strokeId: string) => {
+    const pending = remotePendingAppendsRef.current.get(strokeId);
+    if (pending) {
+      remotePendingAppendsRef.current.delete(strokeId);
+      for (const points of pending) {
+        applyStrokeAppendPoints(strokeId, points);
+      }
+    }
+    if (remotePendingEndsRef.current.has(strokeId)) {
+      remotePendingEndsRef.current.delete(strokeId);
+      remoteLastPointByStrokeRef.current.delete(strokeId);
+      strokeStyleByIdRef.current.delete(strokeId);
+    }
+  };
+
+  const clearAllLocal = () => {
+    const canvas = canvasRef.current;
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!canvas || !ctx) return;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+  };
+
+  const loadCachedImage = (dataUrl: string): Promise<HTMLImageElement> => {
+    const cached = imageCacheRef.current.get(dataUrl);
+    if (cached) return Promise.resolve(cached);
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        imageCacheRef.current.set(dataUrl, img);
+        resolve(img);
+      };
+      img.onerror = () => reject(new Error('이미지 로드 실패'));
+      img.src = dataUrl;
+    });
+  };
+
+  const drawImagePayload = async (ctx: CanvasRenderingContext2D, payload: ImageAddPayload) => {
+    const img = await loadCachedImage(payload.dataUrl);
+    ctx.drawImage(img, payload.x, payload.y, payload.width, payload.height);
+  };
+
+  const reportInsertError = (message: string) => {
+    console.warn('board_events insert failed:', message);
+    const now = Date.now();
+    if (now - lastInsertErrorAlertMsRef.current < 8000) return;
+    lastInsertErrorAlertMsRef.current = now;
+    alert(
+      `이벤트 저장 실패: ${message}\n\n그림은 이 기기에서 계속 그릴 수 있어요. 로그인 상태와 Supabase RLS(board_events, board_seq) 설정을 확인해 주세요.`,
+    );
+  };
+
+  const insertEvent = async (type: EventType, payload: unknown) => {
+    if (!boardId) return;
+    const { error } = await supabase.from('board_events').insert({
+      board_id: boardId,
+      actor_id: actorIdRef.current,
+      type,
+      payload,
+    });
+    if (error) reportInsertError(error.message);
+  };
+
+  const enqueueStrokeWrite = (type: EventType, payload: unknown): Promise<void> => {
+    const task = strokeWriteChainRef.current.then(() => insertEvent(type, payload));
+    strokeWriteChainRef.current = task.catch(() => {});
+    return task;
+  };
+
+  const flushChunk = async () => {
+    if (!localStrokeIdRef.current) return;
+    const points = pendingChunkRef.current;
+    if (points.length === 0) return;
+    pendingChunkRef.current = [];
+    await enqueueStrokeWrite('stroke.append', {
+      strokeId: localStrokeIdRef.current,
+      points,
+    } satisfies StrokeAppendPayload);
+  };
+
+  const scheduleChunkFlush = () => {
+    if (chunkTimerRef.current != null) return;
+    chunkTimerRef.current = window.setTimeout(async () => {
+      chunkTimerRef.current = null;
+      await flushChunk();
+    }, 40);
+  };
+
+  const stopReplay = () => {
+    if (replayTimerRef.current != null) {
+      window.clearTimeout(replayTimerRef.current);
+      replayTimerRef.current = null;
+    }
+    if (replayRafRef.current != null) {
+      cancelAnimationFrame(replayRafRef.current);
+      replayRafRef.current = null;
+    }
+    isReplayingRef.current = false;
+    setIsReplaying(false);
+  };
+
+  const getReplayVirtualMs = () => {
+    const clock = replayClockRef.current;
+    return clock.anchorVirtualMs + (performance.now() - clock.anchorWallMs) * clock.speed;
+  };
+
+  const armReplayClock = (virtualMs: number) => {
+    replayClockRef.current = {
+      anchorVirtualMs: virtualMs,
+      anchorWallMs: performance.now(),
+      speed: replaySpeedRef.current,
+    };
+    replayLastVirtualMsRef.current = virtualMs;
+    replayLastTickMsRef.current = performance.now();
+  };
+
+  const buildAdjustedMs = (events: BoardEventRow[]) => {
+    const adjustedMs: number[] = new Array(events.length);
+    adjustedMs[0] = 0;
+    const gapCompress = compressGapsRef.current;
+    const gapMax = maxGapMsRef.current;
+
+    for (let k = 1; k < events.length; k += 1) {
+      const prev = new Date(events[k - 1].ts).getTime();
+      const cur = new Date(events[k].ts).getTime();
+      let delta = Math.max(0, cur - prev);
+
+      // DB 타임스탬프가 같으면 delta=0 → 한 프레임에 몰림. stroke 간격을 추정해 보정.
+      if (delta === 0) {
+        const type = events[k].type;
+        if (type === 'stroke.append' || type === 'stroke.end') {
+          delta = STROKE_CHUNK_MS;
+        } else {
+          delta = MIN_EVENT_GAP_MS;
+        }
+      }
+
+      if (gapCompress) delta = Math.min(delta, Math.max(0, gapMax));
+      adjustedMs[k] = adjustedMs[k - 1] + delta;
+    }
+    return adjustedMs;
+  };
+
+  const primeEventStyle = (ev: BoardEventRow) => {
+    if (ev.type !== 'stroke.begin') return;
+    const p = ev.payload as StrokeBeginPayload;
+    strokeStyleByIdRef.current.set(p.strokeId, { tool: p.tool, color: p.color, size: p.size });
+  };
+
+  const clearReplaySession = () => {
+    stopReplay();
+    replayEventsRef.current = [];
+    replayAdjustedMsRef.current = [];
+    replayIndexRef.current = 0;
+    replayBoardIdRef.current = '';
+    setReplaySession(null);
+  };
+
+  const prepareReplaySession = async (targetBoardId: string, maxSeq?: number) => {
+    let query = supabase
+      .from('board_events')
+      .select('id,board_id,seq,ts,actor_id,type,payload')
+      .eq('board_id', targetBoardId)
+      .order('seq', { ascending: true });
+
+    if (maxSeq != null) {
+      query = query.lte('seq', maxSeq);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      alert(`타임랩스 로드 실패: ${error.message}`);
+      return false;
+    }
+
+    const events = (data ?? []) as BoardEventRow[];
+    if (events.length === 0) {
+      alert(maxSeq != null ? '저장된 카테고리에 재생할 기록이 없어요.' : '이 보드에는 아직 기록(이벤트)이 없어요. 먼저 한 번 그려보세요.');
+      return false;
+    }
+
+    const adjustedMs = buildAdjustedMs(events);
+    replayEventsRef.current = events;
+    replayAdjustedMsRef.current = adjustedMs;
+    replayIndexRef.current = 0;
+    replayBoardIdRef.current = targetBoardId;
+
+    setReplaySession({
+      total: events.length,
+      index: 0,
+      startTs: events[0].ts,
+      endTs: events[events.length - 1].ts,
+      durationMs: adjustedMs[adjustedMs.length - 1] ?? 0,
+    });
+
+    clearAllLocal();
+    remoteLastPointByStrokeRef.current = new Map();
+    strokeStyleByIdRef.current = new Map();
+    return true;
+  };
+
+  const seekReplay = async (index: number) => {
+    const events = replayEventsRef.current;
+    if (events.length === 0) return;
+
+    stopReplay();
+    const clamped = Math.max(0, Math.min(events.length, Math.floor(index)));
+
+    clearAllLocal();
+    remoteLastPointByStrokeRef.current = new Map();
+    strokeStyleByIdRef.current = new Map();
+
+    for (let k = 0; k < clamped; k += 1) {
+      primeEventStyle(events[k]);
+      await applyEvent(events[k]);
+    }
+
+    replayIndexRef.current = clamped;
+    setReplaySession((prev) => (prev ? { ...prev, index: clamped } : prev));
+  };
+
+  const startReplay = () => {
+    const events = replayEventsRef.current;
+    if (events.length === 0) return;
+
+    stopReplay();
+    isReplayingRef.current = true;
+    setIsReplaying(true);
+
+    let i = replayIndexRef.current;
+    const adjustedMs = replayAdjustedMsRef.current;
+    armReplayClock(adjustedMs[i] ?? 0);
+
+    const tick = () => {
+      if (!isReplayingRef.current) return;
+      const now = performance.now();
+      const speed = replaySpeedRef.current;
+      const timeline = replayAdjustedMsRef.current;
+      const virtualMs = getReplayVirtualMs();
+
+      const virtualDelta = Math.max(1, virtualMs - replayLastVirtualMsRef.current);
+      replayLastVirtualMsRef.current = virtualMs;
+      const maxPerFrame =
+        speed <= 1
+          ? Math.max(4, Math.ceil(virtualDelta / STROKE_CHUNK_MS) + 2)
+          : Math.min(400, Math.max(20, Math.ceil(virtualDelta / 8)));
+
+      let processed = 0;
+      while (i < events.length) {
+        const at = timeline[i];
+        if (at == null || at > virtualMs) break;
+        primeEventStyle(events[i]);
+        void applyEvent(events[i]);
+        i += 1;
+        processed += 1;
+        if (processed >= maxPerFrame) break;
+      }
+
+      replayIndexRef.current = i;
+
+      if (now - lastReplayUiUpdateMsRef.current >= 100) {
+        lastReplayUiUpdateMsRef.current = now;
+        setReplaySession((prev) => (prev ? { ...prev, index: i } : prev));
+      }
+
+      if (i >= events.length) {
+        isReplayingRef.current = false;
+        setIsReplaying(false);
+        replayRafRef.current = null;
+        return;
+      }
+
+      replayRafRef.current = requestAnimationFrame(tick);
+    };
+
+    replayRafRef.current = requestAnimationFrame(tick);
+  };
+
+  useEffect(() => {
+    replaySpeedRef.current = replaySpeed;
+    if (!isReplayingRef.current) return;
+    armReplayClock(getReplayVirtualMs());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replaySpeed]);
+
+  useEffect(() => {
+    compressGapsRef.current = compressGaps;
+    maxGapMsRef.current = maxGapMs;
+    if (!isReplayingRef.current || replayEventsRef.current.length === 0) return;
+    const idx = replayIndexRef.current;
+    replayAdjustedMsRef.current = buildAdjustedMs(replayEventsRef.current);
+    const atMs = replayAdjustedMsRef.current[Math.min(idx, replayAdjustedMsRef.current.length - 1)] ?? 0;
+    armReplayClock(atMs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compressGaps, maxGapMs]);
+
+  // Supabase에 저장된 보드 이벤트를 읽어서 캔버스에 다시 그리는 함수입니다.
+  // 예를 들어 이전에 그린 선이나 도형이 있다면, 새로 들어왔을 때 다시 화면에 그려줍니다.
+  const loadAndRenderBoard = async (targetBoardId: string) => {
+    if (!targetBoardId) return;
+    clearReplaySession();
+    setIsLoadingBoard(true);
+    clearAllLocal();
+    remoteLastPointByStrokeRef.current = new Map();
+    remotePendingAppendsRef.current = new Map();
+    remotePendingEndsRef.current = new Set();
+
+    const { data, error } = await supabase
+      .from('board_events')
+      .select('id,board_id,seq,ts,actor_id,type,payload')
+      .eq('board_id', targetBoardId)
+      .order('seq', { ascending: true });
+
+    setIsLoadingBoard(false);
+    if (error) {
+      alert(`보드 로드 실패: ${error.message}`);
+      return;
+    }
+    const events = (data ?? []) as BoardEventRow[];
+    resetHistory();
+    for (const ev of events) {
+      await applyEvent(ev);
+      if (isHistoryCommitEvent(ev.type)) commitHistory();
+    }
+    if (historyRef.current.length === 0) initHistory();
+  };
+
+  useEffect(() => {
+    if (!boardId) return;
+    const b = boards.find((x) => x.id === boardId);
+    if (b) {
+      const title = formatBoardTitle(b.title);
+      setBoardTitle(title);
+      lastSavedTitleRef.current[boardId] = title;
+    }
+    if (!initialTimelapseSaveId) {
+      loadAndRenderBoard(boardId);
+    }
+
+    const channel = supabase
+      .channel(`board-events:${boardId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'board_events', filter: `board_id=eq.${boardId}` },
+        (payload) => {
+          const row = payload.new as BoardEventRow;
+          // 재생 중이면 라이브 반영은 일단 막아(타임라인이 섞이는 것 방지)
+          if (isReplayingRef.current) return;
+          // 내가 보낸 이벤트는 이미 로컬에서 그렸으므로 중복 적용하지 않음
+          if (row.actor_id === actorIdRef.current) return;
+          void applyEvent(row).then(() => {
+            if (isHistoryCommitEvent(row.type)) commitHistory();
+          });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // isReplaying은 실시간 반영 차단에만 사용. boardId 변경시 재구독 필요
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId]);
+
+  useEffect(() => {
+    if (deepLinkHandledRef.current || !initialTimelapseSaveId || !boardId) return;
+    if (initialBoardId && boardId !== initialBoardId) return;
+
+    deepLinkHandledRef.current = true;
+    void (async () => {
+      const { data: save, error } = await supabase
+        .from('board_timelapse_saves')
+        .select('id,board_id,title,max_seq,event_count,start_ts,end_ts,created_at')
+        .eq('id', initialTimelapseSaveId)
+        .single();
+
+      if (error || !save) {
+        void loadAndRenderBoard(boardId);
+        return;
+      }
+
+      const ok = await prepareReplaySession(save.board_id, save.max_seq);
+      if (!ok) {
+        void loadAndRenderBoard(boardId);
+        return;
+      }
+
+      if (autoPlayTimelapse) startReplay();
+      else seekReplay(0);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, initialBoardId, initialTimelapseSaveId, autoPlayTimelapse]);
+
+  const applyEvent = async (ev: BoardEventRow) => {
+    if (ev.type === 'board.clear') {
+      clearAllLocal();
+      remoteLastPointByStrokeRef.current = new Map();
+      remotePendingAppendsRef.current = new Map();
+      remotePendingEndsRef.current = new Set();
+      strokeStyleByIdRef.current = new Map();
+      return;
+    }
+
+    if (ev.type === 'stroke.begin') {
+      const p = ev.payload as StrokeBeginPayload;
+      remoteLastPointByStrokeRef.current.set(p.strokeId, { x: p.point.x, y: p.point.y });
+      strokeStyleByIdRef.current.set(p.strokeId, { tool: p.tool, color: p.color, size: p.size });
+      flushRemotePendingStroke(p.strokeId);
+      return;
+    }
+
+    if (ev.type === 'stroke.append') {
+      const p = ev.payload as StrokeAppendPayload;
+      if (!remoteLastPointByStrokeRef.current.has(p.strokeId)) {
+        const list = remotePendingAppendsRef.current.get(p.strokeId) ?? [];
+        list.push(p.points);
+        remotePendingAppendsRef.current.set(p.strokeId, list);
+        return;
+      }
+      applyStrokeAppendPoints(p.strokeId, p.points);
+      return;
+    }
+
+    if (ev.type === 'stroke.end') {
+      const p = ev.payload as StrokeEndPayload;
+      if (!remoteLastPointByStrokeRef.current.has(p.strokeId)) {
+        remotePendingEndsRef.current.add(p.strokeId);
+        return;
+      }
+      remoteLastPointByStrokeRef.current.delete(p.strokeId);
+      strokeStyleByIdRef.current.delete(p.strokeId);
+      return;
+    }
+
+    if (ev.type === 'shape.add') {
+      const p = ev.payload as ShapeAddPayload;
+      const ctx = ctxRef.current ?? ensureContext();
+      if (!ctx) return;
+      drawShapeTool(ctx, p.tool, p.from, p.to, { strokeStyle: p.color, lineWidth: p.size }, false);
+      return;
+    }
+
+    if (ev.type === 'image.add') {
+      const p = ev.payload as ImageAddPayload;
+      const ctx = ctxRef.current ?? ensureContext();
+      if (!ctx || !p.dataUrl) return;
+      await drawImagePayload(ctx, p);
+      return;
+    }
+
+    if (ev.type === 'text.add') {
+      const p = ev.payload as TextAddPayload;
+      const ctx = ctxRef.current ?? ensureContext();
+      if (!ctx) return;
+      drawText(ctx, { x: p.x, y: p.y }, p.text, { strokeStyle: p.color, lineWidth: p.size });
+      return;
+    }
+
+    if (ev.type === 'stamp.add') {
+      const p = ev.payload as StampAddPayload;
+      const ctx = ctxRef.current ?? ensureContext();
+      if (!ctx) return;
+      drawStamp(ctx, { x: p.x, y: p.y }, p.kind, { strokeStyle: p.color, lineWidth: p.size });
+    }
+  };
+
+  const getPoint = (e: PointerEvent): Point | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * canvas.clientWidth,
+      y: ((e.clientY - rect.top) / rect.height) * canvas.clientHeight,
+    };
+  };
+
+  const getDrawStyle = () => ({ strokeStyle: color, lineWidth: size });
+
+  const takeSnapshot = () => {
+    const canvas = canvasRef.current;
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!canvas || !ctx) return;
+    snapshotRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  };
+
+  const restoreSnapshot = () => {
+    const canvas = canvasRef.current;
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!canvas || !ctx || !snapshotRef.current) return;
+    ctx.putImageData(snapshotRef.current, 0, 0);
+  };
+
+  const handleImageFile = (file: File) => {
+    const point = pendingImagePointRef.current;
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!point || !ctx) return;
+    if (file.size > MAX_IMAGE_BYTES) {
+      alert('이미지는 1.5MB 이하만 올릴 수 있어요.');
+      pendingImagePointRef.current = null;
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      if (typeof dataUrl !== 'string') return;
+
+      const img = new Image();
+      img.onload = () => {
+        const w = Math.min(240, img.width);
+        const h = (img.height / img.width) * w;
+        ctx.drawImage(img, point.x, point.y, w, h);
+        imageCacheRef.current.set(dataUrl, img);
+        pendingImagePointRef.current = null;
+
+        const payload: ImageAddPayload = { x: point.x, y: point.y, width: w, height: h, dataUrl };
+        void insertEvent('image.add', payload);
+        commitHistory();
+        if (!locked) setTool('pen');
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const p = getPoint(e.nativeEvent);
+    if (!p) return;
+
+    if (activeTool === 'hand') {
+      panningRef.current = true;
+      panAnchorRef.current = { x: e.clientX, y: e.clientY };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    if (pendingStampRef.current) {
+      const kind = pendingStampRef.current;
+      const style = getDrawStyle();
+      drawStamp(ctxRef.current ?? ensureContext()!, p, kind, style);
+      pendingStampRef.current = null;
+      setPendingStampKind(null);
+      setShowLibrary(false);
+      void insertEvent('stamp.add', {
+        x: p.x,
+        y: p.y,
+        kind,
+        color: style.strokeStyle,
+        size: style.lineWidth,
+      } satisfies StampAddPayload);
+      commitHistory();
+      return;
+    }
+
+    if (activeTool === 'text') {
+      const text = window.prompt('텍스트 입력');
+      if (text) {
+        const style = getDrawStyle();
+        drawText(ctxRef.current ?? ensureContext()!, p, text, style);
+        void insertEvent('text.add', {
+          x: p.x,
+          y: p.y,
+          text,
+          color: style.strokeStyle,
+          size: style.lineWidth,
+        } satisfies TextAddPayload);
+        commitHistory();
+      }
+      if (!locked) setTool('pen');
+      return;
+    }
+
+    if (activeTool === 'image') {
+      pendingImagePointRef.current = p;
+      imageInputRef.current?.click();
+      return;
+    }
+
+    if (isShapeTool(activeTool)) {
+      shapeStartRef.current = p;
+      takeSnapshot();
+      drawingRef.current = true;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    if (activeTool !== 'pen' && activeTool !== 'eraser') return;
+
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx) return;
+
+    drawingRef.current = true;
+    lastPointRef.current = p;
+    strokeStartPointRef.current = p;
+    localStrokeIdRef.current = crypto.randomUUID();
+    pendingChunkRef.current = [];
+
+    const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
+    strokeStyleByIdRef.current.set(localStrokeIdRef.current, { tool: strokeTool, color, size });
+    remoteLastPointByStrokeRef.current.set(localStrokeIdRef.current, { ...p });
+    if (boardId) {
+      void enqueueStrokeWrite('stroke.begin', {
+        strokeId: localStrokeIdRef.current,
+        tool: strokeTool,
+        color,
+        size,
+        point: p,
+      } satisfies StrokeBeginPayload);
+    }
+
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (panningRef.current && panAnchorRef.current) {
+      const dx = e.clientX - panAnchorRef.current.x;
+      const dy = e.clientY - panAnchorRef.current.y;
+      panAnchorRef.current = { x: e.clientX, y: e.clientY };
+      setPanOffset((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+      return;
+    }
+
+    if (isShapeTool(activeTool) && drawingRef.current && shapeStartRef.current) {
+      const ctx = ctxRef.current ?? ensureContext();
+      const p = getPoint(e.nativeEvent);
+      if (!ctx || !p) return;
+      lastPointRef.current = p;
+      restoreSnapshot();
+      drawShapeTool(ctx, activeTool, shapeStartRef.current, p, getDrawStyle(), true);
+      return;
+    }
+
+    if (!drawingRef.current || (activeTool !== 'pen' && activeTool !== 'eraser')) return;
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx) return;
+
+    const p = getPoint(e.nativeEvent);
+    const last = lastPointRef.current;
+    if (!p || !last) return;
+
+    applyStrokeSegment(last, p, activeTool === 'eraser' ? 'eraser' : 'pen', effectiveStrokeStyle, size);
+    pendingChunkRef.current.push(p);
+    scheduleChunkFlush();
+    lastPointRef.current = p;
+  };
+
+  const handlePointerUp = () => {
+    if (panningRef.current) {
+      panningRef.current = false;
+      panAnchorRef.current = null;
+      return;
+    }
+
+    if (isShapeTool(activeTool) && drawingRef.current && shapeStartRef.current) {
+      const ctx = ctxRef.current ?? ensureContext();
+      const from = shapeStartRef.current;
+      const end = lastPointRef.current ?? from;
+      if (ctx) {
+        restoreSnapshot();
+        drawShapeTool(ctx, activeTool, from, end, getDrawStyle(), false);
+      }
+      if (boardId) {
+        void insertEvent('shape.add', {
+          tool: activeTool,
+          from,
+          to: end,
+          color,
+          size,
+        } satisfies ShapeAddPayload);
+      }
+      shapeStartRef.current = null;
+      snapshotRef.current = null;
+      drawingRef.current = false;
+      lastPointRef.current = null;
+      if (!locked) setTool('pen');
+      commitHistory();
+      return;
+    }
+
+    if (!drawingRef.current) return;
+    drawingRef.current = false;
+    lastPointRef.current = null;
+    const sid = localStrokeIdRef.current;
+    const startPoint = strokeStartPointRef.current;
+    strokeStartPointRef.current = null;
+    localStrokeIdRef.current = null;
+
+    if (chunkTimerRef.current != null) {
+      window.clearTimeout(chunkTimerRef.current);
+      chunkTimerRef.current = null;
+    }
+    void (async () => {
+      if (pendingChunkRef.current.length === 0 && startPoint) {
+        const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
+        applyStrokeDot(startPoint, strokeTool, effectiveStrokeStyle, size);
+        pendingChunkRef.current.push(startPoint);
+      }
+      await flushChunk();
+      if (sid) await enqueueStrokeWrite('stroke.end', { strokeId: sid } satisfies StrokeEndPayload);
+      commitHistory();
+    })();
+  };
+
+  const clearAllRef = useRef<() => void>(() => {});
+
+  const clearAll = () => {
+    clearAllLocal();
+    commitHistory();
+    void insertEvent('board.clear', {});
+  };
+
+  clearAllRef.current = clearAll;
+
+  useImperativeHandle(ref, () => ({
+    clearBoard: () => clearAllRef.current(),
+    getCanvasElement: () => canvasRef.current,
+  }));
+
+  /* const downloadPng = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const url = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `canvas-${Date.now()}.png`;
+    a.click();
+  }; */
+
+  // 아래부터는 화면에 실제 UI를 그려주는 영역입니다.
+  // 상단에 보드 이름, 도구 버튼, 색상/굵기 선택, 캔버스 영역을 한 번에 보여줍니다.
+  // 이 JSX가 실제로 사용자가 보는 화면을 구성합니다.
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        width: '100%',
+        fontFamily: 'sans-serif',
+        background: meetingMode ? '#313338' : '#f3f4f6',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          flexShrink: 0,
+          padding: meetingMode ? '8px 12px' : '12px 16px',
+          borderBottom: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
+          background: meetingMode ? '#2b2d31' : '#fff',
+          boxShadow: meetingMode ? 'none' : '0 1px 3px rgba(0,0,0,0.06)',
+        }}
+      >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: meetingMode ? 0 : 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {!isEmbedded && onBack ? (
+            <button type="button" onClick={onBack} style={{ padding: '10px 12px', border: '1px solid #e5e7eb', background: 'white', cursor: 'pointer' }}>
+              ← 뒤로
+            </button>
+          ) : null}
+          {!meetingMode ? (
+            <div>
+              <h2 style={{ margin: 0 }}>{isGroupCanvas ? `${boardTitle || '그룹 캔버스'}` : '캔버스'}</h2>
+              {isGroupCanvas ? (
+                <div style={{ fontSize: 12, color: '#6366f1', marginTop: 4 }}>초대코드 멤버와 실시간 공유 중</div>
+              ) : null}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, gap: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#dbdee1', flexShrink: 0 }}>
+                ✏️ 회의 캔버스 {groupName ? `· ${groupName}` : ''}
+              </div>
+              {meetingHeaderExtra}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: meetingMode ? 6 : 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ color: meetingMode ? '#949ba4' : '#6b7280', fontSize: 12 }}>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
+            <select
+              value={boardId}
+              onChange={(e) => setBoardId(e.target.value)}
+              disabled={isLoadingBoards}
+              style={{
+                padding: meetingMode ? '6px 8px' : '8px 10px',
+                border: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
+                background: meetingMode ? '#313338' : 'white',
+                color: meetingMode ? '#dbdee1' : 'inherit',
+                minWidth: 120,
+                fontSize: meetingMode ? 12 : undefined,
+              }}
+            >
+              <option value="">선택...</option>
+              {boards.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {getBoardOptionLabel({ ...b, title: formatBoardTitle(b.title) }, boards.map((x) => ({ ...x, title: formatBoardTitle(x.title) })))}
+                </option>
+              ))}
+            </select>
+            <input
+              value={boardTitle}
+              onChange={(e) => setBoardTitle(e.target.value)}
+              onBlur={() => void saveBoardTitle()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void saveBoardTitle();
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              placeholder="보드 이름"
+              style={{
+                padding: meetingMode ? '6px 8px' : '8px 10px',
+                border: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
+                background: meetingMode ? '#313338' : 'white',
+                color: meetingMode ? '#dbdee1' : 'inherit',
+                width: meetingMode ? 120 : 160,
+                fontSize: meetingMode ? 12 : undefined,
+              }}
+            />
+            <button type="button" onClick={createBoard} style={{ padding: meetingMode ? '6px 8px' : '8px 10px', border: 'none', background: meetingMode ? '#5865f2' : '#111827', color: 'white', cursor: 'pointer', fontSize: meetingMode ? 12 : undefined }}>
+              새 보드
+            </button>
+            {!meetingMode ? (
+            <button type="button" onClick={refreshBoards} style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white', cursor: 'pointer' }}>
+              새로고침
+            </button>
+            ) : null}
+          </div>
+
+          {meetingMode ? (
+            <button
+              type="button"
+              onClick={() => setChatOpen((v) => !v)}
+              style={{
+                padding: '6px 8px',
+                border: '1px solid #1e1f22',
+                borderRadius: 6,
+                background: chatOpen ? '#5865f2' : '#313338',
+                color: '#dbdee1',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              {chatOpen ? '💬 채팅 닫기' : '💬 채팅 열기'}
+            </button>
+          ) : null}
+          </div>
+
+          <div style={{ display: 'flex', gap: 6, flexDirection: 'column', alignItems: 'flex-end' }}>
+            <ExcalidrawToolbar
+              tool={activeTool}
+              locked={locked}
+              onToolChange={pickTool}
+              onLockToggle={() => setLocked((v) => !v)}
+              onLibraryOpen={() => setShowLibrary((v) => !v)}
+            />
+          </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            색
+            <input type="color" value={color} onChange={(e) => setColor(e.target.value)} disabled={tool === 'eraser'} />
+          </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            굵기
+            <input type="range" min={2} max={30} value={size} onChange={(e) => setSize(Number(e.target.value))} />
+            <span style={{ width: 28, textAlign: 'right' }}>{size}</span>
+          </label>
+
+          <button type="button" onClick={clearAll} style={{ padding: '8px 10px', border: '1px solid #e5e7eb', background: 'white', cursor: 'pointer' }}>
+            전체 지우기
+          </button>
+          {/* <button type="button" onClick={downloadPng} style={{ padding: '8px 10px', border: 'none', background: '#2563eb', color: 'white', cursor: 'pointer' }}>
+            PNG 저장
+          </button> */}
+        </div>
+      </div>
+      </div>
+
+      <div className={cb.mainRow}>
+      <div
+        ref={canvasAreaRef}
+        className={cb.area}
+        style={{
+          position: 'relative',
+          background: '#fff',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`,
+            transformOrigin: '0 0',
+          }}
+        >
+          <canvas
+            ref={canvasRef}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            style={{
+              display: 'block',
+              touchAction: 'none',
+              cursor: activeTool === 'hand' ? 'grab' : activeTool === 'text' ? 'text' : 'crosshair',
+            }}
+          />
+        </div>
+
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleImageFile(file);
+            e.target.value = '';
+          }}
+        />
+
+        <CanvasViewportControls
+          zoomPercent={zoomPercent}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onZoomOut={zoomOut}
+          onZoomIn={zoomIn}
+          onUndo={undoHistory}
+          onRedo={redoHistory}
+        />
+
+        {showLibrary ? (
+          <div
+            style={{
+              position: 'absolute',
+              top: 12,
+              right: 12,
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 10,
+              padding: 10,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+              zIndex: 5,
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>라이브러리 (임시)</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {(['rect', 'circle', 'triangle'] as const).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => {
+                    pendingStampRef.current = kind;
+                    setPendingStampKind(kind);
+                  }}
+                  style={{
+                    padding: '8px 12px',
+                    border: pendingStampKind === kind ? '2px solid #8b5cf6' : '1px solid #e5e7eb',
+                    borderRadius: 8,
+                    background: pendingStampKind === kind ? '#ede9fe' : '#f9fafb',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {kind === 'rect' ? '▭' : kind === 'circle' ? '○' : '△'}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* <TimelapseSidePanel
+        boardId={boardId}
+        isLoadingBoard={isLoadingBoard}
+        isReplaying={isReplaying}
+        replaySpeed={replaySpeed}
+        compressGaps={compressGaps}
+        maxGapMs={maxGapMs}
+        replaySession={replaySession}
+        onResync={() => {
+          if (!boardId) return;
+          stopReplay();
+          void loadAndRenderBoard(boardId);
+        }}
+        onReplaySpeedChange={setReplaySpeed}
+        onCompressGapsChange={setCompressGaps}
+        onMaxGapMsChange={setMaxGapMs}
+        onPlay={() => void handleTimelapsePlay()}
+        onPause={() => stopReplay()}
+        onLoad={() => void handleTimelapseLoad()}
+        onSeek={seekReplay}
+        saveDraftTitle={timelapseSaveDraft}
+        isSaving={isSavingTimelapse}
+        onSaveDraftTitleChange={setTimelapseSaveDraft}
+        onSave={() => void handleSaveTimelapse()}
+      /> */}
+
+      {showInitChoice ? (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(0,0,0,0.4)',
+            zIndex: 60,
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            style={{
+              width: 420,
+              padding: 18,
+              borderRadius: 10,
+              background: meetingMode ? '#2b2d31' : '#fff',
+              color: meetingMode ? '#dbdee1' : '#111827',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>새 보드 생성 또는 기존 보드 불러오기</div>
+            <div style={{ fontSize: 13, color: meetingMode ? '#c7c9cc' : '#374151' }}>원하는 작업을 선택하세요.</div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={handleUseExistingBoardChoice}
+                style={{ padding: '8px 12px', border: '1px solid #e5e7eb', background: meetingMode ? '#313338' : 'white', cursor: 'pointer' }}
+              >
+                기존 보드 불러오기
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateNewBoardChoice}
+                style={{ padding: '8px 12px', border: 'none', background: '#111827', color: 'white', cursor: 'pointer' }}
+              >
+                새 보드 생성
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {meetingMode && chatOpen ? <MeetingChatPanel onClose={() => setChatOpen(false)} /> : null}
+      </div>
+    </div>
+  );
+});
+
+export default CanvasBoard;

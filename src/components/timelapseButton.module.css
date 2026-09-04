@@ -1,0 +1,41 @@
+/**
+ * 타임랩스 항목 버튼 (불러오기 / 재생 / 삭제)
+ * ─────────────────────────────────────────────────────────────
+ * 이전에는 TimelapsePage.css 와 TimelapseSavePanel.css 에 똑같은 정의가
+ * 중복돼 있었습니다. 한쪽만 고치면 다른 쪽이 어긋나던 문제를 없애려고
+ * 공용 모듈로 분리했습니다.
+ */
+
+.btn {
+  padding: var(--space-3) var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: filter var(--transition-fast), background var(--transition-fast);
+}
+
+.btn:hover {
+  background: var(--color-surface-alt);
+}
+
+.primary {
+  border: none;
+  background: var(--color-success);
+  color: var(--color-surface);
+}
+
+.primary:hover {
+  background: var(--color-success);
+  filter: brightness(1.08);
+}
+
+.danger {
+  color: #dc2626;
+  border-color: var(--color-danger-border);
+}
+
+.danger:hover {
+  background: var(--color-danger-soft);
+}
