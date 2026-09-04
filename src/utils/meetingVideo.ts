@@ -1,6 +1,12 @@
 import { supabase } from '../services/supabaseClient';
+import { getApiBase } from './apiBase';
 
-/** storage 경로 또는 public URL → 재생 가능한 signed URL */
+/**
+ * storage 경로 → 재생 가능한 URL
+ * 새 녹화본은 내 서버 컴퓨터 디스크에 있으므로 /videos 경로로 바로 접근합니다.
+ * 마이그레이션 이전에 Supabase Storage에 저장됐던 예전 녹화본은
+ * 로컬 서버에서 못 찾으면 예전처럼 signed URL 로 폴백합니다.
+ */
 export async function resolveMeetingVideoUrl(videoUrl: string): Promise<string> {
   let path = videoUrl.trim();
   if (!path) return videoUrl;
@@ -8,11 +14,17 @@ export async function resolveMeetingVideoUrl(videoUrl: string): Promise<string> 
   if (path.startsWith('http')) {
     const marker = '/meeting-videos/';
     const idx = path.indexOf(marker);
-    if (idx >= 0) {
-      path = decodeURIComponent(path.slice(idx + marker.length).split('?')[0] ?? '');
-    } else {
-      return videoUrl;
-    }
+    if (idx < 0) return videoUrl; // 알 수 없는 외부 URL이면 그대로 사용
+    path = decodeURIComponent(path.slice(idx + marker.length).split('?')[0] ?? '');
+  }
+
+  const localUrl = `${getApiBase()}/videos/${path}`;
+
+  try {
+    const head = await fetch(localUrl, { method: 'HEAD' });
+    if (head.ok) return localUrl;
+  } catch {
+    // 서버 컴퓨터가 꺼져있거나 접속 불가 → 예전 Supabase Storage 경로로 폴백 시도
   }
 
   const { data, error } = await supabase.storage
@@ -20,7 +32,7 @@ export async function resolveMeetingVideoUrl(videoUrl: string): Promise<string> 
     .createSignedUrl(path, 60 * 60);
 
   if (error || !data?.signedUrl) {
-    return videoUrl;
+    return localUrl; // 둘 다 실패하면 로컬 URL 그대로 반환 (video 태그의 onError에서 처리됨)
   }
   return data.signedUrl;
 }
@@ -28,7 +40,7 @@ export async function resolveMeetingVideoUrl(videoUrl: string): Promise<string> 
 export function pickMeetingRecorderMimeType(hasVideo: boolean): string {
   const candidates = hasVideo
     ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
-  : ['audio/webm;codecs=opus', 'audio/webm'];
+    : ['audio/webm;codecs=opus', 'audio/webm'];
   return candidates.find((t) => MediaRecorder.isTypeSupported(t)) ?? (hasVideo ? 'video/webm' : 'audio/webm');
 }
 

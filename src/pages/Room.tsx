@@ -415,6 +415,8 @@ export default function Room() {
     recordingBridgeRef.current?.cleanupAudioMixer();
   });
 
+  // 영상 파일은 Supabase가 아니라 내 서버 컴퓨터 디스크에 저장합니다.
+  // Supabase 에는 그 파일을 다시 찾아올 상대 경로(video_url)만 저장합니다.
   const persistMeetingRecording = async (): Promise<{ ok: boolean; error?: string }> => {
     if (recordedChunksRef.current.length === 0) {
       return { ok: false, error: '저장할 녹음이 없습니다.' };
@@ -426,21 +428,38 @@ export default function Room() {
 
     const { data: userData } = await supabase.auth.getUser();
     const blob = new Blob(recordedChunksRef.current, { type: recorderMimeRef.current });
-    const fileName = `${groupIdRef.current}/${dateStr}/${Date.now()}.webm`;
 
-    const { error: uploadError } = await supabase.storage
-      .from('meeting-videos')
-      .upload(fileName, blob, { contentType: recorderMimeRef.current, upsert: false });
+    const formData = new FormData();
+    formData.append('video', blob, 'recording.webm');
+    formData.append('groupId', groupIdRef.current ?? '');
+    formData.append('dateStr', dateStr);
 
-    if (uploadError) {
-      return { ok: false, error: uploadError.message };
+    let relativePath: string;
+    try {
+      const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
+      const uploadRes = await fetch(`${getApiBase()}/api/meetings/upload`, {
+        method: 'POST',
+        headers: uploadToken ? { 'x-upload-token': uploadToken } : undefined,
+        body: formData,
+      });
+      if (!uploadRes.ok) {
+        const errBody = await uploadRes.json().catch(() => ({}));
+        throw new Error((errBody as { error?: string }).error || `녹화본 업로드 실패 (${uploadRes.status})`);
+      }
+      relativePath = ((await uploadRes.json()) as { path: string }).path;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      return {
+        ok: false,
+        error: `녹화본을 서버 컴퓨터로 전송하지 못했습니다: ${msg}\n\n서버 컴퓨터(백엔드)가 켜져 있고 접속 가능한 상태인지 확인해 주세요.`,
+      };
     }
 
     const { error: insertError } = await supabase.from('meetings').insert({
       group_id: groupIdRef.current,
       title: titleStr,
       date: now.toISOString(),
-      video_url: fileName,
+      video_url: relativePath,
       created_by: userData.user?.id,
     });
 

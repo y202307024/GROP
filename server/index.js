@@ -4,6 +4,8 @@ const dotenv = require('dotenv')
 const { AccessToken } = require('livekit-server-sdk')
 const Groq = require('groq-sdk')
 const { toFile } = require('groq-sdk')
+const multer = require('multer')
+const fs = require('fs')
 
 // node-fetch dynamic import
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args))
@@ -24,6 +26,44 @@ const MAX_AUDIO_BYTES = 25 * 1024 * 1024
 //   curl -H "Authorization: Bearer $GROQ_API_KEY" https://api.groq.com/openai/v1/models
 const CHAT_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b'
 const TRANSCRIBE_MODEL = process.env.GROQ_TRANSCRIBE_MODEL || 'whisper-large-v3'
+
+// ─────────────────────────────────────────────────────────────
+// 회의 녹화 영상 저장 (Supabase Storage 대신 이 컴퓨터 디스크에 저장)
+// Supabase meetings.video_url 에는 이 폴더 기준 상대경로만 저장됩니다.
+// ─────────────────────────────────────────────────────────────
+const MEETING_VIDEOS_DIR = path.resolve(__dirname, 'uploads', 'meeting-videos')
+fs.mkdirSync(MEETING_VIDEOS_DIR, { recursive: true })
+
+// 업로드 엔드포인트를 아무나 두드릴 수 없도록 최소한의 토큰 체크를 둡니다.
+// .env 에 MEETING_UPLOAD_TOKEN 을 설정하면 활성화되고, 없으면 검사를 생략합니다.
+function checkUploadToken(req, res, next) {
+  const required = process.env.MEETING_UPLOAD_TOKEN
+  if (!required) return next()
+  if (req.header('x-upload-token') !== required) {
+    return res.status(401).json({ error: '업로드 권한이 없습니다' })
+  }
+  next()
+}
+
+// group_id/날짜 폴더 구조는 예전 Supabase Storage 경로 규칙과 동일하게 맞춥니다.
+const meetingVideoStorage = multer.diskStorage({
+  destination: (req, _file, cb) => {
+    const groupId = String(req.body.groupId || 'unknown')
+    const dateStr = String(req.body.dateStr || 'unknown-date')
+    const dir = path.join(MEETING_VIDEOS_DIR, groupId, dateStr)
+    fs.mkdirSync(dir, { recursive: true })
+    cb(null, dir)
+  },
+  filename: (_req, file, cb) => {
+    const ext = file.originalname?.split('.').pop() || 'webm'
+    cb(null, `${Date.now()}.${ext}`)
+  },
+})
+
+const uploadMeetingVideo = multer({
+  storage: meetingVideoStorage,
+  limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB. 필요하면 조정하세요.
+})
 
 function getGroq() {
   if (!process.env.GROQ_API_KEY) {
@@ -150,6 +190,24 @@ app.post('/api/livekit-token', async (req, res) => {
   }
 })
 
+// 클라이언트(Room.tsx)가 녹화 종료 시 이 엔드포인트로 webm blob 을 보냅니다.
+// 저장 위치는 Supabase Storage 가 아니라 이 서버 컴퓨터의 디스크입니다.
+app.post('/api/meetings/upload', checkUploadToken, uploadMeetingVideo.single('video'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: '업로드된 파일이 없습니다' })
+  }
+  const groupId = String(req.body.groupId || 'unknown')
+  const dateStr = String(req.body.dateStr || 'unknown-date')
+  // Supabase meetings.video_url 에는 이 상대경로만 저장하면 됩니다.
+  const relativePath = `${groupId}/${dateStr}/${req.file.filename}`
+  console.log('회의 녹화본 저장 완료:', relativePath)
+  res.json({ path: relativePath })
+})
+
+// 저장된 녹화본을 서빙합니다.
+// express.static 은 내부적으로 Range 헤더를 지원해서(send 모듈) <video> 탐색(seek)이 정상 동작합니다.
+app.use('/videos', express.static(MEETING_VIDEOS_DIR))
+
 // AI 요약 엔드포인트 — 타임스탬프가 붙은 챕터까지 생성합니다.
 app.post('/api/summarize', async (req, res) => {
   try {
@@ -274,4 +332,5 @@ app.listen(PORT, () => {
   console.log(`서버 실행중: port ${PORT}`)
   console.log(`  요약 모델: ${CHAT_MODEL}`)
   console.log(`  음성 모델: ${TRANSCRIBE_MODEL}`)
+  console.log(`  녹화본 저장 경로: ${MEETING_VIDEOS_DIR}`)
 })
