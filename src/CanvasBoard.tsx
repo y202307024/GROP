@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { supabase } from './services/supabaseClient';
 import ExcalidrawToolbar, { toolShortcutMap, type ExcalidrawTool } from './components/ExcalidrawToolbar';
 // 타임랩스 사이드 패널 컴포넌트 import (현재 비활성화)
@@ -282,10 +282,14 @@ type EventType =
   | 'board.clear'
   | 'shape.add'
   | 'image.add'
+  | 'image.transform'
   | 'text.add'
   | 'stamp.add';
 
-const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024;
+// 캔버스에 붙이는 이미지: 파일 용량 상한, 화면에 그릴 때 가로 최대 픽셀
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGE_DRAW_WIDTH = 800;
+const MIN_IMAGE_DRAW_SIZE = 48;
 
 type BoardEventRow = {
   id: string;
@@ -323,12 +327,74 @@ type ShapeAddPayload = {
 };
 
 type ImageAddPayload = {
+  id?: string;
   x: number;
   y: number;
   width: number;
   height: number;
   dataUrl: string;
 };
+
+type ImageTransformPayload = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type PlacedImage = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+  aspect: number;
+  committed: boolean;
+};
+
+type ImageResizeHandle = 'nw' | 'ne' | 'sw' | 'se';
+
+function resizePlacedImage(img: PlacedImage, handle: ImageResizeHandle, p: Point): PlacedImage {
+  const aspect = img.aspect || img.width / Math.max(img.height, 1);
+  const right = img.x + img.width;
+  const bottom = img.y + img.height;
+  let x = img.x;
+  let y = img.y;
+  let w = img.width;
+  let h = img.height;
+
+  if (handle === 'se') {
+    w = Math.max(MIN_IMAGE_DRAW_SIZE, p.x - img.x);
+    h = w / aspect;
+  } else if (handle === 'ne') {
+    w = Math.max(MIN_IMAGE_DRAW_SIZE, p.x - img.x);
+    h = w / aspect;
+    y = bottom - h;
+  } else if (handle === 'sw') {
+    w = Math.max(MIN_IMAGE_DRAW_SIZE, right - p.x);
+    h = w / aspect;
+    x = right - w;
+  } else {
+    w = Math.max(MIN_IMAGE_DRAW_SIZE, right - p.x);
+    h = w / aspect;
+    x = right - w;
+    y = bottom - h;
+  }
+
+  return { ...img, x, y, width: w, height: h, aspect };
+}
+
+function hitTestImage(images: PlacedImage[], p: Point): PlacedImage | null {
+  for (let i = images.length - 1; i >= 0; i -= 1) {
+    const im = images[i];
+    if (p.x >= im.x && p.x <= im.x + im.width && p.y >= im.y && p.y <= im.y + im.height) {
+      return im;
+    }
+  }
+  return null;
+}
 
 type TextAddPayload = {
   x: number;
@@ -351,6 +417,7 @@ function isHistoryCommitEvent(type: EventType): boolean {
     type === 'stroke.end' ||
     type === 'shape.add' ||
     type === 'image.add' ||
+    type === 'image.transform' ||
     type === 'text.add' ||
     type === 'stamp.add' ||
     type === 'board.clear'
@@ -408,6 +475,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const historyRef = useRef<ImageData[]>([]);
   const historyIndexRef = useRef(-1);
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const placedImagesRef = useRef<PlacedImage[]>([]);
+  const selectedImageIdRef = useRef<string | null>(null);
+  const imageDragRef = useRef<{
+    id: string;
+    mode: 'move' | ImageResizeHandle;
+    startPoint: Point;
+    start: PlacedImage;
+  } | null>(null);
   const lastSavedTitleRef = useRef<Record<string, string>>({});
   const replaySpeedRef = useRef(10);
   const compressGapsRef = useRef(true);
@@ -425,6 +500,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [spacePressed, setSpacePressed] = useState(false);
+  const [placedImages, setPlacedImages] = useState<PlacedImage[]>([]);
+  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [color, setColor] = useState('#111827');
   const [size, setSize] = useState(6);
   const [chatOpen, setChatOpen] = useState(false);
@@ -660,6 +737,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     t === 'rectangle' || t === 'diamond' || t === 'ellipse' || t === 'arrow' || t === 'line';
 
   const pickTool = (next: ExcalidrawTool) => {
+    if (next !== 'image') {
+      void commitUncommittedImage();
+      selectPlacedImage(null);
+    }
     if (next !== 'hand' && tool === 'hand') {
       setPanOffset({ x: 0, y: 0 });
     }
@@ -1116,6 +1197,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     ctx.restore();
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, w, h);
+    replacePlacedImages([]);
+    selectPlacedImage(null);
+    imageDragRef.current = null;
   };
 
   const loadCachedImage = (dataUrl: string): Promise<HTMLImageElement> => {
@@ -1156,6 +1240,62 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       payload,
     });
     if (error) reportInsertError(error.message);
+  };
+
+  const selectPlacedImage = (id: string | null) => {
+    selectedImageIdRef.current = id;
+    setSelectedImageId(id);
+  };
+
+  const replacePlacedImages = (next: PlacedImage[]) => {
+    placedImagesRef.current = next;
+    setPlacedImages(next);
+  };
+
+  const upsertPlacedImage = (img: PlacedImage) => {
+    const next = placedImagesRef.current.filter((x) => x.id !== img.id);
+    next.push(img);
+    replacePlacedImages(next);
+  };
+
+  // 아직 캔버스에 확정하지 않은 이미지는 모서리 조절 후 여기서 그립니다.
+  const commitUncommittedImage = async () => {
+    const img = placedImagesRef.current.find((x) => x.id === selectedImageIdRef.current && !x.committed);
+    if (!img) {
+      selectPlacedImage(null);
+      return;
+    }
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx) return;
+    await drawImagePayload(ctx, {
+      id: img.id,
+      x: img.x,
+      y: img.y,
+      width: img.width,
+      height: img.height,
+      dataUrl: img.dataUrl,
+    });
+    upsertPlacedImage({ ...img, committed: true });
+    void insertEvent('image.add', {
+      id: img.id,
+      x: img.x,
+      y: img.y,
+      width: img.width,
+      height: img.height,
+      dataUrl: img.dataUrl,
+    } satisfies ImageAddPayload);
+    commitHistory();
+    selectPlacedImage(img.id);
+  };
+
+  const persistImageTransform = (img: PlacedImage) => {
+    void insertEvent('image.transform', {
+      id: img.id,
+      x: img.x,
+      y: img.y,
+      width: img.width,
+      height: img.height,
+    } satisfies ImageTransformPayload);
   };
 
   const enqueueStrokeWrite = (type: EventType, payload: unknown): Promise<void> => {
@@ -1415,8 +1555,29 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       return;
     }
     const events = (data ?? []) as BoardEventRow[];
+    const transforms = new Map<string, ImageTransformPayload>();
+    for (const ev of events) {
+      if (ev.type !== 'image.transform') continue;
+      const p = ev.payload as ImageTransformPayload;
+      if (p?.id) transforms.set(p.id, p);
+    }
+
     resetHistory();
     for (const ev of events) {
+      if (ev.type === 'image.transform') {
+        continue;
+      }
+      if (ev.type === 'image.add') {
+        const p = ev.payload as ImageAddPayload;
+        const id = p.id || ev.id;
+        const t = transforms.get(id);
+        const folded: ImageAddPayload = t
+          ? { ...p, id, x: t.x, y: t.y, width: t.width, height: t.height }
+          : { ...p, id };
+        await applyEvent({ ...ev, payload: folded });
+        if (isHistoryCommitEvent(ev.type)) commitHistory();
+        continue;
+      }
       await applyEvent(ev);
       if (isHistoryCommitEvent(ev.type)) commitHistory();
     }
@@ -1542,7 +1703,37 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const p = ev.payload as ImageAddPayload;
       const ctx = ctxRef.current ?? ensureContext();
       if (!ctx || !p.dataUrl) return;
-      await drawImagePayload(ctx, p);
+      const id = p.id || ev.id;
+      await drawImagePayload(ctx, { ...p, id });
+      upsertPlacedImage({
+        id,
+        x: p.x,
+        y: p.y,
+        width: p.width,
+        height: p.height,
+        dataUrl: p.dataUrl,
+        aspect: p.width / Math.max(p.height, 1),
+        committed: true,
+      });
+      return;
+    }
+
+    if (ev.type === 'image.transform') {
+      const p = ev.payload as ImageTransformPayload;
+      if (!p?.id) return;
+      const prev = placedImagesRef.current.find((x) => x.id === p.id);
+      if (prev) {
+        upsertPlacedImage({
+          ...prev,
+          x: p.x,
+          y: p.y,
+          width: p.width,
+          height: p.height,
+        });
+      }
+      // 로컬이 이미 다시 그리는 중이면 구독 이벤트로 한 번 더 로드하지 않습니다.
+      if (ev.actor_id === actorIdRef.current) return;
+      if (boardId) void loadAndRenderBoard(boardId);
       return;
     }
 
@@ -1591,10 +1782,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const handleImageFile = (file: File) => {
     const point = pendingImagePointRef.current;
-    const ctx = ctxRef.current ?? ensureContext();
-    if (!point || !ctx) return;
+    if (!point) return;
     if (file.size > MAX_IMAGE_BYTES) {
-      alert('이미지는 1.5MB 이하만 올릴 수 있어요.');
+      alert('이미지는 8MB 이하만 올릴 수 있어요.');
       pendingImagePointRef.current = null;
       return;
     }
@@ -1606,25 +1796,36 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
       const img = new Image();
       img.onload = () => {
-        const w = Math.min(240, img.width);
+        const w = Math.min(MAX_IMAGE_DRAW_WIDTH, img.width);
         const h = (img.height / img.width) * w;
-        ctx.drawImage(img, point.x, point.y, w, h);
         imageCacheRef.current.set(dataUrl, img);
         pendingImagePointRef.current = null;
-
-        const payload: ImageAddPayload = { x: point.x, y: point.y, width: w, height: h, dataUrl };
-        void insertEvent('image.add', payload);
-        commitHistory();
-        if (!locked) setTool('pen');
+        const placed: PlacedImage = {
+          id: crypto.randomUUID(),
+          x: point.x,
+          y: point.y,
+          width: w,
+          height: h,
+          dataUrl,
+          aspect: w / Math.max(h, 1),
+          committed: false,
+        };
+        upsertPlacedImage(placed);
+        selectPlacedImage(placed.id);
+        setTool('image');
       };
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
   };
 
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const handlePointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     const p = getPoint(e.nativeEvent);
     if (!p) return;
+
+    if (activeTool !== 'image') {
+      void commitUncommittedImage();
+    }
 
     if (activeTool === 'hand') {
       panningRef.current = true;
@@ -1670,6 +1871,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     if (activeTool === 'image') {
+      const hit = hitTestImage(placedImagesRef.current, p);
+      if (hit) {
+        selectPlacedImage(hit.id);
+        imageDragRef.current = { id: hit.id, mode: 'move', startPoint: p, start: { ...hit } };
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
+      void commitUncommittedImage();
       pendingImagePointRef.current = p;
       imageInputRef.current?.click();
       return;
@@ -1710,12 +1919,28 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
-  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const handlePointerMove = (e: ReactPointerEvent<HTMLElement>) => {
     if (panningRef.current && panAnchorRef.current) {
       const dx = e.clientX - panAnchorRef.current.x;
       const dy = e.clientY - panAnchorRef.current.y;
       panAnchorRef.current = { x: e.clientX, y: e.clientY };
       setPanOffset((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+      return;
+    }
+
+    if (imageDragRef.current) {
+      const p = getPoint(e.nativeEvent);
+      if (!p) return;
+      const drag = imageDragRef.current;
+      if (drag.mode === 'move') {
+        upsertPlacedImage({
+          ...drag.start,
+          x: drag.start.x + (p.x - drag.startPoint.x),
+          y: drag.start.y + (p.y - drag.startPoint.y),
+        });
+      } else {
+        upsertPlacedImage(resizePlacedImage(drag.start, drag.mode, p));
+      }
       return;
     }
 
@@ -1744,6 +1969,17 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   };
 
   const handlePointerUp = () => {
+    if (imageDragRef.current) {
+      const id = imageDragRef.current.id;
+      imageDragRef.current = null;
+      const img = placedImagesRef.current.find((x) => x.id === id);
+      if (img?.committed) {
+        persistImageTransform(img);
+        if (boardId) void loadAndRenderBoard(boardId);
+      }
+      return;
+    }
+
     if (panningRef.current) {
       panningRef.current = false;
       panAnchorRef.current = null;
@@ -2008,6 +2244,103 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               cursor: activeTool === 'hand' ? 'grab' : activeTool === 'text' ? 'text' : 'crosshair',
             }}
           />
+          {placedImages.map((img) => {
+            const selected = img.id === selectedImageId;
+            const handles: ImageResizeHandle[] = ['nw', 'ne', 'sw', 'se'];
+            const handlePos: Record<ImageResizeHandle, { left: number; top: number; cursor: string }> = {
+              nw: { left: -6, top: -6, cursor: 'nwse-resize' },
+              ne: { left: img.width - 6, top: -6, cursor: 'nesw-resize' },
+              sw: { left: -6, top: img.height - 6, cursor: 'nesw-resize' },
+              se: { left: img.width - 6, top: img.height - 6, cursor: 'nwse-resize' },
+            };
+            return (
+              <div
+                key={img.id}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  selectPlacedImage(img.id);
+                  const p = getPoint(e.nativeEvent);
+                  if (!p) return;
+                  imageDragRef.current = { id: img.id, mode: 'move', startPoint: p, start: { ...img } };
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onWheel={(e) => {
+                  if (!selected) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const factor = e.deltaY < 0 ? 1.08 : 0.92;
+                  const nextW = Math.max(MIN_IMAGE_DRAW_SIZE, img.width * factor);
+                  const nextH = nextW / (img.aspect || 1);
+                  const cx = img.x + img.width / 2;
+                  const cy = img.y + img.height / 2;
+                  const next = {
+                    ...img,
+                    width: nextW,
+                    height: nextH,
+                    x: cx - nextW / 2,
+                    y: cy - nextH / 2,
+                  };
+                  upsertPlacedImage(next);
+                  if (next.committed) persistImageTransform(next);
+                }}
+                style={{
+                  position: 'absolute',
+                  left: img.x,
+                  top: img.y,
+                  width: img.width,
+                  height: img.height,
+                  boxSizing: 'border-box',
+                  border: selected ? '2px solid #8b5cf6' : '2px solid transparent',
+                  cursor: 'move',
+                  pointerEvents: tool === 'image' || !img.committed || selected ? 'auto' : 'none',
+                  zIndex: selected ? 3 : 2,
+                }}
+                title={selected ? '모서리를 드래그하거나 휠로 크기를 조절하세요' : '클릭해서 크기 조절'}
+              >
+                {!img.committed ? (
+                  <img
+                    src={img.dataUrl}
+                    alt=""
+                    draggable={false}
+                    style={{ width: '100%', height: '100%', display: 'block', pointerEvents: 'none' }}
+                  />
+                ) : null}
+                {selected ? (
+                  <>
+                    {handles.map((handle) => (
+                      <div
+                        key={handle}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          const p = getPoint(e.nativeEvent);
+                          if (!p) return;
+                          imageDragRef.current = { id: img.id, mode: handle, startPoint: p, start: { ...img } };
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                        }}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        style={{
+                          position: 'absolute',
+                          left: handlePos[handle].left,
+                          top: handlePos[handle].top,
+                          width: 12,
+                          height: 12,
+                          background: '#fff',
+                          border: '2px solid #8b5cf6',
+                          borderRadius: 2,
+                          cursor: handlePos[handle].cursor,
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                    ))}
+                  </>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
 
         <input

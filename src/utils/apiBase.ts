@@ -1,5 +1,9 @@
-/** 배포 시 VITE_API_URL, 로컬은 기본값 localhost:3001 */
+/** 배포 시 VITE_API_URL. 없으면 지금 열린 사이트 주소(Vite 프록시)를 씁니다. */
 export function getApiBase() {
-  const base = import.meta.env.VITE_API_URL?.trim() || 'http://localhost:3001';
-  return base.replace(/\/$/, '');
+  const fromEnv = import.meta.env.VITE_API_URL?.trim();
+  if (fromEnv) return fromEnv.replace(/\/$/, '');
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin.replace(/\/$/, '');
+  }
+  return 'http://localhost:3001';
 }

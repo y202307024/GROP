@@ -1,40 +1,30 @@
-import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
 
 /**
- * storage 경로 → 재생 가능한 URL
- * 새 녹화본은 내 서버 컴퓨터 디스크에 있으므로 /videos 경로로 바로 접근합니다.
- * 마이그레이션 이전에 Supabase Storage에 저장됐던 예전 녹화본은
- * 로컬 서버에서 못 찾으면 예전처럼 signed URL 로 폴백합니다.
+ * DB의 video_url → 서버 컴퓨터에서 재생하는 주소
+ * 영상 파일은 Storage에 없고 서버 디스크에만 있으므로 Supabase Storage는 호출하지 않습니다.
  */
 export async function resolveMeetingVideoUrl(videoUrl: string): Promise<string> {
   let path = videoUrl.trim();
   if (!path) return videoUrl;
 
   if (path.startsWith('http')) {
-    const marker = '/meeting-videos/';
-    const idx = path.indexOf(marker);
-    if (idx < 0) return videoUrl; // 알 수 없는 외부 URL이면 그대로 사용
-    path = decodeURIComponent(path.slice(idx + marker.length).split('?')[0] ?? '');
+    const videosMarker = '/videos/';
+    const videosIdx = path.indexOf(videosMarker);
+    if (videosIdx >= 0) {
+      path = decodeURIComponent(path.slice(videosIdx + videosMarker.length).split('?')[0] ?? '');
+    } else {
+      const marker = '/meeting-videos/';
+      const idx = path.indexOf(marker);
+      if (idx < 0) return videoUrl;
+      path = decodeURIComponent(path.slice(idx + marker.length).split('?')[0] ?? '');
+    }
   }
 
-  const localUrl = `${getApiBase()}/videos/${path}`;
+  if (path.endsWith('.url.txt')) path = path.slice(0, -'.url.txt'.length);
 
-  try {
-    const head = await fetch(localUrl, { method: 'HEAD' });
-    if (head.ok) return localUrl;
-  } catch {
-    // 서버 컴퓨터가 꺼져있거나 접속 불가 → 예전 Supabase Storage 경로로 폴백 시도
-  }
-
-  const { data, error } = await supabase.storage
-    .from('meeting-videos')
-    .createSignedUrl(path, 60 * 60);
-
-  if (error || !data?.signedUrl) {
-    return localUrl; // 둘 다 실패하면 로컬 URL 그대로 반환 (video 태그의 onError에서 처리됨)
-  }
-  return data.signedUrl;
+  // DB에 localhost가 들어 있어도, 호스트는 VITE_API_URL(서버 PC)로 붙입니다.
+  return `${getApiBase()}/videos/${path}`;
 }
 
 export function pickMeetingRecorderMimeType(hasVideo: boolean): string {

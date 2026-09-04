@@ -7,6 +7,7 @@ import {
   type RemoteParticipant,
   type RemoteTrack,
   type RemoteTrackPublication,
+  type TrackPublication,
 } from 'livekit-client';
 
 /** 회의방 참여자(본인+다른 사람) 마이크를 하나의 오디오 스트림으로 합침 */
@@ -58,6 +59,17 @@ export class LiveKitRoomAudioMixer {
     });
   }
 
+  /** 음소거를 나중에 켠 경우에도 다시 붙입니다. */
+  resync() {
+    this.syncParticipant(this.room.localParticipant, true);
+    this.room.remoteParticipants.forEach((p) => this.syncParticipant(p, false));
+  }
+
+  /** destination.stream 은 소스가 없어도 빈 트랙이 있어서, 실제 연결 수로 판단합니다. */
+  hasAudio() {
+    return this.sources.size > 0;
+  }
+
   attach() {
     this.syncParticipant(this.room.localParticipant, true);
     this.room.remoteParticipants.forEach((p) => this.syncParticipant(p, false));
@@ -82,18 +94,41 @@ export class LiveKitRoomAudioMixer {
     const onLocalPublished = (publication: LocalTrackPublication) => {
       if (publication.kind !== Track.Kind.Audio) return;
       const mediaTrack = publication.track?.mediaStreamTrack;
-      if (!mediaTrack) return;
+      if (!mediaTrack || publication.isMuted) return;
       this.addTrack(this.room.localParticipant.identity, publication.trackSid, mediaTrack);
+    };
+
+    const onLocalUnpublished = (publication: LocalTrackPublication) => {
+      if (publication.kind !== Track.Kind.Audio) return;
+      this.removeTrack(this.room.localParticipant.identity, publication.trackSid);
+    };
+
+    // 음소거/해제 시 믹서에 바로 반영 (안 그러면 녹음에 내 목소리가 빠집니다)
+    const onMuted = (publication: TrackPublication, participant: Participant) => {
+      if (publication.kind !== Track.Kind.Audio) return;
+      this.removeTrack(participant.identity, publication.trackSid);
+    };
+    const onUnmuted = (publication: TrackPublication, participant: Participant) => {
+      if (publication.kind !== Track.Kind.Audio) return;
+      const mediaTrack = publication.track?.mediaStreamTrack;
+      if (!mediaTrack) return;
+      this.addTrack(participant.identity, publication.trackSid, mediaTrack);
     };
 
     this.room.on(RoomEvent.TrackSubscribed, onSubscribed);
     this.room.on(RoomEvent.TrackUnsubscribed, onUnsubscribed);
     this.room.on(RoomEvent.LocalTrackPublished, onLocalPublished);
+    this.room.on(RoomEvent.LocalTrackUnpublished, onLocalUnpublished);
+    this.room.on(RoomEvent.TrackMuted, onMuted);
+    this.room.on(RoomEvent.TrackUnmuted, onUnmuted);
 
     this.cleanups.push(() => {
       this.room.off(RoomEvent.TrackSubscribed, onSubscribed);
       this.room.off(RoomEvent.TrackUnsubscribed, onUnsubscribed);
       this.room.off(RoomEvent.LocalTrackPublished, onLocalPublished);
+      this.room.off(RoomEvent.LocalTrackUnpublished, onLocalUnpublished);
+      this.room.off(RoomEvent.TrackMuted, onMuted);
+      this.room.off(RoomEvent.TrackUnmuted, onUnmuted);
     });
   }
 

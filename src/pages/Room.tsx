@@ -397,29 +397,41 @@ export default function Room() {
   const groupIdRef = useRef(id);
   const isRecordingRef = useRef(false);
 
+  // 스트림을 먼저 끄면 MediaRecorder가 마지막 청크를 못 남기고 끝납니다.
+  // stop 이벤트가 난 뒤에 트랙/캡처를 정리합니다.
   const stopMediaRecorder = () => new Promise<void>((resolve) => {
-    recordingCaptureCleanupRef.current?.();
-    recordingCaptureCleanupRef.current = null;
-    const recorder = mediaRecorderRef.current;
-    if (!recorder || recorder.state === 'inactive') {
+    const finish = () => {
+      recordingCaptureCleanupRef.current?.();
+      recordingCaptureCleanupRef.current = null;
       recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
       recordingStreamRef.current = null;
       recordingBridgeRef.current?.cleanupAudioMixer();
       resolve();
+    };
+
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') {
+      finish();
       return;
     }
-    recorder.addEventListener('stop', () => resolve(), { once: true });
+
+    recorder.addEventListener('stop', () => finish(), { once: true });
+    try {
+      if (recorder.state === 'recording') recorder.requestData();
+    } catch {
+      // requestData를 지원하지 않는 브라우저는 stop만으로 마지막 청크를 받습니다.
+    }
     recorder.stop();
-    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-    recordingStreamRef.current = null;
-    recordingBridgeRef.current?.cleanupAudioMixer();
   });
 
-  // 영상 파일은 Supabase가 아니라 내 서버 컴퓨터 디스크에 저장합니다.
-  // Supabase 에는 그 파일을 다시 찾아올 상대 경로(video_url)만 저장합니다.
+  // 영상 파일은 서버 컴퓨터 디스크에만 둡니다.
+  // meetings.video_url 에는 재생 URL만 저장합니다.
   const persistMeetingRecording = async (): Promise<{ ok: boolean; error?: string }> => {
     if (recordedChunksRef.current.length === 0) {
-      return { ok: false, error: '저장할 녹음이 없습니다.' };
+      return {
+        ok: false,
+        error: '저장할 녹음이 없습니다. 녹화 시작 후 몇 초 기다렸다가 종료해 주세요.',
+      };
     }
 
     const now = new Date();
@@ -430,9 +442,10 @@ export default function Room() {
     const blob = new Blob(recordedChunksRef.current, { type: recorderMimeRef.current });
 
     const formData = new FormData();
-    formData.append('video', blob, 'recording.webm');
+    // 파일보다 먼저 보내야 서버가 groupId/날짜 폴더를 알 수 있습니다.
     formData.append('groupId', groupIdRef.current ?? '');
     formData.append('dateStr', dateStr);
+    formData.append('video', blob, 'recording.webm');
 
     let relativePath: string;
     try {
@@ -455,11 +468,14 @@ export default function Room() {
       };
     }
 
+    // 파일은 서버에만 두고, DB에는 재생 URL만 저장합니다.
+    const videoUrl = `${getApiBase()}/videos/${relativePath}`;
+
     const { error: insertError } = await supabase.from('meetings').insert({
       group_id: groupIdRef.current,
       title: titleStr,
       date: now.toISOString(),
-      video_url: relativePath,
+      video_url: videoUrl,
       created_by: userData.user?.id,
     });
 
@@ -572,6 +588,8 @@ export default function Room() {
       if (videoTracks.length === 0) {
         capture.cleanup();
         recordingCaptureCleanupRef.current = null;
+        isRecordingRef.current = false;
+        setIsRecording(false);
         if (!opts?.remote) alert('회의 영상 트랙을 만들 수 없습니다.');
         return;
       }
@@ -579,11 +597,33 @@ export default function Room() {
       let audioTracks: MediaStreamTrack[] = [];
       if (recordingBridgeRef.current) {
         const mixedAudio = await recordingBridgeRef.current.getMixedAudioStream();
-        audioTracks = mixedAudio.getAudioTracks();
+        // 믹서 destination 은 마이크가 없어도 빈 트랙이 생깁니다. 실제 연결이 있을 때만 씁니다.
+        if (recordingBridgeRef.current.hasAudio()) {
+          audioTracks = mixedAudio.getAudioTracks();
+        }
       }
       if (audioTracks.length === 0) {
-        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioTracks = micStream.getAudioTracks();
+        try {
+          const micStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          });
+          audioTracks = micStream.getAudioTracks();
+        } catch (micErr) {
+          console.error('브라우저 마이크 요청 실패:', micErr);
+          recordingCaptureCleanupRef.current?.();
+          recordingCaptureCleanupRef.current = null;
+          isRecordingRef.current = false;
+          setIsRecording(false);
+          if (!opts?.remote) {
+            alert(
+              '마이크를 찾지 못했습니다.\n\n' +
+              '1) 주소창 왼쪽 자물쇠 → 마이크 허용\n' +
+              '2) Windows 설정 → 소리 → 입력 장치가 켜져 있는지 확인\n' +
+              '3) 다른 프로그램이 마이크를 독점하고 있으면 끄고 새로고침',
+            );
+          }
+          return;
+        }
       }
 
       const combined = new MediaStream([
@@ -638,6 +678,11 @@ export default function Room() {
 
     setSavingRecording(true);
     try {
+      // 시작 직후 종료하면 MediaRecorder가 아직 없을 수 있어 잠깐 기다립니다.
+      for (let i = 0; i < 25 && !mediaRecorderRef.current; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
       await stopRecordingLocal(false);
 
       const result = await persistMeetingRecording();
@@ -709,7 +754,11 @@ export default function Room() {
         token={token}
         serverUrl={import.meta.env.VITE_LIVEKIT_URL}
         connect={true}
-        audio={true}
+        audio={{
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }}
         video={false}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
         onMediaDeviceFailure={(failure) => {

@@ -33,6 +33,37 @@ const TRANSCRIBE_MODEL = process.env.GROQ_TRANSCRIBE_MODEL || 'whisper-large-v3'
 // ─────────────────────────────────────────────────────────────
 const MEETING_VIDEOS_DIR = path.resolve(__dirname, 'uploads', 'meeting-videos')
 fs.mkdirSync(MEETING_VIDEOS_DIR, { recursive: true })
+// multer가 파일을 먼저 받으면 req.body.groupId 가 비어 destination 이 unknown 이 됩니다.
+// 그래서 임시 폴더에 받은 뒤, 필드가 다 파싱된 핸들러에서 최종 폴더로 옮깁니다.
+const MEETING_VIDEOS_INCOMING_DIR = path.join(MEETING_VIDEOS_DIR, '_incoming')
+fs.mkdirSync(MEETING_VIDEOS_INCOMING_DIR, { recursive: true })
+
+/** 폴더명에 .. 나 슬래시가 들어오면 디스크 밖으로 나가지 못하게 막습니다. */
+function isSafePathSegment(value) {
+  return typeof value === 'string' && value.length > 0 && !value.includes('..') && !/[\\/]/.test(value)
+}
+
+/** DB video_url 과 실제 저장 폴더가 어긋난 예전 파일은 파일 이름으로 다시 찾습니다. */
+function findMeetingVideoByBasename(basename) {
+  if (!isSafePathSegment(basename)) return null
+  const stack = [MEETING_VIDEOS_DIR]
+  while (stack.length > 0) {
+    const dir = stack.pop()
+    let entries
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const ent of entries) {
+      if (ent.name === '_incoming') continue
+      const full = path.join(dir, ent.name)
+      if (ent.isDirectory()) stack.push(full)
+      else if (ent.name === basename) return full
+    }
+  }
+  return null
+}
 
 // 업로드 엔드포인트를 아무나 두드릴 수 없도록 최소한의 토큰 체크를 둡니다.
 // .env 에 MEETING_UPLOAD_TOKEN 을 설정하면 활성화되고, 없으면 검사를 생략합니다.
@@ -45,23 +76,9 @@ function checkUploadToken(req, res, next) {
   next()
 }
 
-// group_id/날짜 폴더 구조는 예전 Supabase Storage 경로 규칙과 동일하게 맞춥니다.
-const meetingVideoStorage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    const groupId = String(req.body.groupId || 'unknown')
-    const dateStr = String(req.body.dateStr || 'unknown-date')
-    const dir = path.join(MEETING_VIDEOS_DIR, groupId, dateStr)
-    fs.mkdirSync(dir, { recursive: true })
-    cb(null, dir)
-  },
-  filename: (_req, file, cb) => {
-    const ext = file.originalname?.split('.').pop() || 'webm'
-    cb(null, `${Date.now()}.${ext}`)
-  },
-})
-
+// 최종 폴더(groupId/날짜)는 업로드 핸들러에서 만듭니다. 여기는 임시 수신만.
 const uploadMeetingVideo = multer({
-  storage: meetingVideoStorage,
+  dest: MEETING_VIDEOS_INCOMING_DIR,
   limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB. 필요하면 조정하세요.
 })
 
@@ -196,17 +213,49 @@ app.post('/api/meetings/upload', checkUploadToken, uploadMeetingVideo.single('vi
   if (!req.file) {
     return res.status(400).json({ error: '업로드된 파일이 없습니다' })
   }
-  const groupId = String(req.body.groupId || 'unknown')
-  const dateStr = String(req.body.dateStr || 'unknown-date')
-  // Supabase meetings.video_url 에는 이 상대경로만 저장하면 됩니다.
-  const relativePath = `${groupId}/${dateStr}/${req.file.filename}`
+
+  const groupId = isSafePathSegment(req.body.groupId) ? req.body.groupId : 'unknown'
+  const dateStr = isSafePathSegment(req.body.dateStr) ? req.body.dateStr : 'unknown-date'
+  const ext = (req.file.originalname && req.file.originalname.split('.').pop()) || 'webm'
+  const filename = `${Date.now()}.${ext}`
+  const destDir = path.join(MEETING_VIDEOS_DIR, groupId, dateStr)
+
+  try {
+    fs.mkdirSync(destDir, { recursive: true })
+    fs.renameSync(req.file.path, path.join(destDir, filename))
+  } catch (err) {
+    console.error('녹화본 최종 저장 실패:', err)
+    try { fs.unlinkSync(req.file.path) } catch { /* 임시 파일 삭제 실패는 무시 */ }
+    return res.status(500).json({ error: '녹화본을 디스크에 저장하지 못했습니다' })
+  }
+
+  // 프론트가 이 문자열을 meetings.video_url 에 그대로 넣습니다.
+  const relativePath = `${groupId}/${dateStr}/${filename}`
   console.log('회의 녹화본 저장 완료:', relativePath)
   res.json({ path: relativePath })
 })
 
-// 저장된 녹화본을 서빙합니다.
-// express.static 은 내부적으로 Range 헤더를 지원해서(send 모듈) <video> 탐색(seek)이 정상 동작합니다.
-app.use('/videos', express.static(MEETING_VIDEOS_DIR))
+// 저장된 녹화본을 서빙합니다. sendFile 이 Range 를 지원해 <video> seek 이 동작합니다.
+app.use('/videos', (req, res, next) => {
+  const relPath = decodeURIComponent(String(req.path || '').replace(/^\//, ''))
+  if (!relPath) return next()
+
+  const direct = path.resolve(MEETING_VIDEOS_DIR, relPath)
+  if (!direct.startsWith(MEETING_VIDEOS_DIR)) {
+    return res.status(400).json({ error: '잘못된 영상 경로입니다' })
+  }
+
+  // DB 경로와 실제 폴더가 같을 때
+  if (fs.existsSync(direct) && fs.statSync(direct).isFile()) {
+    return res.sendFile(direct)
+  }
+
+  // 예전에 unknown/unknown-date 로 저장된 파일은 이름만 맞아도 찾아줍니다.
+  const found = findMeetingVideoByBasename(path.basename(relPath))
+  if (found) return res.sendFile(found)
+
+  return res.status(404).json({ error: '영상 파일을 찾지 못했습니다', path: relPath })
+})
 
 // AI 요약 엔드포인트 — 타임스탬프가 붙은 챕터까지 생성합니다.
 app.post('/api/summarize', async (req, res) => {
