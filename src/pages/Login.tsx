@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { explainAuthError } from '../authErrors';
@@ -16,7 +16,6 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const afterLogin = (location.state as { afterLogin?: string } | null)?.afterLogin;
-  const oneTapContainerRef = useRef<HTMLDivElement>(null);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,16 +31,38 @@ export default function Login() {
     }
   };
 
-  // 버튼으로 이동하는 기존 구글 로그인 (팝업 방식이 막힐 때의 대안으로 유지)
-  const handleGoogleLoginRedirect = async () => {
+  // 로그인 후 돌아갈 주소. 초대 링크로 온 경우 afterLogin을 유지합니다.
+  const oauthRedirectTo = `${window.location.origin}${afterLogin || '/main'}`;
+
+  // Google Identity Services + Supabase OAuth. 같은 탭에서 구글 계정 선택 화면으로 이동합니다.
+  const handleGoogleLogin = async () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}${afterLogin || '/main'}`,
+        redirectTo: oauthRedirectTo,
+        scopes: 'email profile',
+        queryParams: {
+          prompt: 'select_account',
+        },
       },
     });
     if (error) {
       alert(`구글 로그인 실패: ${explainAuthError(error.message)}`);
+    }
+  };
+
+  // GitHub는 원탭이 없어서 Supabase OAuth 리다이렉트만 사용합니다.
+  const handleGithubLogin = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'github',
+      options: {
+        redirectTo: oauthRedirectTo,
+        // 이메일·프로필을 받으려면 GitHub OAuth 앱에도 같은 scope가 열려 있어야 합니다.
+        scopes: 'read:user user:email',
+      },
+    });
+    if (error) {
+      alert(`GitHub 로그인 실패: ${explainAuthError(error.message)}`);
     }
   };
 
@@ -100,18 +121,8 @@ export default function Login() {
         use_fedcm_for_prompt: true, // 크롬 최신 정책 대응
       });
 
-      // 화면 오른쪽 위에 자동 팝업 (One Tap)
+      // 화면 오른쪽 위에 자동 팝업 (One Tap). 버튼은 아래 구글 로그인 하나만 둡니다.
       window.google.accounts.id.prompt();
-
-      // 원한다면 버튼 형태로도 렌더링 가능 (원탭이 안 뜰 때 대비용)
-      if (oneTapContainerRef.current) {
-        window.google.accounts.id.renderButton(oneTapContainerRef.current, {
-          type: 'standard',
-          theme: 'outline',
-          size: 'large',
-          width: 280,
-        });
-      }
     };
 
     initOneTap();
@@ -181,12 +192,10 @@ export default function Login() {
 
       <div style={{ margin: '16px 0', color: '#888', fontSize: '14px' }}>또는</div>
 
-      {/* 구글 원탭이 자동으로 안 뜨는 경우를 대비한 버튼 */}
-      <div ref={oneTapContainerRef} style={{ display: 'flex', justifyContent: 'center', marginBottom: '8px' }} />
-
       <button
         type="button"
-        onClick={handleGoogleLoginRedirect}
+        onClick={handleGoogleLogin}
+        disabled={loading}
         style={{
           width: '100%',
           padding: '10px',
@@ -194,10 +203,30 @@ export default function Login() {
           color: '#333',
           border: '1px solid #ccc',
           borderRadius: '4px',
-          cursor: 'pointer',
+          cursor: loading ? 'not-allowed' : 'pointer',
+          marginBottom: '8px',
+          opacity: loading ? 0.7 : 1,
         }}
       >
-        구글 계정으로 로그인 (이동 방식)
+        구글 계정으로 로그인
+      </button>
+
+      <button
+        type="button"
+        onClick={handleGithubLogin}
+        disabled={loading}
+        style={{
+          width: '100%',
+          padding: '10px',
+          backgroundColor: '#24292f',
+          color: '#fff',
+          border: 'none',
+          borderRadius: '4px',
+          cursor: loading ? 'not-allowed' : 'pointer',
+          opacity: loading ? 0.7 : 1,
+        }}
+      >
+        GitHub 계정으로 로그인
       </button>
     </div>
   );

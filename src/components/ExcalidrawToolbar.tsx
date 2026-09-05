@@ -8,6 +8,7 @@ export type ExcalidrawTool =
   | 'pen'
   | 'text'
   | 'image'
+  | 'file'
   | 'eraser';
 
 type Props = {
@@ -28,6 +29,7 @@ const tools: { id: ExcalidrawTool; icon: string; label: string; shortcut?: strin
   { id: 'pen', icon: '✏', label: '펜', shortcut: '7' },
   { id: 'text', icon: 'A', label: '텍스트', shortcut: '8' },
   { id: 'image', icon: '🖼', label: '이미지', shortcut: '9' },
+  { id: 'file', icon: '📎', label: '파일', shortcut: '' },
   { id: 'eraser', icon: 'eraser', label: '지우개', shortcut: '0' },
 ];
 

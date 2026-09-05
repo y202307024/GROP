@@ -25,6 +25,9 @@ export function explainAuthError(message: string): string {
   if (m.includes('signup is disabled') || m.includes('signups not allowed')) {
     return 'Supabase에서 회원가입이 꺼져 있습니다. Authentication → Providers → Email을 켜 주세요.';
   }
+  if (m.includes('provider is not enabled') || m.includes('unsupported provider')) {
+    return '이 로그인 방식이 Supabase에서 꺼져 있습니다.\nAuthentication → Providers에서 Google/GitHub를 켜고 Client ID/Secret을 넣으세요.';
+  }
   if (m.includes('unregistered api key') || m.includes('invalid api key') || m.includes('jwt')) {
     return (
       'Supabase API 키가 등록되지 않았거나 잘못됐습니다.\n\n' +

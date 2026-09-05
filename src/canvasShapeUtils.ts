@@ -4,6 +4,8 @@ type DrawStyle = {
   strokeStyle: string;
   lineWidth: number;
   fillStyle?: string;
+  /** 텍스트 전용. 있으면 lineWidth에서 환산하지 않고 이 픽셀 크기를 씁니다. */
+  fontSize?: number;
 };
 
 export function drawRectangle(ctx: CanvasRenderingContext2D, from: Point, to: Point, style: DrawStyle, preview = false) {
@@ -100,12 +102,26 @@ export function drawArrow(ctx: CanvasRenderingContext2D, from: Point, to: Point,
   ctx.restore();
 }
 
+/** 굵기(lineWidth)에 맞춘 텍스트 글자 크기. 입력칸과 실제 그리기가 같은 크기를 쓰도록 한곳에서 계산합니다. */
+export function textFontSize(lineWidth: number) {
+  return Math.max(14, lineWidth * 3);
+}
+
+/** 캔버스는 sans-serif만 주면 한글 글리프가 빠지는 경우가 있어 명시합니다. */
+export const CANVAS_FONT_FAMILY = "'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif";
+
 export function drawText(ctx: CanvasRenderingContext2D, point: Point, text: string, style: DrawStyle) {
   ctx.save();
   ctx.fillStyle = style.strokeStyle;
-  ctx.font = `${Math.max(14, style.lineWidth * 3)}px sans-serif`;
+  const fontSize = style.fontSize ?? textFontSize(style.lineWidth);
+  ctx.font = `${fontSize}px ${CANVAS_FONT_FAMILY}`;
   ctx.textBaseline = 'top';
-  ctx.fillText(text, point.x, point.y);
+  // 입력칸에서 Shift+Enter로 줄바꿈을 넣을 수 있어서 줄 단위로 그립니다.
+  const lineHeight = fontSize * 1.25;
+  const lines = text.split('\n');
+  lines.forEach((line, i) => {
+    ctx.fillText(line, point.x, point.y + i * lineHeight);
+  });
   ctx.restore();
 }
 

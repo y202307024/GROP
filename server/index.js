@@ -38,6 +38,12 @@ fs.mkdirSync(MEETING_VIDEOS_DIR, { recursive: true })
 const MEETING_VIDEOS_INCOMING_DIR = path.join(MEETING_VIDEOS_DIR, '_incoming')
 fs.mkdirSync(MEETING_VIDEOS_INCOMING_DIR, { recursive: true })
 
+const CHAT_FILES_DIR = path.resolve(__dirname, 'uploads', 'chat-files')
+fs.mkdirSync(CHAT_FILES_DIR, { recursive: true })
+const CHAT_FILES_INCOMING_DIR = path.join(CHAT_FILES_DIR, '_incoming')
+fs.mkdirSync(CHAT_FILES_INCOMING_DIR, { recursive: true })
+const MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024
+
 /** 폴더명에 .. 나 슬래시가 들어오면 디스크 밖으로 나가지 못하게 막습니다. */
 function isSafePathSegment(value) {
   return typeof value === 'string' && value.length > 0 && !value.includes('..') && !/[\\/]/.test(value)
@@ -81,6 +87,46 @@ const uploadMeetingVideo = multer({
   dest: MEETING_VIDEOS_INCOMING_DIR,
   limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB. 필요하면 조정하세요.
 })
+
+const uploadChatFile = multer({
+  dest: CHAT_FILES_INCOMING_DIR,
+  limits: { fileSize: MAX_CHAT_FILE_BYTES },
+})
+
+const IMAGE_MIME_BY_EXT = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+}
+
+/** multer는 파일명을 latin1로 읽어서 한글이 깨집니다. UTF-8로 되돌립니다. */
+function decodeMulterOriginalName(name) {
+  if (!name || typeof name !== 'string') return 'file'
+  if (/[가-힣]/.test(name)) return name
+  const utf8 = Buffer.from(name, 'latin1').toString('utf8')
+  if (utf8 && !utf8.includes('\uFFFD') && /[가-힣]/.test(utf8)) return utf8
+  return name
+}
+
+function fileExtFromName(name) {
+  const ext = path.extname(String(name || '')).toLowerCase()
+  return /^\.[a-z0-9]{1,8}$/.test(ext) ? ext : ''
+}
+
+/** 디스크/URL에는 한글을 넣지 않습니다. 프록시에서 이미지가 404 나는 것을 막습니다. */
+function storedChatFileName(originalName) {
+  const ext = fileExtFromName(originalName)
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`
+}
+
+function guessChatFileMime(originalName, mimetype) {
+  if (mimetype && mimetype !== 'application/octet-stream') return mimetype
+  return IMAGE_MIME_BY_EXT[fileExtFromName(originalName)] || mimetype || 'application/octet-stream'
+}
 
 function getGroq() {
   if (!process.env.GROQ_API_KEY) {
@@ -257,6 +303,55 @@ app.use('/videos', (req, res, next) => {
   return res.status(404).json({ error: '영상 파일을 찾지 못했습니다', path: relPath })
 })
 
+// 회의 채팅 첨부파일. 영상과 같이 이 서버 디스크에 저장합니다.
+app.post('/api/chat-files/upload', checkUploadToken, uploadChatFile.single('file'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: '업로드된 파일이 없습니다' })
+  }
+
+  const groupId = isSafePathSegment(req.body.groupId) ? req.body.groupId : 'unknown'
+  const originalName = decodeMulterOriginalName(req.file.originalname)
+  const filename = storedChatFileName(originalName)
+  const destDir = path.join(CHAT_FILES_DIR, groupId)
+
+  try {
+    fs.mkdirSync(destDir, { recursive: true })
+    fs.renameSync(req.file.path, path.join(destDir, filename))
+  } catch (err) {
+    console.error('채팅 파일 저장 실패:', err)
+    try { fs.unlinkSync(req.file.path) } catch { /* 임시 파일 삭제는 실패해도 무시 */ }
+    return res.status(500).json({ error: '파일을 디스크에 저장하지 못했습니다' })
+  }
+
+  const relativePath = `${groupId}/${filename}`
+  console.log('채팅 첨부파일 저장 완료:', relativePath)
+  res.json({
+    path: relativePath,
+    name: originalName,
+    size: req.file.size,
+    mime: guessChatFileMime(originalName, req.file.mimetype),
+  })
+})
+
+app.use('/files', (req, res, next) => {
+  const relPath = decodeURIComponent(String(req.path || '').replace(/^\//, ''))
+  if (!relPath) return next()
+
+  const direct = path.resolve(CHAT_FILES_DIR, relPath)
+  if (!direct.startsWith(CHAT_FILES_DIR)) {
+    return res.status(400).json({ error: '잘못된 파일 경로입니다' })
+  }
+  if (fs.existsSync(direct) && fs.statSync(direct).isFile()) {
+    // PDF·이미지를 보드 iframe에서 바로 보게 하려면 다운로드가 아니라 인라인이어야 합니다.
+    const ext = path.extname(direct).toLowerCase()
+    if (IMAGE_MIME_BY_EXT[ext] || ext === '.pdf' || ext === '.txt' || ext === '.md') {
+      res.setHeader('Content-Disposition', 'inline')
+    }
+    return res.sendFile(direct)
+  }
+  return res.status(404).json({ error: '파일을 찾지 못했습니다', path: relPath })
+})
+
 // AI 요약 엔드포인트 — 타임스탬프가 붙은 챕터까지 생성합니다.
 app.post('/api/summarize', async (req, res) => {
   try {
@@ -376,10 +471,18 @@ app.post('/api/summarize', async (req, res) => {
   }
 })
 
+app.use((err, req, res, next) => {
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: '파일이 너무 큽니다. 20MB 이하만 첨부할 수 있어요.' })
+  }
+  return next(err)
+})
+
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => {
   console.log(`서버 실행중: port ${PORT}`)
   console.log(`  요약 모델: ${CHAT_MODEL}`)
   console.log(`  음성 모델: ${TRANSCRIBE_MODEL}`)
   console.log(`  녹화본 저장 경로: ${MEETING_VIDEOS_DIR}`)
+  console.log(`  채팅 첨부 경로: ${CHAT_FILES_DIR}`)
 })

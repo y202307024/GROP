@@ -4,7 +4,7 @@
   position: absolute;
   left: var(--space-8);
   bottom: var(--space-8);
-  z-index: var(--z-canvas-controls);
+  z-index: 30;
   display: flex;
   gap: var(--space-4);
   align-items: center;
