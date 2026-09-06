@@ -21,6 +21,13 @@ import {
   decodeRecordingSyncMessage,
   encodeRecordingSyncMessage,
 } from '../utils/meetingRecordingSync';
+import {
+  getMicrophoneExceptionMessage,
+  getMicrophoneFailureMessage,
+  isSecureMediaContext,
+  localhostAppUrl,
+} from '../utils/microphoneAccess';
+import { loadVoiceSettings, voiceCaptureOptions } from '../utils/voiceSettings';
 
 type RecordingSyncHandle = {
   broadcastStart: () => void;
@@ -44,6 +51,31 @@ function formatMeetingElapsed(seconds: number) {
     return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   }
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function MicInsecureBanner() {
+  if (isSecureMediaContext()) return null;
+  return (
+    <div style={{
+      flexShrink: 0,
+      padding: '8px 16px',
+      background: '#3a2a12',
+      color: '#f0c36d',
+      fontSize: 12,
+      lineHeight: 1.45,
+      borderBottom: '1px solid #5a4318',
+    }}>
+      지금 주소(<strong>{window.location.host}</strong>)는 HTTP라서 마이크가 차단됩니다.{' '}
+      <a href={`https://${window.location.host}${window.location.pathname}${window.location.search}`} style={{ color: '#fff', fontWeight: 700 }}>
+        https로 다시 열기
+      </a>
+      {' '}또는{' '}
+      <a href={localhostAppUrl()} style={{ color: '#fff', fontWeight: 700 }}>
+        localhost로 접속
+      </a>
+      하세요. 처음 HTTPS는 인증서 경고가 뜨면 고급 → 계속을 누르면 됩니다.
+    </div>
+  );
 }
 
 function RoomTopHeader({ groupName }: { groupName: string }) {
@@ -124,9 +156,14 @@ function MeetingAudioSetup() {
   const room = useRoomContext();
 
   useEffect(() => {
+    if (!isSecureMediaContext()) return;
     const enableMic = async () => {
+      const settings = loadVoiceSettings();
       try {
-        await room.localParticipant.setMicrophoneEnabled(true);
+        await room.localParticipant.setMicrophoneEnabled(true, voiceCaptureOptions(settings));
+        if (settings.speakerDeviceId) {
+          await room.switchActiveDevice('audiooutput', settings.speakerDeviceId);
+        }
       } catch (err) {
         console.error('마이크 활성화 실패:', err);
       }
@@ -244,7 +281,7 @@ function MeetingControls({
       await localParticipant.setMicrophoneEnabled(next);
     } catch (err) {
       console.error('마이크 전환 실패:', err);
-      alert('마이크를 사용할 수 없습니다.\n브라우저 주소창 옆 🔒에서 마이크 권한을 허용해 주세요.');
+      alert(getMicrophoneExceptionMessage(err));
     }
   };
 
@@ -339,7 +376,7 @@ function RoomContent({
 }) {
   return (
     <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden', position: 'relative', minWidth: 0 }}>
-      <RoomAudioRenderer />
+      <RoomAudioRenderer volume={loadVoiceSettings().speakerVolume / 100} />
       <MeetingAudioSetup />
       <RecordingDataSync
         userId={userId}
@@ -615,12 +652,7 @@ export default function Room() {
           isRecordingRef.current = false;
           setIsRecording(false);
           if (!opts?.remote) {
-            alert(
-              '마이크를 찾지 못했습니다.\n\n' +
-              '1) 주소창 왼쪽 자물쇠 → 마이크 허용\n' +
-              '2) Windows 설정 → 소리 → 입력 장치가 켜져 있는지 확인\n' +
-              '3) 다른 프로그램이 마이크를 독점하고 있으면 끄고 새로고침',
-            );
+            alert(getMicrophoneExceptionMessage(micErr));
           }
           return;
         }
@@ -655,7 +687,7 @@ export default function Room() {
       isRecordingRef.current = false;
       setIsRecording(false);
       if (!opts?.remote) {
-        alert('마이크 권한이 필요합니다. 브라우저에서 마이크를 허용해 주세요.');
+        alert(getMicrophoneExceptionMessage(err));
       }
     }
   };
@@ -754,16 +786,12 @@ export default function Room() {
         token={token}
         serverUrl={import.meta.env.VITE_LIVEKIT_URL}
         connect={true}
-        audio={{
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        }}
+        audio={isSecureMediaContext() ? voiceCaptureOptions(loadVoiceSettings()) : false}
         video={false}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
         onMediaDeviceFailure={(failure) => {
           console.error('미디어 장치 오류:', failure);
-          alert('마이크를 사용할 수 없습니다. 다른 프로그램이 마이크를 쓰고 있지 않은지 확인해 주세요.');
+          alert(getMicrophoneFailureMessage(failure != null ? String(failure) : null));
         }}
         onError={(err) => {
           console.error('LiveKit 오류:', err);
@@ -773,6 +801,7 @@ export default function Room() {
           ref={recordingAreaRef}
           style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}
         >
+          <MicInsecureBanner />
           <RoomTopHeader groupName={groupName} />
           <RoomContent
             groupId={id}

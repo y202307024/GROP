@@ -11,6 +11,7 @@ const fs = require('fs')
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args))
 
 const path = require('path')
+const { startOauthFallback, rememberOauthOrigin, getOauthOrigin } = require('./oauthFallback')
 dotenv.config({ path: path.resolve(__dirname, '../.env') })
 
 const app = express()
@@ -223,6 +224,14 @@ function buildSummaryText(result, chapters) {
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' })
+})
+
+app.get('/api/oauth-origin', (req, res) => {
+  res.json({ origin: getOauthOrigin() })
+})
+
+app.post('/api/oauth-origin', (req, res) => {
+  res.json({ origin: rememberOauthOrigin(req.body?.origin) })
 })
 
 app.post('/api/livekit-token', async (req, res) => {
@@ -485,4 +494,5 @@ app.listen(PORT, () => {
   console.log(`  음성 모델: ${TRANSCRIBE_MODEL}`)
   console.log(`  녹화본 저장 경로: ${MEETING_VIDEOS_DIR}`)
   console.log(`  채팅 첨부 경로: ${CHAT_FILES_DIR}`)
+  startOauthFallback()
 })

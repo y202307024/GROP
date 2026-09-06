@@ -2,12 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { explainAuthError } from '../authErrors';
-
-declare global {
-  interface Window {
-    google?: any;
-  }
-}
+import { getApiBase } from '../utils/apiBase';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -16,6 +11,16 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const afterLogin = (location.state as { afterLogin?: string } | null)?.afterLogin;
+
+  useEffect(() => {
+    if (!window.location.hash.includes('access_token')) return
+    let cancelled = false
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled || !data.session) return
+      navigate(afterLogin || '/main', { replace: true })
+    })
+    return () => { cancelled = true }
+  }, [afterLogin, navigate])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,106 +37,46 @@ export default function Login() {
   };
 
   // 로그인 후 돌아갈 주소. 초대 링크로 온 경우 afterLogin을 유지합니다.
-  const oauthRedirectTo = `${window.location.origin}${afterLogin || '/main'}`;
+  const oauthRedirectTo = `${window.location.origin}/`;
 
-  // Google Identity Services + Supabase OAuth. 같은 탭에서 구글 계정 선택 화면으로 이동합니다.
+  const rememberOauthOrigin = async () => {
+    try {
+      await fetch(`${getApiBase()}/api/oauth-origin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: window.location.origin }),
+      })
+    } catch {
+      // 폴백 서버가 기억 못 해도 로그인은 계속 진행합니다.
+    }
+  }
+
+  const startOAuth = async (provider: 'google' | 'github', extra?: { scopes?: string; queryParams?: Record<string, string> }) => {
+    await rememberOauthOrigin()
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: {
+        redirectTo: oauthRedirectTo,
+        ...extra,
+      },
+    })
+    if (error) {
+      alert(`${provider === 'google' ? '구글' : 'GitHub'} 로그인 실패: ${explainAuthError(error.message)}`)
+    }
+  }
+
   const handleGoogleLogin = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: oauthRedirectTo,
-        scopes: 'email profile',
-        queryParams: {
-          prompt: 'select_account',
-        },
-      },
-    });
-    if (error) {
-      alert(`구글 로그인 실패: ${explainAuthError(error.message)}`);
-    }
-  };
+    await startOAuth('google', {
+      scopes: 'email profile',
+      queryParams: { prompt: 'select_account' },
+    })
+  }
 
-  // GitHub는 원탭이 없어서 Supabase OAuth 리다이렉트만 사용합니다.
   const handleGithubLogin = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'github',
-      options: {
-        redirectTo: oauthRedirectTo,
-        // 이메일·프로필을 받으려면 GitHub OAuth 앱에도 같은 scope가 열려 있어야 합니다.
-        scopes: 'read:user user:email',
-      },
-    });
-    if (error) {
-      alert(`GitHub 로그인 실패: ${explainAuthError(error.message)}`);
-    }
-  };
-
-  // 구글 원탭에서 ID 토큰을 받았을 때 Supabase 세션 생성
-  const handleCredentialResponse = async (response: { credential: string }) => {
-    setLoading(true);
-    const { error } = await supabase.auth.signInWithIdToken({
-      provider: 'google',
-      token: response.credential,
-    });
-    setLoading(false);
-
-    if (error) {
-      console.error('One Tap 로그인 실패:', error);
-      alert(`구글 로그인 실패: ${explainAuthError(error.message)}`);
-    } else {
-      navigate(afterLogin || '/main');
-    }
-  };
-
-  useEffect(() => {
-    // 이미 로그인된 세션이 있으면 원탭을 띄우지 않음
-    let cancelled = false;
-
-    const initOneTap = async () => {
-      const { data } = await supabase.auth.getSession();
-      if (cancelled || data.session) return;
-
-      const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
-      if (!clientId) {
-        console.warn('VITE_GOOGLE_CLIENT_ID가 설정되지 않았습니다.');
-        return;
-      }
-
-      // Google Identity Services 스크립트 로드
-      const scriptId = 'google-identity-script';
-      if (!document.getElementById(scriptId)) {
-        const script = document.createElement('script');
-        script.id = scriptId;
-        script.src = 'https://accounts.google.com/gsi/client';
-        script.async = true;
-        script.defer = true;
-        script.onload = () => setupOneTap(clientId);
-        document.head.appendChild(script);
-      } else {
-        setupOneTap(clientId);
-      }
-    };
-
-    const setupOneTap = (clientId: string) => {
-      if (!window.google || cancelled) return;
-
-      window.google.accounts.id.initialize({
-        client_id: clientId,
-        callback: handleCredentialResponse,
-        use_fedcm_for_prompt: true, // 크롬 최신 정책 대응
-      });
-
-      // 화면 오른쪽 위에 자동 팝업 (One Tap). 버튼은 아래 구글 로그인 하나만 둡니다.
-      window.google.accounts.id.prompt();
-    };
-
-    initOneTap();
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    await startOAuth('github', {
+      scopes: 'read:user user:email',
+    })
+  }
 
   return (
     <div style={{ maxWidth: '300px', margin: '100px auto', textAlign: 'center', fontFamily: 'sans-serif' }}>
