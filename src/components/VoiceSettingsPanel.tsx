@@ -88,7 +88,7 @@ export default function VoiceSettingsPanel() {
       return
     }
     if (!isSecureMediaContext()) {
-      setError(getMicrophoneExceptionMessage())
+      setError(getMicrophoneExceptionMessage(undefined))
       return
     }
 
