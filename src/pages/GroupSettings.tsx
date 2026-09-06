@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import VoiceSettingsPanel from '../components/VoiceSettingsPanel';
 import { supabase } from '../supabaseClient';
 
 export default function GroupSettings() {
@@ -30,7 +31,7 @@ export default function GroupSettings() {
   };
 
   return (
-    <div style={{ maxWidth: 400, margin: '60px auto', fontFamily: 'sans-serif', padding: '0 20px' }}>
+    <div style={{ maxWidth: 560, width: '100%', margin: '60px auto', fontFamily: 'sans-serif', padding: '0 20px', boxSizing: 'border-box', overflow: 'hidden' }}>
       <h2>그룹 설정</h2>
 
       <div style={{ marginBottom: 24 }}>
@@ -55,6 +56,8 @@ export default function GroupSettings() {
           </button>
         </div>
       </div>
+
+      <VoiceSettingsPanel />
 
       <button onClick={() => navigate(`/group/${id}`)}
         style={{ width: '100%', padding: 10, background: '#7f8c8d', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer' }}>

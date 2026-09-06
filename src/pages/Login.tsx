@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { explainAuthError } from '../authErrors';
+import { getApiBase } from '../utils/apiBase';
 
 declare global {
   interface Window {
@@ -16,6 +17,16 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const afterLogin = (location.state as { afterLogin?: string } | null)?.afterLogin;
+
+  useEffect(() => {
+    if (!window.location.hash.includes('access_token')) return
+    let cancelled = false
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled || !data.session) return
+      navigate(afterLogin || '/main', { replace: true })
+    })
+    return () => { cancelled = true }
+  }, [afterLogin, navigate])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,10 +43,23 @@ export default function Login() {
   };
 
   // 로그인 후 돌아갈 주소. 초대 링크로 온 경우 afterLogin을 유지합니다.
-  const oauthRedirectTo = `${window.location.origin}${afterLogin || '/main'}`;
+  const oauthRedirectTo = `${window.location.origin}/`;
+
+  const rememberOauthOrigin = async () => {
+    try {
+      await fetch(`${getApiBase()}/api/oauth-origin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin: window.location.origin }),
+      })
+    } catch {
+      // 폴백 서버가 기억 못 해도 로그인은 계속 진행합니다.
+    }
+  }
 
   // Google Identity Services + Supabase OAuth. 같은 탭에서 구글 계정 선택 화면으로 이동합니다.
   const handleGoogleLogin = async () => {
+    await rememberOauthOrigin()
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
@@ -53,6 +77,7 @@ export default function Login() {
 
   // GitHub는 원탭이 없어서 Supabase OAuth 리다이렉트만 사용합니다.
   const handleGithubLogin = async () => {
+    await rememberOauthOrigin()
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'github',
       options: {
