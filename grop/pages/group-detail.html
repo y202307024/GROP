@@ -1,0 +1,135 @@
+<div class="page group-detail-page">
+
+    <!-- 뒤로가기 -->
+
+    <button class="group-back-button" id="groupDetailBackButton" aria-label="내 그룹으로">
+        <i data-lucide="arrow-left"></i>
+    </button>
+
+
+    <!-- 프로필 영역 + 편집 -->
+
+    <div class="group-detail-profile-row">
+
+        <div class="group-detail-identity">
+
+            <div class="group-detail-avatar" id="groupDetailAvatar">D</div>
+
+            <div>
+                <div class="group-detail-name" id="groupDetailName">디자인팀 그룹</div>
+
+                <div class="group-detail-invite">
+                    <span id="groupDetailInviteCode">초대코드 8GQK41</span>
+                    <button class="group-invite-copy-button" id="groupDetailCopyButton" aria-label="초대코드 복사">
+                        <i data-lucide="clipboard"></i>
+                    </button>
+                </div>
+            </div>
+
+        </div>
+
+        <button class="group-edit-icon-button" id="groupDetailEditButton" aria-label="그룹 편집">
+            <i data-lucide="pencil"></i>
+        </button>
+
+    </div>
+
+
+    <!-- 멤버 아바타 + 인원수 (우측 회의방 이동 버튼) -->
+
+    <div class="group-detail-member-row">
+
+        <div class="group-detail-member-summary">
+
+            <div class="group-detail-avatar-stack">
+                <div class="mini-avatar">한</div>
+                <div class="mini-avatar">이</div>
+                <div class="mini-avatar">박</div>
+                <div class="mini-avatar mini-avatar-more">+1</div>
+            </div>
+
+            <span id="groupDetailMemberCount">멤버 4명</span>
+
+        </div>
+
+        <button class="group-meeting-button" id="groupDetailMeetingButton">
+            회의방으로 이동
+        </button>
+
+    </div>
+
+
+    <!-- 메모 -->
+
+    <div class="group-detail-memo" id="groupDetailMemo">
+        💬 매주 월요일 오후 2시 정기 회의가 있어요. 다들 화이팅!
+    </div>
+
+
+    <!-- 정보 카드 3개 -->
+
+    <div class="group-detail-stats">
+
+        <div class="group-stat-card">
+            <div class="group-stat-emoji">📅</div>
+            <div class="group-stat-label">다음 일정</div>
+            <div class="group-stat-value">9/8 (월) 14:00</div>
+        </div>
+
+        <div class="group-stat-card">
+            <div class="group-stat-emoji">👥</div>
+            <div class="group-stat-label">참여 인원</div>
+            <div class="group-stat-value">4명</div>
+        </div>
+
+        <div class="group-stat-card">
+            <div class="group-stat-emoji">🗓️</div>
+            <div class="group-stat-label">누적 회의</div>
+            <div class="group-stat-value">12회</div>
+        </div>
+
+    </div>
+
+
+    <!-- 멤버 / 최근 회의록 미리보기 -->
+
+    <div class="group-detail-preview-grid">
+
+        <div class="group-preview-card">
+
+            <div class="group-preview-header">
+                <span>멤버</span>
+                <span class="group-preview-link">전체보기 ›</span>
+            </div>
+
+            <div class="group-preview-list">
+                <div>👑 한지우 <span class="group-preview-muted">· 방장</span></div>
+                <div>이서연</div>
+                <div>박현우</div>
+            </div>
+
+        </div>
+
+        <div class="group-preview-card">
+
+            <div class="group-preview-header">
+                <span>최근 회의록</span>
+                <span class="group-preview-link">전체보기 ›</span>
+            </div>
+
+            <div class="group-preview-list">
+                <div class="group-preview-row">
+                    <span>주간 디자인 리뷰</span>
+                    <span class="group-preview-muted">9/3</span>
+                </div>
+                <div class="group-preview-row">
+                    <span>온보딩 화면 논의</span>
+                    <span class="group-preview-muted">8/27</span>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+</div>

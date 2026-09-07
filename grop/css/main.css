@@ -1,0 +1,317 @@
+  :root{
+    --bg: #faf8f6;
+    --green: #667c55;
+    --gray-text: #5e5e5e;
+    --gray-light: #d9d9d9;
+    --gray-divider: #e3e0db;
+    --card-shadow: 0 3px 8px rgba(0,0,0,0.12);
+    --done-bg:#e6f4e8; --done-text:#427a2a;
+    --progress-bg:#dce1f5; --progress-text:#2a4f7a;
+    --disabled-font:#a7a7a7;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{ font-family:'Roboto', sans-serif; color:#000; background:var(--bg); }
+  a{ color:inherit; text-decoration:none; }
+  button{ font-family:inherit; border:none; background:none; cursor:pointer; }
+
+  .app{ display:flex; min-height:100vh; }
+
+  /* ---------------- Sidebar ---------------- */
+  .sidebar{
+    width:210px;
+    flex:none;
+    padding:32px 20px;
+    border-right:1.5px solid var(--gray-divider);
+    display:flex;
+    flex-direction:column;
+  }
+  .sidebar .logo{
+    font-family:'Archivo Black', sans-serif;
+    color:var(--green);
+    font-size:28px;
+    letter-spacing:2px;
+    margin-bottom:36px;
+  }
+  .nav{
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+  }
+  .nav-item{
+    display:flex;
+    align-items:center;
+    gap:14px;
+    padding:12px 14px;
+    border-radius:10px;
+    font-family:'Inter', 'Roboto', sans-serif;
+    font-weight:600;
+    font-size:15px;
+    color:#000;
+    width:100%;
+    text-align:left;
+    cursor:pointer;
+  }
+  .nav-item.active{ background:var(--gray-light); }
+  .nav-item svg{ width:20px; height:20px; flex-shrink:0; stroke-width:2; }
+
+  /* 우상단 프로필 버튼 - 새 topbar 아이콘 크기에 맞춤 */
+  .topbar .profile-button{
+    width:28px;
+    height:28px;
+    border-radius:50%;
+    overflow:hidden;
+  }
+  .profile-button-avatar{
+    width:100%;
+    height:100%;
+    border-radius:50%;
+    background:var(--green);
+    color:#fff;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:14px;
+    overflow:hidden;
+  }
+  .profile-button-avatar img{ width:100%; height:100%; object-fit:cover; }
+
+  /* ---------------- Main area ---------------- */
+  .main{
+    flex:1;
+    padding:28px 40px 40px;
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    gap:26px;
+  }
+
+  .topbar{
+    display:flex;
+    justify-content:flex-end;
+    align-items:center;
+    gap:20px;
+  }
+  .topbar svg{ width:24px; height:24px; stroke-width:1.8; }
+  .topbar .icon-btn{ position:relative; display:flex; align-items:center; justify-content:center; border:none; background:transparent; cursor:pointer; padding:0; }
+
+  /* Group carousel */
+  .group-carousel{
+    display:flex;
+    align-items:center;
+    gap:14px;
+  }
+  .group-carousel .chevron{ flex:none; width:34px; height:34px; opacity:0.7; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .group-carousel .chevron svg{ width:100%; height:100%; color:var(--green); }
+  .group-cards{
+    flex:1;
+    min-width:0;
+    display:flex;
+    gap:18px;
+    overflow-x:auto;
+    scroll-behavior:smooth;
+    scrollbar-width:none;
+  }
+  .group-cards::-webkit-scrollbar{ display:none; }
+  .group-card{
+    flex:0 0 calc((100% - 54px) / 4);
+    background:#fff;
+    border-radius:15px;
+    box-shadow:var(--card-shadow);
+    padding:20px;
+    cursor:pointer;
+    transition:transform 0.15s;
+    display:flex;
+    flex-direction:column;
+    gap:26px;
+  }
+  .group-card:hover{
+    transform:translateY(-2px);
+  }
+  .group-card .badge{
+    width:52px;
+    height:52px;
+    background:var(--green);
+    border-radius:10px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:#fff;
+    font-family:'Archivo Black', sans-serif;
+    font-size:22px;
+  }
+  .group-card .name{
+    font-weight:500;
+    font-size:16px;
+  }
+
+  /* Section headers */
+  .section-head{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    margin-bottom:14px;
+  }
+  .section-head h2{ font-weight:700; font-size:19px; }
+  .section-head .see-all{ font-size:13px; font-weight:500; color:#000; }
+
+  /* Two-column rows */
+  .row-2col{
+    display:grid;
+    grid-template-columns:1.32fr 1fr;
+    gap:20px;
+    align-items:start;
+  }
+
+  /* Meeting list panel */
+  .panel{
+    background:#fff;
+    border-radius:15px;
+    box-shadow:var(--card-shadow);
+    padding:22px 24px;
+  }
+  .meeting-table .cols{
+    display:grid;
+    grid-template-columns: 2fr 1.1fr 1.4fr 1fr 0.8fr;
+    padding:0 4px 14px;
+    color:#000;
+    opacity:0.5;
+    font-weight:500;
+    font-size:13px;
+  }
+  .meeting-table .cols span:not(:first-child){ text-align:center; }
+  .meeting-table hr{
+    border:none;
+    border-top:1.5px solid var(--gray-divider);
+    margin-bottom:6px;
+  }
+  .meeting-row{
+    display:grid;
+    grid-template-columns: 2fr 1.1fr 1.4fr 1fr 0.8fr;
+    align-items:center;
+    padding:12px 4px;
+    border-radius:10px;
+  }
+  .meeting-row + .meeting-row{ margin-top:2px; }
+  .meeting-row:hover{ background:#faf8f6; }
+  .meeting-row .title{ font-weight:500; font-size:14px; }
+  .status-pill{
+    justify-self:start;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    padding:4px 10px;
+    border-radius:5px;
+    font-size:12px;
+  }
+  .status-pill.done{ background:var(--done-bg); color:var(--done-text); }
+  .status-pill.progress{ background:var(--progress-bg); color:var(--progress-text); }
+  .meeting-row .date{ text-align:center; font-size:13px; }
+  .attendees{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:2px;
+    font-size:12px;
+    opacity:0.7;
+  }
+  .attendees svg{ width:18px; height:18px; margin-left:-6px; stroke-width:1.5; color:var(--gray-text); }
+  .attendees svg:first-child{ margin-left:0; }
+  .ai-icon{ display:flex; justify-content:center; }
+  .ai-icon svg{ width:16px; height:16px; stroke-width:2; color:var(--done-text); }
+  .ai-icon .progress-ring{
+    width:14px; height:14px; border-radius:50%;
+    border:2px solid var(--gray-text);
+    position:relative;
+  }
+  .ai-icon .progress-ring::after{
+    content:""; position:absolute; width:6px; height:2px; background:var(--gray-text);
+    top:6px; left:4px;
+  }
+
+  /* Recent AI summary panel */
+  .summary-list{ display:flex; flex-direction:column; gap:12px; }
+  .summary-item{
+    display:flex;
+    gap:14px;
+    padding:12px;
+    border-radius:12px;
+    background:#faf8f6;
+  }
+  .summary-item svg.doc-icon{ width:26px; height:26px; flex:none; color:var(--green); stroke-width:1.6; }
+  .summary-item .content{ flex:1; min-width:0; }
+  .summary-item .top-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:4px;
+    flex-wrap:wrap;
+  }
+  .summary-item .title{ font-weight:500; font-size:15px; }
+  .summary-item .date{ font-size:12px; color:var(--gray-text); margin-left:auto; }
+  .summary-item .desc{
+    font-size:13px;
+    color:#333;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+
+  /* Quick actions */
+  .quick-actions{
+    display:grid;
+    grid-template-columns:repeat(4, 1fr);
+    gap:16px;
+  }
+  .qa-card{
+    background:#fff;
+    border-radius:15px;
+    box-shadow:var(--card-shadow);
+    aspect-ratio:1/1;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:14px;
+    cursor:pointer;
+  }
+  .qa-card svg{ width:36px; height:36px; color:var(--green); stroke-width:1.6; }
+  .qa-card span{ font-weight:700; font-size:14px; }
+
+  /* Calendar panel */
+  .calendar-panel{
+    background:#fff;
+    border-radius:15px;
+    box-shadow:var(--card-shadow);
+    padding:20px 22px;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .calendar-date{
+    font-weight:700;
+    font-size:34px;
+    color:var(--green);
+  }
+  .mini-week{
+    display:grid;
+    grid-template-columns:repeat(7, 1fr);
+    gap:6px;
+    font-family:'Poppins', sans-serif;
+  }
+  .mini-week .day-col{ display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .mini-week .day-label{ font-size:10px; }
+  .mini-week .date-num{
+    width:20px; height:20px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:10px;
+    border-radius:50%;
+  }
+  .mini-week .date-num.disabled{ color:var(--disabled-font); }
+  .mini-week .date-num.today{ background:var(--green); color:#fff; }
+
+  .calendar-empty{
+    text-align:center;
+    font-size:13px;
+    color:#000;
+    margin-top:4px;
+  }

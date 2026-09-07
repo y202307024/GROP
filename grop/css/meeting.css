@@ -1,0 +1,554 @@
+/* =========================
+   전체 회의 페이지
+   (너비/높이는 common.css의 .stage가 담당)
+========================= */
+
+.meeting-page {
+    padding: 30px 35px 25px;
+
+    display: flex;
+    flex-direction: column;
+
+    background: #ffffff;
+}
+
+
+/* =========================
+   상단
+========================= */
+
+.meeting-header {
+    height: 64px;
+
+    display: flex;
+    align-items: center;
+
+    position: relative;
+}
+
+
+/* GROP */
+
+.logo {
+    color: var(--color-primary);
+    text-decoration: none;
+
+    font-size: 32px;
+    font-weight: 800;
+
+    letter-spacing: -1px;
+}
+
+
+/* 회의 이름 */
+
+.meeting-title {
+    margin-left: 155px;
+
+    font-size: 20px;
+    font-weight: 700;
+}
+
+
+/* 경과 시간 (제목 옆에 작게) */
+
+.meeting-title-time {
+    margin-left: 8px;
+
+    font-size: 13px;
+    font-weight: 500;
+    color: #999999;
+}
+
+
+/* =========================
+   회의 메인
+========================= */
+
+.meeting-main {
+    flex: 1;
+
+    min-height: 0;
+
+    display: flex;
+
+    border: 1px solid #cccccc;
+    border-radius: 15px;
+
+    overflow: hidden;
+}
+
+
+/* =========================
+   화이트보드
+========================= */
+
+.whiteboard {
+    flex: 1;
+
+    min-width: 0;
+
+    background: #ffffff;
+}
+
+
+/* =========================
+   채팅
+========================= */
+
+.chat-panel {
+    width: 296px;
+
+    flex-shrink: 0;
+
+    position: relative;
+
+    display: flex;
+    flex-direction: column;
+
+    background: var(--color-primary-soft);
+
+    color: white;
+
+    transition: width 0.2s ease;
+}
+
+
+/* 채팅 접힘 상태 - 탭만 남기고 나머지는 감춤 */
+
+.chat-panel.is-collapsed {
+    width: 0;
+
+    flex-shrink: 0;
+}
+
+.chat-panel.is-collapsed > *:not(.chat-collapse-tab) {
+    display: none;
+}
+
+
+/* 접기/펼치기 탭 (패널 왼쪽 가장자리에 고정) */
+
+.chat-collapse-tab {
+    position: absolute;
+
+    left: -16px;
+    top: 50%;
+
+    transform: translateY(-50%);
+
+    width: 16px;
+    height: 44px;
+
+    border: none;
+    border-radius: 8px 0 0 8px;
+
+    background: var(--color-primary-soft);
+    color: white;
+
+    font-size: 11px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    padding: 0;
+
+    cursor: pointer;
+
+    z-index: 5;
+}
+
+
+/* 채팅 상단 - 참가자 아바타 */
+
+.chat-title {
+    height: 60px;
+
+    padding: 0 20px;
+
+    display: flex;
+    align-items: center;
+
+    gap: 8px;
+}
+
+
+.chat-participant-count {
+    font-size: 11px;
+    font-weight: 600;
+
+    color: rgba(255, 255, 255, 0.85);
+}
+
+
+.chat-participants {
+    display: flex;
+}
+
+.participant-avatar {
+    width: 32px;
+    height: 32px;
+
+    border-radius: 50%;
+
+    background: rgba(255, 255, 255, 0.25);
+
+    border: 2px solid var(--color-primary-soft);
+
+    color: white;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    font-size: 12px;
+    font-weight: 700;
+
+    cursor: default;
+}
+
+.participant-avatar:not(:first-child) {
+    margin-left: -10px;
+}
+
+
+/* 채팅 기록 */
+
+.chat-messages {
+    flex: 1;
+
+    min-height: 0;
+
+    padding: 15px;
+
+    overflow-y: auto;
+
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+
+/* 개별 메시지 (기본 = 상대방 메시지, 왼쪽 정렬) */
+
+.chat-message {
+    align-self: flex-start;
+
+    max-width: 85%;
+
+    padding: 8px 11px;
+
+    border-radius: 8px;
+
+    background: rgba(255, 255, 255, 0.25);
+
+    font-size: 13px;
+
+    word-break: break-word;
+}
+
+
+/* 내가 보낸 메시지 - 오른쪽 정렬
+   (지금은 모든 전송 메시지가 이 클래스를 사용,
+   나중에 서버 연동 시 다른 참가자 메시지는
+   .chat-message 기본 스타일만 붙여서 왼쪽에 표시) */
+
+.chat-message.own-message {
+    align-self: flex-end;
+
+    background: rgba(255, 255, 255, 0.85);
+
+    color: #2b3a24;
+}
+
+
+/* 입력 영역 */
+
+.chat-input-area {
+    display: flex;
+    align-items: center;
+
+    gap: 14px;
+
+    padding: 20px 18px 20px;
+}
+
+
+/* 입력창 */
+
+.chat-input-area input {
+    flex: 1;
+
+    min-width: 0;
+
+    height: 38px;
+
+    padding: 0 10px;
+
+    border: 1px solid white;
+    border-radius: 6px;
+
+    outline: none;
+
+    background: transparent;
+
+    color: white;
+
+    font-size: 13px;
+}
+
+.chat-input-area input::placeholder {
+    color: rgba(255, 255, 255, 0.85);
+}
+
+
+/* 전송 */
+
+.chat-input-area button {
+    height: 30px;
+
+    padding: 0 10px;
+
+    border: none;
+    border-radius: 4px;
+
+    background: white;
+    color: #222;
+
+    font-size: 12px;
+    font-weight: 600;
+
+    cursor: pointer;
+}
+
+
+/* =========================
+   하단
+========================= */
+
+.bottom-bar {
+    height: 55px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+
+/* =========================
+   왼쪽 도구
+========================= */
+
+.drawing-tools {
+    display: flex;
+    align-items: center;
+
+    gap: 10px;
+
+    padding-left: 10px;
+}
+
+
+/* 각각의 도구 버튼 */
+
+.tool-button {
+    position: relative;
+
+    width: 32px;
+    height: 32px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border: none;
+    border-radius: 5px;
+
+    background: transparent;
+
+    cursor: pointer;
+}
+
+
+/* 아이콘 */
+
+.tool-button svg {
+    width: 20px;
+    height: 20px;
+
+    stroke-width: 2;
+}
+
+
+/* 마우스를 올렸을 때 */
+
+.tool-button:hover {
+    background: #f0f0f0;
+}
+
+
+/* 현재 선택된 도구 */
+
+.tool-button.active {
+    background: var(--color-primary-tint);
+}
+
+
+/* =========================
+   툴팁
+========================= */
+
+.tool-button::after {
+    content: attr(data-tooltip);
+
+    position: absolute;
+
+    left: 50%;
+    bottom: calc(100% + 8px);
+
+    transform: translateX(-50%);
+
+    padding: 5px 8px;
+
+    border-radius: 4px;
+
+    background: #333333;
+    color: white;
+
+    font-size: 11px;
+    font-weight: 400;
+
+    white-space: nowrap;
+
+    opacity: 0;
+    visibility: hidden;
+
+    pointer-events: none;
+
+    transition:
+        opacity 0.15s ease,
+        visibility 0.15s ease;
+
+    z-index: 100;
+}
+
+
+/* 툴팁 작은 화살표 */
+
+.tool-button::before {
+    content: "";
+
+    position: absolute;
+
+    left: 50%;
+    bottom: calc(100% + 3px);
+
+    transform: translateX(-50%);
+
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #333333;
+
+    opacity: 0;
+    visibility: hidden;
+
+    pointer-events: none;
+
+    z-index: 100;
+}
+
+
+/* hover */
+
+.tool-button:hover::after,
+.tool-button:hover::before {
+    opacity: 1;
+    visibility: visible;
+}
+
+
+/* =========================
+   하단 통화 컨트롤 (마이크 / 녹화 / 나가기)
+========================= */
+
+.call-controls {
+    display: flex;
+    align-items: center;
+
+    gap: 8px;
+}
+
+
+/* 마이크 / 녹화 - 원형 버튼 */
+
+.call-icon-button {
+    width: 36px;
+    height: 36px;
+
+    padding: 0;
+    line-height: 1;
+
+    border: 1px solid var(--color-border-strong);
+    border-radius: 50%;
+
+    background: #ffffff;
+    color: #444444;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    cursor: pointer;
+}
+
+.call-icon-button svg {
+    width: 17px;
+    height: 17px;
+}
+
+.call-icon-button:hover {
+    background: #f5f5f5;
+}
+
+
+/* 켜짐/녹화중 등 활성 상태 */
+
+.call-icon-button.active {
+    background: var(--color-primary-soft);
+    border-color: var(--color-primary-soft);
+    color: white;
+}
+
+.call-icon-button.is-recording {
+    background: var(--color-danger);
+    border-color: var(--color-danger);
+    color: white;
+}
+
+
+/* 나가기 - 빨간 사각 버튼 */
+
+.leave-button {
+    height: 36px;
+
+    padding: 0 16px;
+    line-height: 1;
+
+    border: none;
+    border-radius: 6px;
+
+    background: var(--color-danger);
+    color: white;
+
+    font-size: 12px;
+    font-weight: 700;
+
+    cursor: pointer;
+}
+
+.leave-button:hover {
+    background: #9a4c4c;
+}
+
+

@@ -1,18 +1,25 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
+import AppShell from '../components/AppShell';
+import Icon from '../components/Icon';
 
-type Group = { id: string; name: string; invite_code: string; };
+type Group = { id: string; name: string; invite_code: string };
 type MyProfile = { nickname: string | null; avatar: string | null; avatar_url: string | null };
+type MemberPreview = { nickname: string; avatar: string };
 
+/**
+ * 그룹 상세 — grop/pages/group-detail.html 마크업과 group-detail.css 를 그대로 사용합니다.
+ */
 export default function GroupPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [group, setGroup] = useState<Group | null>(null);
-  const [myProfile, setMyProfile] = useState<MyProfile | null>(null); // 이 그룹에서의 내 프로필
+  const [myProfile, setMyProfile] = useState<MyProfile | null>(null);
+  const [members, setMembers] = useState<MemberPreview[]>([]);
+  const [meetingCount, setMeetingCount] = useState(0);
   const [copied, setCopied] = useState(false);
 
-  // 초대코드 클립보드 복사
   const copyInviteCode = async () => {
     if (!group) return;
     const code = group.invite_code.trim().toUpperCase();
@@ -25,13 +32,24 @@ export default function GroupPage() {
     }
   };
 
-  // 그룹 정보 불러오기
   useEffect(() => {
     supabase.from('groups').select('*').eq('id', id).single()
       .then(({ data }) => { if (data) setGroup(data); });
+
+    supabase.from('meetings').select('id', { count: 'exact', head: true }).eq('group_id', id)
+      .then(({ count }) => setMeetingCount(count ?? 0));
+
+    supabase.rpc('get_group_members_with_profiles', { p_group_id: id })
+      .then(({ data }) => {
+        if (data) {
+          setMembers(data.map((m: { nickname: string; avatar: string }) => ({
+            nickname: m.nickname || '멤버',
+            avatar: m.avatar || '🙂',
+          })));
+        }
+      });
   }, [id]);
 
-  // 이 그룹에서의 내 프로필 불러오기 (없으면 기본 프로필로 fallback)
   useEffect(() => {
     const fetchMyProfile = async () => {
       if (!id) return;
@@ -50,7 +68,6 @@ export default function GroupPage() {
         return;
       }
 
-      // 그룹별 설정이 없으면 기본(전역) 프로필 사용
       const { data: defaultProfile } = await supabase
         .from('profiles')
         .select('nickname, avatar, avatar_url')
@@ -62,115 +79,123 @@ export default function GroupPage() {
     fetchMyProfile();
   }, [id]);
 
-  if (!group) return <div style={{ padding: 40 }}>불러오는 중...</div>;
+  if (!group) {
+    return (
+      <AppShell activePage="main">
+        <div className="page">불러오는 중...</div>
+      </AppShell>
+    );
+  }
+
+  const extra = Math.max(0, members.length - 3);
 
   return (
-    <div style={{ maxWidth: 700, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 20px' }}>
-
-      {/* 1줄: 내 프로필(동그란 아바타) + 그룹명/초대코드 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 12 }}>
-        <button
-          type="button"
-          onClick={() => navigate(`/group/${id}/profile`)}
-          title="프로필 수정"
-          style={{
-            width: 56,
-            height: 56,
-            borderRadius: '50%',
-            border: '2px solid #3b3b4d',
-            background: '#2a2a3d',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: 28,
-            padding: 0,
-            cursor: 'pointer',
-            overflow: 'hidden',
-            flexShrink: 0,
-          }}
-        >
-          {myProfile?.avatar_url ? (
-            <img
-              src={myProfile.avatar_url}
-              alt="내 프로필"
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-            />
-          ) : (
-            myProfile?.avatar ?? '🐱'
-          )}
+    <AppShell activePage="main">
+      <div className="page group-detail-page">
+        <button className="group-back-button" type="button" aria-label="내 그룹으로" onClick={() => navigate('/main')}>
+          <Icon name="arrow-left" />
         </button>
 
-        <div>
-          <h2 style={{ margin: 0 }}>{group.name}</h2>
-          <div style={{ fontSize: 12, color: '#aaa', marginTop: 4 }}>초대코드: {group.invite_code}</div>
-        </div>
-      </div>
-
-      {/* 2줄: 초대코드 복사(왼쪽) / 메인·프로필·설정(오른쪽) */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <button
-          type="button"
-          onClick={copyInviteCode}
-          style={{
-            padding: '6px 12px',
-            fontSize: 12,
-            border: '1px solid #c7d2fe',
-            borderRadius: 8,
-            background: '#eef2ff',
-            color: '#4f46e5',
-            cursor: 'pointer',
-          }}
-        >
-          {copied ? '✓ 초대코드 복사됨' : '🔗 초대코드 복사'}
-        </button>
-
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => navigate('/main')}
-            style={{ padding: '8px 16px', background: '#eee', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
-            ⬅️ 메인
-          </button>
-
-          <button onClick={() => navigate(`/group/${id}/profile`)}
-            style={{ padding: '8px 16px', background: '#e0f2fe', border: 'none', borderRadius: 8, cursor: 'pointer', color: '#0369a1' }}>
-            👤 프로필
-          </button>
-
-          <button onClick={() => navigate(`/group/${id}/settings`)}
-            style={{ padding: '8px 16px', background: '#f0f0f0', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
-            ⚙️ 설정
+        <div className="group-detail-profile-row">
+          <div className="group-detail-identity">
+            <div className="group-detail-avatar">
+              {myProfile?.avatar_url
+                ? <img src={myProfile.avatar_url} alt="" />
+                : (group.name.trim().charAt(0) || 'G')}
+            </div>
+            <div>
+              <div className="group-detail-name">{group.name}</div>
+              <div className="group-detail-invite">
+                <span>초대코드 {group.invite_code}</span>
+                <button
+                  className={`group-invite-copy-button${copied ? ' is-copied' : ''}`}
+                  type="button"
+                  aria-label="초대코드 복사"
+                  onClick={copyInviteCode}
+                >
+                  <Icon name="clipboard" />
+                </button>
+              </div>
+            </div>
+          </div>
+          <button
+            className="group-edit-icon-button"
+            type="button"
+            aria-label="그룹 편집"
+            onClick={() => navigate(`/group/${id}/settings`)}
+          >
+            <Icon name="pencil" />
           </button>
         </div>
+
+        <div className="group-detail-member-row">
+          <div className="group-detail-member-summary">
+            <div className="group-detail-avatar-stack">
+              {members.slice(0, 3).map((m, i) => (
+                <div className="mini-avatar" key={`${m.nickname}-${i}`}>{m.avatar}</div>
+              ))}
+              {extra > 0 && <div className="mini-avatar mini-avatar-more">+{extra}</div>}
+            </div>
+            <span>멤버 {members.length}명</span>
+          </div>
+          <button className="group-meeting-button" type="button" onClick={() => navigate(`/room/${id}`)}>
+            회의방으로 이동
+          </button>
+        </div>
+
+        <div className="group-detail-memo">
+          {myProfile?.nickname ? `${myProfile.nickname} 님, 이 그룹에서 협업을 이어가세요.` : '그룹 메모가 아직 없어요.'}
+        </div>
+
+        <div className="group-detail-stats">
+          <div className="group-stat-card">
+            <div className="group-stat-emoji">📅</div>
+            <div className="group-stat-label">다음 일정</div>
+            <div className="group-stat-value">미정</div>
+          </div>
+          <div className="group-stat-card" onClick={() => navigate(`/group/${id}/members`)} style={{ cursor: 'pointer' }}>
+            <div className="group-stat-emoji">👥</div>
+            <div className="group-stat-label">참여 인원</div>
+            <div className="group-stat-value">{members.length}명</div>
+          </div>
+          <div className="group-stat-card" onClick={() => navigate(`/group/${id}/meetings`)} style={{ cursor: 'pointer' }}>
+            <div className="group-stat-emoji">🗓️</div>
+            <div className="group-stat-label">누적 회의</div>
+            <div className="group-stat-value">{meetingCount}회</div>
+          </div>
+        </div>
+
+        <div className="group-detail-preview-grid">
+          <div className="group-preview-card">
+            <div className="group-preview-header">
+              <span>멤버</span>
+              <span className="group-preview-link" onClick={() => navigate(`/group/${id}/members`)} style={{ cursor: 'pointer' }}>
+                전체보기 ›
+              </span>
+            </div>
+            <div className="group-preview-list">
+              {members.slice(0, 3).map((m, i) => (
+                <div key={`${m.nickname}-${i}`}>
+                  {i === 0 ? `👑 ${m.nickname}` : m.nickname}
+                  {i === 0 && <span className="group-preview-muted"> · 방장</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="group-preview-card">
+            <div className="group-preview-header">
+              <span>최근 회의록</span>
+              <span className="group-preview-link" onClick={() => navigate(`/group/${id}/meetings`)} style={{ cursor: 'pointer' }}>
+                전체보기 ›
+              </span>
+            </div>
+            <div className="group-preview-list">
+              <div className="group-preview-muted">회의록에서 지난 기록을 확인하세요.</div>
+            </div>
+          </div>
+        </div>
       </div>
-
-      {/* 그룹 메뉴 카드 4개 */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <div onClick={() => navigate(`/room/${id}`)}
-          style={{ padding: 24, background: '#eaf4fd', borderRadius: 12, cursor: 'pointer', textAlign: 'center' }}>
-          <div style={{ fontSize: 32 }}>📹</div>
-          <div style={{ fontWeight: 600, marginTop: 8 }}>회의방 입장</div>
-          <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>음성 회의 + 실시간 캔버스</div>
-        </div>
-
-        <div style={{ padding: 24, background: '#f0fdf4', borderRadius: 12, cursor: 'pointer', textAlign: 'center' }}>
-          <div style={{ fontSize: 32 }}>📅</div>
-          <div style={{ fontWeight: 600, marginTop: 8 }}>회의 일정</div>
-          <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>일정 추가 및 관리</div>
-        </div>
-
-        <div onClick={() => navigate(`/group/${id}/meetings`)}
-          style={{ padding: 24, background: '#fdf4ff', borderRadius: 12, cursor: 'pointer', textAlign: 'center' }}>
-          <div style={{ fontSize: 32 }}>📄</div>
-          <div style={{ fontWeight: 600, marginTop: 8 }}>회의록</div>
-          <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>지난 회의록 보기</div>
-        </div>
-
-        <div onClick={() => navigate(`/group/${id}/members`)}
-          style={{ padding: 24, background: '#fffbea', borderRadius: 12, cursor: 'pointer', textAlign: 'center' }}>
-          <div style={{ fontSize: 32 }}>👥</div>
-          <div style={{ fontWeight: 600, marginTop: 8 }}>멤버</div>
-          <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>그룹 멤버 보기</div>
-        </div>
-      </div>
-    </div>
+    </AppShell>
   );
 }

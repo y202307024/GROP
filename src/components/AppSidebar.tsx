@@ -41,10 +41,8 @@ export default function AppSidebar({ onLogout }: Props) {
 
   return (
     <div className={s.sidebar}>
-      <div className={s.logo}>
-        <div className={s.logoIcon}>G</div>
-        <span className={s.logoText}>Groupop</span>
-      </div>
+      {/* grop 메인과 같이 워드마크만 표시 */}
+      <div className={s.logo}>GROP</div>
 
       <div className={s.menu}>
         {sidebarMenuItems.map((item, i) => (

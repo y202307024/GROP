@@ -10,12 +10,17 @@
  */
 
 :root {
-  /* ===== 브랜드 (초록 계열 — 로고·주요 액션·AI 기능) ===== */
-  --color-primary: #1d9e75;
-  --color-primary-strong: #0f6e56;
-  --color-primary-deep: #085041;
-  --color-primary-soft: #e1f5ee;
-  --color-primary-subtle: #f2fbf7;
+  /* ===== 브랜드 (grop CSS / 피그마 올리브 그린) ===== */
+  --color-primary: #667c55;
+  --color-primary-hover: #56683f;
+  --color-primary-strong: #56683f;
+  --color-primary-deep: #47603c;
+  /* 연한 배경용 틴트 */
+  --color-primary-tint: #e6f4e8;
+  --color-primary-subtle: #f4f3ee;
+  /* grop CSS 원본: 버튼 배경이 --color-primary-soft */
+  --color-primary-soft: #7f8d72;
+  --color-primary-button: #7f8d72;
 
   /* ===== 보조 (파랑 계열) ===== */
   --color-accent: #5865f2; /* 회의·실시간 (아바타, 참여자) */
@@ -25,36 +30,37 @@
   --color-info-bright-soft: #eaf4fd;
 
   /* ===== 상태 ===== */
-  --color-success: #10b981;
+  --color-success: #427a2a;
   --color-online: #23a55a; /* 접속 표시 점 */
   --color-speaking: #57f287; /* 발화 중 표시 */
-  --color-danger: #ed4245;
-  --color-danger-text: #a32d2d;
+  --color-danger: #b15b5b;
+  --color-danger-text: #b15b5b;
   --color-danger-soft: #fdecea;
   --color-danger-border: #fecaca;
   --color-warning-soft: #fff3cd;
   --color-warning-text: #856404;
 
-  /* ===== 표면 (라이트) ===== */
-  --color-bg: #f5f5f3;
+  /* ===== 표면 (라이트 — grop 크림 배경) ===== */
+  --color-bg: #faf8f6;
+  --color-bg-soft: #faf8f6;
   --color-surface: #ffffff;
-  --color-surface-alt: #f9fafb;
-  --color-surface-input: #fafafa;
+  --color-surface-alt: #fefdfd;
+  --color-surface-input: #ffffff;
 
   /* ===== 경계선 ===== */
-  --color-border: #e5e7eb;
+  --color-border: #e3e0db;
   --color-border-subtle: #eeeeee;
-  --color-border-strong: #dddddd;
-  --color-border-hover: #bbbbbb;
+  --color-border-strong: #b5b5b5;
+  --color-border-hover: #9a9a9a;
 
   /* ===== 텍스트 (라이트) ===== */
-  --color-text: #111827;
-  --color-text-body: #333333;
-  --color-text-secondary: #6b7280;
-  --color-text-muted: #888888;
-  --color-text-faint: #aaaaaa;
-  --color-text-disabled: #bbbbbb;
-  --color-text-placeholder: #999999;
+  --color-text: #111111;
+  --color-text-body: #111111;
+  --color-text-secondary: #5e5e5e;
+  --color-text-muted: #5e5e5e;
+  --color-text-faint: #a2a2a2;
+  --color-text-disabled: #a7a7a7;
+  --color-text-placeholder: #a2a2a2;
 
   /* ===== 표면 (다크 — 사이드바·회의방) ===== */
   --color-dark-bg: #1e1f22;
@@ -67,8 +73,10 @@
   --color-dark-text-muted: #949ba4;
   --color-dark-text-faint: #9d9ea0;
 
-  /* ===== 타이포그래피 ===== */
-  --font-sans: system-ui, 'Segoe UI', Roboto, 'Malgun Gothic', sans-serif;
+  /* ===== 타이포그래피 (grop: Archivo Black + Roboto) ===== */
+  --font-sans: 'Roboto', Arial, 'Noto Sans KR', sans-serif;
+  --font-display: 'Archivo Black', 'Roboto', sans-serif;
+  --font-heading: 'Archivo', 'Roboto', sans-serif;
   --font-mono: ui-monospace, Consolas, monospace;
 
   --text-2xs: 10px;
@@ -119,13 +127,14 @@
   --radius-full: 50%;
 
   /* ===== 그림자 ===== */
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.25);
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.04);
+  --shadow-card: 0 3px 8px rgba(0, 0, 0, 0.12);
+  --shadow-md: 0 4px 24px rgba(0, 0, 0, 0.06);
   --shadow-lg:
     0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
 
   /* ===== 레이아웃 ===== */
-  --sidebar-width: 220px;
+  --sidebar-width: 210px;
   --room-header-height: 48px;
   --room-controls-height: 52px;
   --content-max-width: 720px;

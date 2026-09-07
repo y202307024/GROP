@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
+import AppShell from '../components/AppShell';
+import Icon from '../components/Icon';
 
 type Member = {
   id: string;
@@ -10,13 +12,13 @@ type Member = {
   avatar: string;
 };
 
+/** 팀원 목록 — grop/css/member.css 클래스명을 그대로 사용합니다. */
 export default function MemberList() {
   const { id: groupId } = useParams();
   const navigate = useNavigate();
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useState('');
-  const [groupName, setGroupName] = useState('');
 
   useEffect(() => {
     fetchMembers();
@@ -26,14 +28,6 @@ export default function MemberList() {
     const { data: userData } = await supabase.auth.getUser();
     setCurrentUserId(userData.user?.id || '');
 
-    const { data: groupData } = await supabase
-      .from('groups')
-      .select('name')
-      .eq('id', groupId)
-      .single();
-    if (groupData) setGroupName(groupData.name);
-
-    // group_members + profiles 직접 join
     const { data, error } = await supabase.rpc('get_group_members_with_profiles', {
       p_group_id: groupId
     });
@@ -50,49 +44,52 @@ export default function MemberList() {
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
-    return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 참여`;
+    return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
   };
 
-  if (loading) return <div style={{ padding: 40, fontFamily: 'sans-serif', color: '#888' }}>불러오는 중...</div>;
-
   return (
-    <div style={{ maxWidth: 600, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 20px' }}>
-      <div style={{ marginBottom: 24 }}>
-        <button onClick={() => navigate(`/group/${groupId}`)}
-          style={{ background: 'none', border: 'none', color: '#888', fontSize: 13, cursor: 'pointer', padding: 0, marginBottom: 10 }}>
-          ← 그룹으로
-        </button>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>👥 멤버</h2>
-        <div style={{ fontSize: 13, color: '#888', marginTop: 2 }}>{groupName} · {members.length}명</div>
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {members.map((m, i) => {
-          const isMe = m.user_id === currentUserId;
-          return (
-            <div key={m.id} style={{ background: '#fff', border: '0.5px solid #eee', borderRadius: 12, padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
-              <div style={{ width: 44, height: 44, borderRadius: '50%', background: '#5865f2', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0 }}>
-                {m.avatar || '🐱'}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 15, fontWeight: 500 }}>{m.nickname || '알 수 없음'}</span>
-                  {isMe && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, background: '#E1F5EE', color: '#085041' }}>나</span>}
-                  {i === 0 && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, background: '#E6F1FB', color: '#185FA5' }}>👑 방장</span>}
-                </div>
-                <div style={{ fontSize: 12, color: '#aaa', marginTop: 3 }}>{formatDate(m.joined_at)}</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {members.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 60, color: '#aaa' }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>👥</div>
-          <div style={{ fontSize: 14 }}>멤버가 없어요</div>
+    <AppShell activePage="member">
+      <div className="page">
+        <div className="page-header">
+          <h1>팀원</h1>
+          <button className="primary-button" type="button" onClick={() => navigate(`/group/${groupId}`)}>
+            <Icon name="user-plus" />
+            그룹으로
+          </button>
         </div>
-      )}
-    </div>
+
+        {loading ? (
+          <div>불러오는 중...</div>
+        ) : (
+          <div className="list-card">
+            <div className="list-row list-head member-row">
+              <span>이름</span>
+              <span>역할</span>
+              <span>가입일</span>
+              <span></span>
+            </div>
+            {members.map((m, i) => {
+              const isMe = m.user_id === currentUserId;
+              return (
+                <div key={m.id} className="list-row member-row">
+                  <div className="person-cell">
+                    <div className="avatar-circle">{m.avatar || '🙂'}</div>
+                    <div>
+                      <div className="person-name">{m.nickname || '알 수 없음'}</div>
+                      <div className="person-sub">{isMe ? '나' : ''}</div>
+                    </div>
+                  </div>
+                  <span>
+                    <span className={`badge${i === 0 ? '' : ' badge-muted'}`}>{i === 0 ? '관리자' : '멤버'}</span>
+                  </span>
+                  <span>{formatDate(m.joined_at)}</span>
+                  <span />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </AppShell>
   );
 }

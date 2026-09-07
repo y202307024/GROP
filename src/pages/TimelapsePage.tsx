@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
-import AppSidebar from '../components/AppSidebar';
+import AppShell from '../components/AppShell';
 import TimelapseSavePanel, { type TimelapseSave } from '../components/TimelapseSavePanel';
 import {
   deleteTimelapseSave,
@@ -12,7 +12,6 @@ import {
   saveTimelapseCategory,
   type TimelapseSaveWithBoard,
 } from '../timelapseApi';
-import layout from '../styles/pageLayout.module.css';
 import tbtn from '../components/timelapseButton.module.css';
 import s from './TimelapsePage.module.css';
 
@@ -140,16 +139,11 @@ export default function TimelapsePage() {
   };
 
   return (
-    <div className={layout.wrap}>
-      <AppSidebar />
-
-      <div className={layout.content}>
-        <div className={layout.contentHeader}>
-          <div>
-            <div className={layout.pageTitle}>타임랩스</div>
-            <div className={layout.pageSub}>캔버스 그리기 기록을 카테고리별로 저장하고 재생합니다</div>
-          </div>
-          <button type="button" className={layout.btnPrimary} onClick={() => navigate(boardId ? `/canvas?boardId=${boardId}` : '/canvas')}>
+    <AppShell activePage="document">
+      <div className="page">
+        <div className="page-header">
+          <h1>타임랩스</h1>
+          <button type="button" className="primary-button" onClick={() => navigate(boardId ? `/canvas?boardId=${boardId}` : '/canvas')}>
             캔버스 열기
           </button>
         </div>
@@ -181,7 +175,7 @@ export default function TimelapsePage() {
 
         {otherBoardGroups.length > 0 ? (
           <>
-            <div className={layout.sectionLabel}>다른 보드 타임랩스</div>
+            <div className="section-head"><h2>다른 보드 타임랩스</h2></div>
             {otherBoardGroups.map(([id, group]) => (
               <section key={id} className={s.boardSection}>
                 <div className={s.otherBoardTitle}>{group.boardTitle}</div>
@@ -211,6 +205,6 @@ export default function TimelapsePage() {
           </>
         ) : null}
       </div>
-    </div>
+    </AppShell>
   );
 }

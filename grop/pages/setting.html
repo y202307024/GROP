@@ -1,0 +1,88 @@
+<div class="page">
+
+    <div class="page-header">
+        <h1>설정</h1>
+    </div>
+
+
+    <div class="settings-card">
+
+        <div class="settings-section">
+
+            <h3>프로필</h3>
+            <p class="settings-desc">
+                다른 팀원에게 보여지는 내 정보예요.
+            </p>
+
+            <div class="settings-row">
+                <label for="settingNickname">닉네임</label>
+                <input
+                    type="text"
+                    id="settingNickname"
+                    class="settings-field"
+                    value="한지우">
+            </div>
+
+            <div class="settings-row">
+                <label for="settingEmail">이메일</label>
+                <input
+                    type="email"
+                    id="settingEmail"
+                    class="settings-field"
+                    value="jiwoo@grop.com"
+                    disabled>
+            </div>
+
+        </div>
+
+
+        <div class="settings-section">
+
+            <h3>알림</h3>
+            <p class="settings-desc">
+                받고 싶은 알림만 켜두세요.
+            </p>
+
+            <div class="settings-row">
+                <label>이메일로 알림 받기</label>
+                <span class="toggle-switch">
+                    <input type="checkbox" checked>
+                    <span class="toggle-slider"></span>
+                </span>
+            </div>
+
+            <div class="settings-row">
+                <label>새 회의 생성 시 알림</label>
+                <span class="toggle-switch">
+                    <input type="checkbox" checked>
+                    <span class="toggle-slider"></span>
+                </span>
+            </div>
+
+            <div class="settings-row">
+                <label>AI 요약 완료 알림</label>
+                <span class="toggle-switch">
+                    <input type="checkbox">
+                    <span class="toggle-slider"></span>
+                </span>
+            </div>
+
+        </div>
+
+
+        <div class="settings-section">
+
+            <h3>계정</h3>
+            <p class="settings-desc">
+                이 브라우저에서 로그아웃해요.
+            </p>
+
+            <button class="danger-button" id="settingsLogoutButton">
+                로그아웃
+            </button>
+
+        </div>
+
+    </div>
+
+</div>

@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { useNavigate } from 'react-router-dom';
+import AppShell from '../components/AppShell';
+import VoiceSettingsPanel from '../components/VoiceSettingsPanel';
 
 const avatars = ['🐱', '🐶', '🐸', '🐼', '🦊', '🐨', '🐯', '🦁', '🐙', '🐬'];
 const MAX_FILE_SIZE_MB = 3;
@@ -98,74 +100,83 @@ export default function DefaultProfile() {
     }
   };
 
-  if (loading) return <div style={{ padding: '40px', textAlign: 'center' }}>불러오는 중...</div>;
+  if (loading) {
+    return (
+      <AppShell activePage="setting">
+        <div className="page">불러오는 중...</div>
+      </AppShell>
+    );
+  }
 
   return (
-    <div style={{ maxWidth: '400px', margin: '60px auto', fontFamily: 'sans-serif', textAlign: 'center' }}>
-      <h2>기본 프로필 설정</h2>
-      <p style={{ color: '#888', marginTop: '-8px', marginBottom: '24px', fontSize: '14px' }}>
-        그룹별로 따로 설정하지 않으면 이 프로필이 사용돼요
-      </p>
+    <AppShell activePage="setting">
+      <div className="page">
+        <div className="profile-modal">
+          <div className="profile-modal-header">
+            <h2>프로필 수정</h2>
+          </div>
+          <p className="settings-desc">그룹별로 따로 설정하지 않으면 이 프로필이 사용돼요</p>
 
-      <div style={{ marginBottom: '16px' }}>
-        {avatarUrl ? (
-          <img
-            src={avatarUrl}
-            alt="프로필 사진"
-            style={{ width: '96px', height: '96px', borderRadius: '50%', objectFit: 'cover', marginBottom: '8px', border: '2px solid #3498db' }}
-          />
-        ) : (
-          <div style={{ fontSize: '60px', marginBottom: '8px' }}>{selectedAvatar}</div>
-        )}
+          <div className="profile-photo-section">
+            <div className="profile-photo-preview">
+              {avatarUrl ? <img src={avatarUrl} alt="프로필 사진" /> : selectedAvatar}
+            </div>
+            <div className="profile-photo-actions">
+              <button type="button" className="secondary-button" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                {uploading ? '업로드 중...' : '사진 업로드'}
+              </button>
+              {avatarUrl && (
+                <button type="button" className="text-danger-button" onClick={handleRemovePhoto}>사진 제거</button>
+              )}
+            </div>
+            <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} hidden />
+          </div>
 
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '8px' }}>
-          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading}
-            style={{ fontSize: '13px', padding: '6px 12px', borderRadius: '6px', border: '1px solid #3498db', background: 'white', color: '#3498db', cursor: 'pointer' }}>
-            {uploading ? '업로드 중...' : '📷 사진 업로드'}
-          </button>
-          {avatarUrl && (
-            <button type="button" onClick={handleRemovePhoto}
-              style={{ fontSize: '13px', padding: '6px 12px', borderRadius: '6px', border: '1px solid #ddd', background: 'white', color: '#777', cursor: 'pointer' }}>
-              사진 제거
+          <div className="profile-avatar-section">
+            <div className="profile-section-label">아바타 선택</div>
+            <div className="avatar-grid">
+              {avatars.map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  className={`avatar-option${!avatarUrl && selectedAvatar === a ? ' is-selected' : ''}`}
+                  onClick={() => { setSelectedAvatar(a); setAvatarUrl(null); }}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="profile-field">
+            <label htmlFor="nickname">닉네임</label>
+            <input
+              id="nickname"
+              className="profile-input"
+              type="text"
+              placeholder="닉네임 입력"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              maxLength={12}
+            />
+          </div>
+
+          <div className="profile-modal-actions">
+            <button type="button" className="secondary-button" onClick={() => navigate('/main')}>메인으로</button>
+            <button type="button" className="primary-button" onClick={handleSave} disabled={saving || uploading}>
+              {saving ? '저장 중...' : '저장하기'}
             </button>
-          )}
+          </div>
         </div>
-        <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display: 'none' }} />
-      </div>
 
-      <div style={{ marginBottom: '24px' }}>
-        <div style={{ fontSize: '12px', color: '#999', marginBottom: '8px' }}>또는 이모지 아바타 선택</div>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap' }}>
-          {avatars.map((a) => (
-            <button key={a} type="button"
-              onClick={() => { setSelectedAvatar(a); setAvatarUrl(null); }}
-              style={{
-                fontSize: '24px', padding: '6px',
-                border: !avatarUrl && selectedAvatar === a ? '2px solid #3498db' : '2px solid transparent',
-                borderRadius: '8px',
-                background: !avatarUrl && selectedAvatar === a ? '#eaf4fd' : 'transparent',
-                cursor: 'pointer',
-              }}>
-              {a}
-            </button>
-          ))}
+        <div className="settings-card" style={{ marginTop: 24 }}>
+          <div className="settings-section">
+            <h3>음성</h3>
+            <p className="settings-desc">마이크와 헤드셋을 고르고 음량을 조절합니다. 회의방에 그대로 적용됩니다.</p>
+            <VoiceSettingsPanel hideHeading />
+          </div>
         </div>
       </div>
-
-      <div style={{ marginBottom: '16px' }}>
-        <input type="text" placeholder="닉네임 입력" value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={12}
-          style={{ width: '100%', padding: '10px', boxSizing: 'border-box', fontSize: '16px', borderRadius: '6px', border: '1px solid #ddd' }} />
-      </div>
-
-      <button onClick={handleSave} disabled={saving || uploading}
-        style={{ width: '100%', padding: '12px', backgroundColor: '#3498db', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '6px', fontSize: '16px', marginBottom: '8px' }}>
-        {saving ? '저장 중...' : '저장하기'}
-      </button>
-
-      <button onClick={() => navigate('/main')}
-        style={{ width: '100%', padding: '12px', backgroundColor: '#7f8c8d', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '6px', fontSize: '16px' }}>
-        ⬅️ 메인으로
-      </button>
-    </div>
+    </AppShell>
   );
 }

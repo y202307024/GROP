@@ -1,0 +1,207 @@
+/* =========================================
+   설정 페이지 전용 스타일
+   (공통 리셋/컬러 변수는 common.css,
+    사이드바/상단바는 main.css)
+========================================= */
+
+.page {
+    width: 100%;
+    height: 100%;
+
+    padding:
+        48px
+        58px
+        45px
+        62px;
+
+    display: flex;
+    flex-direction: column;
+
+    overflow-y: auto;
+}
+
+
+.page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 28px;
+}
+
+
+.page-header h1 {
+    margin: 0;
+
+    font-size: 26px;
+    font-weight: 700;
+
+    color: var(--color-primary);
+
+    letter-spacing: -1px;
+}
+
+
+/* =========================================
+   설정 카드
+========================================= */
+
+.settings-card {
+    background: #ffffff;
+
+    border: 1px solid #eeeeee;
+    border-radius: 10px;
+
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+
+    padding: 8px 28px;
+}
+
+
+.settings-section {
+    padding: 24px 0;
+
+    border-bottom: 1px solid #f2f2f2;
+}
+
+.settings-section:last-child {
+    border-bottom: none;
+}
+
+
+.settings-section h3 {
+    margin: 0 0 4px;
+
+    font-size: 15px;
+    font-weight: 700;
+}
+
+
+.settings-section .settings-desc {
+    margin: 0 0 16px;
+
+    font-size: 12px;
+    color: #888;
+}
+
+
+.settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    padding: 10px 0;
+}
+
+
+.settings-row label {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+
+.settings-field {
+    width: 100%;
+    max-width: 360px;
+
+    height: 38px;
+
+    padding: 0 12px;
+
+    border: 1px solid var(--color-border-strong);
+    border-radius: 5px;
+
+    font-size: 13px;
+
+    outline: none;
+}
+
+.settings-field:focus {
+    border-color: var(--color-primary);
+}
+
+.settings-field[disabled] {
+    background: #f7f7f7;
+    color: #999;
+}
+
+
+/* 토글 스위치 */
+
+.toggle-switch {
+    position: relative;
+
+    width: 42px;
+    height: 24px;
+
+    flex-shrink: 0;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+
+    inset: 0;
+
+    background: #dddddd;
+
+    border-radius: 999px;
+
+    cursor: pointer;
+
+    transition: background 0.15s;
+}
+
+.toggle-slider::before {
+    content: "";
+
+    position: absolute;
+
+    width: 18px;
+    height: 18px;
+
+    left: 3px;
+    top: 3px;
+
+    background: white;
+
+    border-radius: 50%;
+
+    transition: transform 0.15s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background: var(--color-primary);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(18px);
+}
+
+
+/* 위험 버튼 (로그아웃) */
+
+.danger-button {
+    border: 1px solid var(--color-danger);
+    border-radius: 6px;
+
+    background: #ffffff;
+    color: var(--color-danger);
+
+    padding: 9px 16px;
+
+    font-size: 13px;
+    font-weight: 600;
+
+    cursor: pointer;
+}
+
+.danger-button:hover {
+    background: var(--color-danger);
+    color: white;
+}

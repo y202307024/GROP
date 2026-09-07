@@ -1,0 +1,401 @@
+/* =========================================
+   이 페이지 전용 설정
+   (공통 리셋/컬러 변수는 common.css)
+========================================= */
+
+body {
+    background: var(--color-bg-soft);
+    font-family: 'Roboto', sans-serif;
+}
+
+
+/* =========================================
+   전체 레이아웃
+   (너비/높이는 common.css의 .stage가 담당)
+========================================= */
+
+.login-shell {
+    display: flex;
+    align-items: stretch;
+
+    overflow: hidden;
+}
+
+
+/* =========================================
+   왼쪽 히어로 영역
+========================================= */
+
+.hero {
+    position: relative;
+
+    flex: 1 1 65%;
+
+    padding: 60px 5%;
+
+    display: flex;
+    flex-direction: column;
+
+    overflow-y: auto;
+}
+
+
+.hero-content {
+    position: relative;
+}
+
+
+.brand {
+    font-family: 'Archivo Black', sans-serif;
+    font-size: clamp(48px, 6vw, 100px);
+    letter-spacing: 5px;
+
+    color: var(--color-primary);
+}
+
+
+.tagline {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 400;
+    font-size: clamp(26px, 3.2vw, 48px);
+    letter-spacing: 1.5px;
+    line-height: 1.25;
+
+    margin-top: 16px;
+}
+
+
+.desc {
+    font-weight: 500;
+    font-size: clamp(15px, 1.4vw, 24px);
+    line-height: 1.4;
+
+    margin-top: 24px;
+}
+
+
+/* =========================================
+   기능 카드 4개
+========================================= */
+
+.features {
+    margin-top: auto;
+    padding-top: 40px;
+
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 20px;
+}
+
+
+.feature-card {
+    background: #fefdfd;
+
+    border-radius: 10px;
+
+    padding: 28px 16px;
+
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+}
+
+
+.feature-card svg {
+    width: 40px;
+    height: 40px;
+
+    color: var(--color-primary);
+
+    margin-bottom: 14px;
+
+    stroke-width: 1.6;
+}
+
+
+.feature-card h3 {
+    font-weight: 700;
+    font-size: 18px;
+
+    margin-bottom: 8px;
+}
+
+
+.feature-card p {
+    font-weight: 500;
+    font-size: 14px;
+    line-height: 1.5;
+
+    color: #000000;
+}
+
+
+/* =========================================
+   오른쪽 로그인 패널
+========================================= */
+
+.login-panel {
+    flex: 0 0 420px;
+    max-width: 35%;
+
+    background: #ffffff;
+
+    border-radius: 20px;
+
+    margin: 40px 40px 40px 0;
+
+    padding: 48px 44px;
+
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+
+    overflow-y: auto;
+
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+
+.login-panel h1 {
+    font-weight: 700;
+    font-size: 32px;
+}
+
+
+.login-panel .subtitle {
+    font-size: 15px;
+    color: var(--color-text-muted);
+
+    margin-top: 8px;
+    margin-bottom: 32px;
+}
+
+
+/* =========================================
+   입력 필드
+========================================= */
+
+.field {
+    margin-bottom: 22px;
+}
+
+.field label {
+    display: block;
+
+    font-weight: 500;
+    font-size: 15px;
+
+    margin-bottom: 8px;
+}
+
+.field input {
+    width: 100%;
+    height: 52px;
+
+    border: 1px solid var(--color-text-muted);
+    border-radius: 8px;
+
+    padding: 0 16px;
+
+    font-family: inherit;
+    font-size: 15px;
+
+    outline: none;
+}
+
+.field input::placeholder {
+    color: var(--color-text-faint);
+}
+
+.field input:focus {
+    border-color: var(--color-primary);
+}
+
+
+/* =========================================
+   체크박스 / 비밀번호 찾기
+========================================= */
+
+.row-between {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 18px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+
+    gap: 8px;
+
+    font-size: 14px;
+    color: var(--color-text-muted);
+
+    cursor: pointer;
+}
+
+.checkbox-label input {
+    appearance: none;
+
+    width: 18px;
+    height: 18px;
+
+    border: 1px solid var(--color-text-muted);
+    border-radius: 5px;
+
+    margin: 0;
+
+    cursor: pointer;
+}
+
+.checkbox-label input:checked {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+}
+
+.forgot-link {
+    border: none;
+    background: transparent;
+
+    padding: 0;
+
+    font-size: 14px;
+    color: var(--color-text-muted);
+
+    cursor: pointer;
+}
+
+.forgot-link:hover {
+    text-decoration: underline;
+}
+
+
+/* =========================================
+   에러 / 안내 메시지
+========================================= */
+
+.login-message {
+    min-height: 16px;
+
+    margin: -6px 0 12px;
+
+    font-size: 12px;
+    line-height: 1.5;
+
+    color: var(--color-danger);
+}
+
+
+/* =========================================
+   버튼
+========================================= */
+
+.btn {
+    width: 100%;
+    height: 54px;
+
+    border-radius: 8px;
+    border: none;
+
+    font-family: inherit;
+    font-weight: 500;
+    font-size: 17px;
+
+    cursor: pointer;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    gap: 10px;
+}
+
+.btn-primary {
+    background: var(--color-primary-soft);
+    color: #ffffff;
+
+    margin-bottom: 24px;
+}
+
+.btn-primary:hover {
+    filter: brightness(0.95);
+}
+
+.divider {
+    display: flex;
+    align-items: center;
+
+    gap: 16px;
+
+    margin-bottom: 24px;
+
+    color: var(--color-text-muted);
+    font-size: 14px;
+}
+
+.divider::before,
+.divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--color-border);
+}
+
+.btn-google {
+    background: #ffffff;
+    color: #000000;
+
+    border: 1px solid var(--color-border-strong);
+
+    margin-bottom: 16px;
+}
+
+.google-g {
+    width: 22px;
+    height: 22px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    font-weight: 700;
+    font-size: 15px;
+    color: #4285f4;
+}
+
+.btn-github {
+    background: #48494c;
+    color: #efefef;
+
+    margin-bottom: 28px;
+}
+
+
+/* =========================================
+   회원가입 안내
+========================================= */
+
+.signup {
+    text-align: center;
+
+    font-size: 14px;
+    color: var(--color-text-muted);
+}
+
+.signup a {
+    color: var(--color-primary);
+
+    font-weight: 500;
+    text-decoration: none;
+
+    margin-left: 6px;
+}
+
+.signup a:hover {
+    text-decoration: underline;
+}
