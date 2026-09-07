@@ -160,3 +160,8 @@
 .page > .profile-modal {
   margin: 0 auto;
 }
+
+/* 회의 목록의 AI 요약 아이콘: 완료(✓)는 초록, 미완료(⊖)는 회색 */
+.ai-icon svg.pending {
+  color: var(--gray-text, #9a9a9a);
+}

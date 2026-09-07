@@ -221,7 +221,7 @@ export default function MainPage() {
         </span>
       </div>
 
-      <div className="row-2col">
+      <div className="row-2col row-2col--panels">
         <section className="panel meeting-table">
           <div className="section-head">
             <h2>회의 목록</h2>
@@ -256,7 +256,9 @@ export default function MainPage() {
                 <Icon name="circle-user" />
               </span>
               <span className="ai-icon">
-                {m.summary ? <Icon name="check-circle" /> : <span className="progress-ring" />}
+                {m.summary
+                  ? <Icon name="check-circle" className="done" />
+                  : <Icon name="minus-circle" className="pending" />}
               </span>
             </div>
           ))}
@@ -265,6 +267,13 @@ export default function MainPage() {
         <section className="panel">
           <div className="section-head">
             <h2>최근 AI 요약</h2>
+            <a
+              className="see-all"
+              href="/documents"
+              onClick={(e) => { e.preventDefault(); navigate('/documents'); }}
+            >
+              전체 보기 &gt;
+            </a>
           </div>
           <div className="summary-list">
             {meetings.filter((m) => m.summary).slice(0, 3).map((m) => (
@@ -273,11 +282,12 @@ export default function MainPage() {
                 <div className="content">
                   <div className="top-row">
                     <span className="title">{m.title || '회의'}</span>
-                    <span className="status-pill done">완료</span>
                     <span className="date">{formatMeetingDate(m.date)}</span>
                   </div>
                   <p className="desc">{m.summary}</p>
                 </div>
+                {/* 완료 배지는 카드 오른쪽 끝에 세로 중앙 정렬 (스크린샷 기준) */}
+                <span className="status-pill done">완료</span>
               </div>
             ))}
             {meetings.filter((m) => m.summary).length === 0 && (
@@ -300,10 +310,10 @@ export default function MainPage() {
           <div className="section-head"><h2>빠른 작업</h2></div>
           <div className="quick-actions">
             <button className="qa-card" type="button" onClick={() => setModalOpen(true)}>
-              <Icon name="folder-plus" />
+              <Icon name="plus" />
               <span>그룹 추가</span>
             </button>
-            <button className="qa-card" type="button" onClick={() => firstGroup && navigate(`/group/${firstGroup.id}/meetings`)}>
+            <button className="qa-card" type="button" onClick={() => navigate('/ai')}>
               <Icon name="sparkles" />
               <span>AI 요약</span>
             </button>
@@ -319,7 +329,17 @@ export default function MainPage() {
         </section>
 
         <section>
-          <div className="section-head"><h2>캘린더</h2></div>
+          <div className="section-head">
+            <h2>캘린더</h2>
+            {/* 캘린더 화면은 아직 없어 사이드바와 동일하게 안내만 합니다 */}
+            <a
+              className="see-all"
+              href="#"
+              onClick={(e) => { e.preventDefault(); alert('아직 준비 중인 기능입니다'); }}
+            >
+              전체 보기 &gt;
+            </a>
+          </div>
           <div className="calendar-panel">
             <div className="calendar-date">{calendarLabel}</div>
             <MiniWeek />

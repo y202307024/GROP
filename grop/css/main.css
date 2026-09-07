@@ -157,9 +157,22 @@
   /* Two-column rows */
   .row-2col{
     display:grid;
-    grid-template-columns:1.32fr 1fr;
+    /* minmax(0,..) 로 열이 내부 콘텐츠(요약 카드의 nowrap 텍스트) 때문에
+       비율을 무시하고 커지는 것을 막습니다. 두 패널이 1.32 : 1 로 고정됩니다. */
+    grid-template-columns:minmax(0,1.32fr) minmax(0,1fr);
     gap:20px;
     align-items:start;
+  }
+
+  /* 회의 목록 · 최근 AI 요약 행: 사진처럼 두 패널을 거의 같은 크기로,
+     높이도 서로 맞춰(stretch) 아래쪽 라인을 정렬합니다. */
+  .row-2col--panels{
+    grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);
+    align-items:stretch;
+  }
+  .row-2col--panels > .panel{
+    display:flex;
+    flex-direction:column;
   }
 
   /* Meeting list panel */
@@ -232,7 +245,9 @@
   .summary-list{ display:flex; flex-direction:column; gap:12px; }
   .summary-item{
     display:flex;
+    align-items:center;
     gap:14px;
+    min-width:0;
     padding:12px;
     border-radius:12px;
     background:#faf8f6;
@@ -241,13 +256,14 @@
   .summary-item .content{ flex:1; min-width:0; }
   .summary-item .top-row{
     display:flex;
-    align-items:center;
+    align-items:baseline;
     gap:10px;
     margin-bottom:4px;
     flex-wrap:wrap;
   }
   .summary-item .title{ font-weight:500; font-size:15px; }
-  .summary-item .date{ font-size:12px; color:var(--gray-text); margin-left:auto; }
+  .summary-item .date{ font-size:12px; color:var(--gray-text); }
+  .summary-item > .status-pill{ flex:none; align-self:center; }
   .summary-item .desc{
     font-size:13px;
     color:#333;
