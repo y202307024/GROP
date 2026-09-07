@@ -1,0 +1,362 @@
+/* =========================================
+   이 페이지 전용 설정
+   (공통 리셋/컬러 변수는 common.css)
+========================================= */
+
+body {
+    font-family: 'Roboto', sans-serif;
+}
+
+
+/* =========================================
+   전체 레이아웃
+   (너비/높이는 common.css의 .stage가 담당)
+========================================= */
+
+.signup-shell {
+    display: flex;
+
+    overflow: hidden;
+}
+
+
+/* =========================================
+   왼쪽 소개 영역
+========================================= */
+
+.signup-left {
+    flex: 1 1 55%;
+
+    background: var(--color-bg-soft);
+
+    padding: 60px 6% 40px;
+
+    display: flex;
+    flex-direction: column;
+
+    overflow-y: auto;
+}
+
+.brand {
+    font-family: 'Archivo Black', sans-serif;
+    font-size: clamp(34px, 3.6vw, 60px);
+    letter-spacing: 3px;
+
+    color: var(--color-primary);
+}
+
+.headline {
+    font-weight: 500;
+    font-size: clamp(28px, 3.6vw, 54px);
+    line-height: 1.25;
+
+    margin-top: 20px;
+}
+
+.subtext {
+    font-weight: 500;
+    font-size: clamp(15px, 1.4vw, 24px);
+    line-height: 1.4;
+
+    margin-top: 18px;
+}
+
+.login-footer {
+    margin-top: auto;
+    padding-top: 28px;
+
+    text-align: center;
+
+    font-size: 15px;
+    color: var(--color-text-muted);
+}
+
+.login-footer a {
+    color: var(--color-primary);
+
+    font-weight: 500;
+    text-decoration: none;
+
+    margin-left: 8px;
+}
+
+.login-footer a:hover {
+    text-decoration: underline;
+}
+
+
+/* =========================================
+   오른쪽 폼 영역
+========================================= */
+
+.signup-right {
+    flex: 1 1 45%;
+
+    background: #fefefe;
+
+    padding: 64px 8%;
+
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+
+    overflow-y: auto;
+}
+
+.signup-right h1 {
+    font-weight: 700;
+    font-size: 30px;
+}
+
+.signup-right .subtitle {
+    font-size: 15px;
+    color: var(--color-text-muted);
+
+    margin-top: 6px;
+    margin-bottom: 28px;
+}
+
+
+/* =========================================
+   소셜 버튼
+========================================= */
+
+.social-row {
+    display: flex;
+
+    gap: 16px;
+
+    margin-bottom: 22px;
+}
+
+.btn {
+    height: 52px;
+
+    border-radius: 8px;
+    border: none;
+
+    font-family: inherit;
+    font-weight: 500;
+    font-size: 16px;
+
+    cursor: pointer;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    gap: 10px;
+}
+
+.btn-google {
+    flex: 1;
+
+    background: #ffffff;
+    color: #000000;
+
+    border: 1px solid var(--color-border-strong);
+}
+
+.google-g {
+    width: 22px;
+    height: 22px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    font-weight: 700;
+    font-size: 15px;
+    color: #4285f4;
+}
+
+.btn-github {
+    flex: 1;
+
+    background: #48494c;
+    color: #efefef;
+}
+
+
+/* =========================================
+   구분선
+========================================= */
+
+.divider {
+    display: flex;
+    align-items: center;
+
+    gap: 16px;
+
+    margin-bottom: 22px;
+
+    color: var(--color-text-muted);
+    font-size: 14px;
+}
+
+.divider::before,
+.divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--color-border);
+}
+
+
+/* =========================================
+   입력 필드
+========================================= */
+
+.field {
+    margin-bottom: 16px;
+}
+
+.field label {
+    display: block;
+
+    font-size: 15px;
+
+    margin-bottom: 6px;
+}
+
+.field input {
+    width: 100%;
+    height: 44px;
+
+    border: 1px solid var(--color-border-strong);
+    border-radius: 8px;
+
+    padding: 0 14px;
+
+    font-family: inherit;
+    font-size: 15px;
+
+    outline: none;
+}
+
+.field input::placeholder {
+    color: var(--color-text-faint);
+}
+
+.field input:focus {
+    border-color: var(--color-primary);
+}
+
+.field .helper {
+    font-size: 13px;
+    color: #878787;
+
+    margin-top: 6px;
+}
+
+.field .helper.is-error {
+    color: var(--color-danger);
+}
+
+
+/* =========================================
+   약관 동의
+========================================= */
+
+.agree-row {
+    display: flex;
+    align-items: flex-start;
+
+    gap: 10px;
+
+    margin: 14px 0 18px;
+}
+
+.agree-row input {
+    appearance: none;
+
+    width: 18px;
+    height: 18px;
+
+    margin-top: 2px;
+
+    border: 1px solid var(--color-text-muted);
+    border-radius: 5px;
+
+    cursor: pointer;
+
+    flex: none;
+}
+
+.agree-row input:checked {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+}
+
+.agree-row label {
+    font-size: 15px;
+    line-height: 1.4;
+}
+
+.agree-row a {
+    color: var(--color-primary);
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.agree-row a:hover {
+    text-decoration: underline;
+}
+
+
+/* =========================================
+   에러 / 안내 메시지
+========================================= */
+
+.signup-message {
+    min-height: 16px;
+
+    margin: 0 0 10px;
+
+    font-size: 12px;
+    line-height: 1.5;
+
+    color: var(--color-danger);
+}
+
+.signup-message.is-success {
+    color: var(--color-primary-hover);
+}
+
+
+/* =========================================
+   가입 버튼 / 하단 안내
+========================================= */
+
+.btn-primary {
+    width: 100%;
+
+    background: var(--color-primary-soft);
+    color: #ffffff;
+
+    height: 52px;
+
+    margin-bottom: 16px;
+}
+
+.btn-primary:hover {
+    filter: brightness(0.95);
+}
+
+.fine-print {
+    text-align: center;
+
+    font-size: 13px;
+    color: var(--color-text-muted);
+    line-height: 1.5;
+}
+
+.fine-print a {
+    color: var(--color-primary);
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.fine-print a:hover {
+    text-decoration: underline;
+}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import { primeWebmSeeking, resolveMeetingVideoUrl } from '../utils/meetingVideo';
@@ -71,6 +71,8 @@ function SummaryWithTimestamps({
 export default function MeetingDetail() {
   const { id: groupId, meetingId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const fromDocuments = (location.state as { from?: string } | null)?.from === 'documents';
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [loading, setLoading] = useState(true);
   const [editingSummary, setEditingSummary] = useState(false);
@@ -176,11 +178,13 @@ export default function MeetingDetail() {
 
     try {
       setAiStep('🎙️ 음성 변환 중...');
-      const playableUrl = await resolveMeetingVideoUrl(meeting.video_url);
+      // 브라우저는 https://localhost:5173/videos/... 로 재생하지만,
+      // 서버는 mkcert 인증서를 못 믿어서 그 주소로 다시 받으면 실패합니다.
+      // DB에 저장된 경로(또는 /videos/ 상대경로)를 그대로 넘기면 서버가 디스크에서 읽습니다.
       const res = await fetch(`${getApiBase()}/api/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl: playableUrl })
+        body: JSON.stringify({ videoUrl: meeting.video_url })
       });
 
       if (!res.ok) {
@@ -297,9 +301,9 @@ export default function MeetingDetail() {
 
       {/* 헤더 */}
       <div style={{ marginBottom: 24 }}>
-        <button onClick={() => navigate(`/group/${groupId}/meetings`)}
+        <button onClick={() => navigate(fromDocuments ? '/documents' : `/group/${groupId}/meetings`)}
           style={{ background: 'none', border: 'none', color: '#888', fontSize: 13, cursor: 'pointer', padding: 0, marginBottom: 10 }}>
-          ← 회의록 목록
+          ← {fromDocuments ? '문서 목록' : '회의록 목록'}
         </button>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{meeting.title}</h2>
         <div style={{ fontSize: 13, color: '#888', marginTop: 4 }}>

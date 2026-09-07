@@ -9,30 +9,13 @@ import { dedupeBoardsById, getBoardOptionLabel } from './timelapseApi';
 // 타임랩스 사이드 패널 CSS import (현재 비활성화)
 import cb from './CanvasBoard.module.css';
 import { RoomEvent } from 'livekit-client';
-import { useLocalParticipant, useRoomContext } from '@livekit/components-react';
-import { getApiBase } from './utils/apiBase';
+import { useMaybeRoomContext } from '@livekit/components-react';
 import BoardFilePreview from './components/BoardFilePreview';
 import { expandedFileSize, getFilePreviewKind } from './filePreviewUtils';
 import { rasterizeBoardFile } from './rasterizeBoardFile';
+import { chatFileUrl, displayFileName, formatChatFileSize, MAX_CHAT_FILE_BYTES } from './utils/meetingChat';
 
-const MEETING_CHAT_TOPIC = 'meeting-chat';
 const MEETING_BOARD_TOPIC = 'meeting-board';
-
-type MeetingChatFile = {
-  name: string;
-  path: string;
-  size: number;
-  mime: string;
-};
-
-type MeetingChatMessage = {
-  id: string;
-  from: string;
-  name: string;
-  text: string;
-  ts: number;
-  file?: MeetingChatFile;
-};
 
 type MeetingBoardMessage = {
   type: 'board:selected';
@@ -40,61 +23,6 @@ type MeetingBoardMessage = {
   title?: string;
   from: string;
 };
-
-function encodeMeetingChatMessage(msg: MeetingChatMessage): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(msg));
-}
-
-function decodeMeetingChatMessage(payload: Uint8Array): MeetingChatMessage | null {
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(payload));
-    if (!parsed || typeof parsed !== 'object') return null;
-    const hasText = typeof parsed.text === 'string';
-    const hasFile = parsed.file && typeof parsed.file.path === 'string';
-    if (!hasText && !hasFile) return null;
-    return {
-      ...(parsed as MeetingChatMessage),
-      text: hasText ? parsed.text : '',
-    };
-  } catch {
-    return null;
-  }
-}
-
-const MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024;
-
-function formatChatFileSize(bytes: number) {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-function chatFileUrl(relPath: string) {
-  return `${getApiBase()}/files/${relPath.split('/').map(encodeURIComponent).join('/')}`;
-}
-
-const IMAGE_FILE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
-
-/** Windows에서 한글 파일명은 MIME이 비어 이미지로 안 잡히는 경우가 있습니다. */
-function isImageFile(file: File) {
-  if (file.type.startsWith('image/')) return true;
-  return IMAGE_FILE_EXT.test(file.name);
-}
-
-/** 예전에 latin1로 저장된 한글 파일명을 화면에서 복원합니다. */
-function displayFileName(name: string) {
-  if (!name) return 'file';
-  if (/[가-힣]/.test(name)) return name;
-  try {
-    const bytes = Uint8Array.from(name, (ch) => ch.charCodeAt(0) & 0xff);
-    const decoded = new TextDecoder('utf-8').decode(bytes);
-    if (decoded.includes('\uFFFD')) return name;
-    if (/[가-힣]/.test(decoded)) return decoded;
-  } catch {
-    /* 복원 실패 시 원본을 그대로 보여줍니다. */
-  }
-  return name;
-}
 
 function encodeMeetingBoardMessage(msg: MeetingBoardMessage): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(msg));
@@ -125,282 +53,6 @@ function decodeMeetingBoardMetadata(metadata?: string): MeetingBoardMessage | nu
   }
 }
 
-function formatChatTime(ts: number) {
-  const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-// 회의방 안에서만 보이는 채팅 패널입니다.
-// 이 컴포넌트는 같은 회의방에 있는 사람들끼리 텍스트 메시지를 주고받게 해줍니다.
-// LiveKit 데이터 채널을 이용해서 다른 참가자에게 메시지를 보내고, 받은 메시지를 화면에 표시합니다.
-function MeetingChatPanel({ onClose, groupId }: { onClose: () => void; groupId?: string }) {
-  const room = useRoomContext();
-  const { localParticipant } = useLocalParticipant();
-  const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
-  const [draft, setDraft] = useState('');
-  const [uploading, setUploading] = useState(false);
-  const listRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    const handler = (payload: Uint8Array, _participant?: unknown, _kind?: unknown, topic?: string) => {
-      if (topic && topic !== MEETING_CHAT_TOPIC) return;
-      const msg = decodeMeetingChatMessage(payload);
-      if (!msg) return;
-      setMessages((prev) => [...prev, msg].slice(-300));
-    };
-    room.on(RoomEvent.DataReceived, handler);
-    return () => { room.off(RoomEvent.DataReceived, handler); };
-  }, [room]);
-
-  useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
-
-  const publishChat = (msg: MeetingChatMessage) => {
-    setMessages((prev) => [...prev, msg].slice(-300));
-    void localParticipant.publishData(encodeMeetingChatMessage(msg), {
-      reliable: true,
-      topic: MEETING_CHAT_TOPIC,
-    });
-  };
-
-  const sendMessage = () => {
-    const text = draft.trim();
-    if (!text || uploading) return;
-    publishChat({
-      id: crypto.randomUUID(),
-      from: localParticipant.identity,
-      name: localParticipant.name?.trim() || '익명',
-      text,
-      ts: Date.now(),
-    });
-    setDraft('');
-  };
-
-  // 선택한 파일을 서버에 올린 뒤, 경로만 채팅으로 공유합니다.
-  const sendFile = async (file: File) => {
-    if (file.size > MAX_CHAT_FILE_BYTES) {
-      alert('파일은 20MB 이하만 첨부할 수 있어요.');
-      return;
-    }
-    setUploading(true);
-    try {
-      const body = new FormData();
-      body.append('file', file);
-      body.append('groupId', groupId || 'unknown');
-      const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
-      const res = await fetch(`${getApiBase()}/api/chat-files/upload`, {
-        method: 'POST',
-        headers: uploadToken ? { 'x-upload-token': uploadToken } : undefined,
-        body,
-      });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        throw new Error((errBody as { error?: string }).error || `업로드 실패 (${res.status})`);
-      }
-      const saved = (await res.json()) as MeetingChatFile;
-      publishChat({
-        id: crypto.randomUUID(),
-        from: localParticipant.identity,
-        name: localParticipant.name?.trim() || '익명',
-        text: draft.trim(),
-        ts: Date.now(),
-        file: saved,
-      });
-      setDraft('');
-    } catch (err) {
-      alert(err instanceof Error ? err.message : '파일 첨부에 실패했습니다.');
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  return (
-    <div
-      style={{
-        width: 260,
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        background: '#2b2d31',
-        borderLeft: '1px solid #1e1f22',
-        minHeight: 0,
-      }}
-    >
-      <div
-        style={{
-          flexShrink: 0,
-          padding: '10px 12px',
-          borderBottom: '1px solid #1e1f22',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
-      >
-        <span style={{ fontSize: 13, fontWeight: 600, color: '#dbdee1' }}>💬 채팅</span>
-        <button
-          type="button"
-          onClick={onClose}
-          title="채팅 닫기"
-          style={{
-            border: 'none',
-            background: 'transparent',
-            color: '#949ba4',
-            cursor: 'pointer',
-            fontSize: 13,
-          }}
-        >
-          닫기 ✕
-        </button>
-      </div>
-
-      <div
-        ref={listRef}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: 'auto',
-          padding: '10px 12px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 10,
-        }}
-      >
-        {messages.length === 0 ? (
-          <div style={{ fontSize: 12, color: '#6b7280', textAlign: 'center', marginTop: 20 }}>
-            아직 채팅이 없어요.
-          </div>
-        ) : (
-          messages.map((m) => (
-            <div key={m.id}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: '#f2f3f5' }}>{m.name}</span>
-                <span style={{ fontSize: 10, color: '#6b7280' }}>{formatChatTime(m.ts)}</span>
-              </div>
-              <div style={{ fontSize: 13, color: '#dbdee1', wordBreak: 'break-word', marginTop: 2 }}>
-                {m.text}
-              </div>
-              {m.file ? (
-                <div style={{ marginTop: 6 }}>
-                  {m.file.mime.startsWith('image/') ? (
-                    <a href={chatFileUrl(m.file.path)} target="_blank" rel="noreferrer">
-                      <img
-                        src={chatFileUrl(m.file.path)}
-                        alt={displayFileName(m.file.name)}
-                        style={{ maxWidth: '100%', maxHeight: 140, borderRadius: 6, display: 'block' }}
-                      />
-                    </a>
-                  ) : null}
-                  <a
-                    href={chatFileUrl(m.file.path)}
-                    target="_blank"
-                    rel="noreferrer"
-                    download={displayFileName(m.file.name)}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      marginTop: 6,
-                      padding: '6px 8px',
-                      borderRadius: 6,
-                      background: '#1e1f22',
-                      color: '#c7c9cc',
-                      textDecoration: 'none',
-                      fontSize: 12,
-                    }}
-                  >
-                    <span>📎 {displayFileName(m.file.name)}</span>
-                    <span style={{ color: '#6b7280' }}>{formatChatFileSize(m.file.size)}</span>
-                  </a>
-                </div>
-              ) : null}
-            </div>
-          ))
-        )}
-      </div>
-
-      <div
-        style={{
-          flexShrink: 0,
-          display: 'flex',
-          gap: 6,
-          padding: 10,
-          borderTop: '1px solid #1e1f22',
-        }}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          style={{ display: 'none' }}
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) void sendFile(file);
-          }}
-        />
-        <button
-          type="button"
-          title="파일 첨부"
-          disabled={uploading}
-          onClick={() => fileInputRef.current?.click()}
-          style={{
-            padding: '8px 10px',
-            border: '1px solid #1e1f22',
-            borderRadius: 6,
-            background: '#1e1f22',
-            color: '#dbdee1',
-            cursor: uploading ? 'not-allowed' : 'pointer',
-            fontSize: 13,
-            flexShrink: 0,
-          }}
-        >
-          📎
-        </button>
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              sendMessage();
-            }
-          }}
-          placeholder={uploading ? '파일 올리는 중...' : '메시지 입력...'}
-          disabled={uploading}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            padding: '8px 10px',
-            border: '1px solid #1e1f22',
-            borderRadius: 6,
-            background: '#1e1f22',
-            color: '#dbdee1',
-            fontSize: 13,
-          }}
-        />
-        <button
-          type="button"
-          onClick={sendMessage}
-          disabled={uploading}
-          style={{
-            padding: '8px 12px',
-            border: 'none',
-            borderRadius: 6,
-            background: '#5865f2',
-            color: 'white',
-            cursor: uploading ? 'not-allowed' : 'pointer',
-            fontSize: 12,
-            flexShrink: 0,
-          }}
-        >
-          전송
-        </button>
-      </div>
-    </div>
-  );
-}
-
 const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3] as const;
 const DEFAULT_ZOOM_INDEX = 3;
 const MAX_HISTORY = 50;
@@ -416,6 +68,9 @@ type Props = {
   embedded?: boolean;
   meetingMode?: boolean;
   meetingHeaderExtra?: ReactNode;
+  /** 원본 meeting.html 껍데기를 쓸 때 상단 Discord 크롬을 숨깁니다 */
+  gropShell?: boolean;
+  onToolChange?: (tool: ExcalidrawTool) => void;
   groupId?: string;
   groupName?: string;
   initialBoardId?: string;
@@ -426,6 +81,8 @@ type Props = {
 export type CanvasBoardHandle = {
   clearBoard: () => void;
   getCanvasElement: () => HTMLCanvasElement | null;
+  pickTool: (tool: ExcalidrawTool) => void;
+  toggleLibrary: () => void;
 };
 
 type Point = { x: number; y: number };
@@ -818,6 +475,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   embedded = false,
   meetingMode = false,
   meetingHeaderExtra,
+  gropShell = false,
+  onToolChange,
   groupId,
   groupName,
   initialBoardId,
@@ -825,6 +484,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   autoPlayTimelapse = false,
 }, ref) {
   const isEmbedded = embedded || meetingMode;
+  // 회의방·단독 캔버스 모두 원본 CSS 껍데기를 쓰면 내부 상단바를 숨깁니다.
+  const useGropShell = gropShell || meetingMode;
   const isGroupCanvas = Boolean(groupId);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasAreaRef = useRef<HTMLDivElement | null>(null);
@@ -908,7 +569,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const replayLastVirtualMsRef = useRef(0);
   const replayClockRef = useRef({ anchorVirtualMs: 0, anchorWallMs: 0, speed: 10 });
 
-  const [tool, setTool] = useState<Tool>('pen');
+  const [tool, setTool] = useState<Tool>(meetingMode || gropShell ? 'hand' : 'pen');
   const [locked, setLocked] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
   const [pendingStampKind, setPendingStampKind] = useState<'rect' | 'circle' | 'triangle' | null>(null);
@@ -926,7 +587,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [color, setColor] = useState('#111827');
   const [size, setSize] = useState(6);
   const [textSize, setTextSize] = useState(DEFAULT_TEXT_SIZE);
-  const [chatOpen, setChatOpen] = useState(false);
   const [textDraft, setTextDraft] = useState<TextDraft | null>(null);
 
   const [actorId, setActorId] = useState<string>('unknown');
@@ -947,8 +607,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   // 아래부터는 회의방 전용 상태와 보드 선택 로직입니다.
   // 회의 모드일 때는 첫 참가자에게 새 보드를 만들지, 기존 보드를 불러올지 선택하게 합니다.
   // 이 과정은 같은 회의방의 다른 사람들과 보드 상태를 맞추기 위해 필요합니다.
-  const room = useRoomContext();
-  const { localParticipant } = useLocalParticipant();
+  // 단독 캔버스(/canvas)에는 LiveKit 방이 없습니다.
+  // useRoomContext()는 방이 없으면 예외를 던져 화면이 비므로, 있을 때만 읽습니다.
+  const room = useMaybeRoomContext();
+  const localParticipant = room?.localParticipant;
   const [showInitChoice, setShowInitChoice] = useState(false);
   const initChoiceHandledRef = useRef(false);
   const latestBoardSelectionRef = useRef<MeetingBoardMessage | null>(null);
@@ -1068,7 +730,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       room.off(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
       room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
     };
-  }, [room, meetingMode, localParticipant.identity]);
+  }, [room, meetingMode, localParticipant?.identity]);
 
   // 초기 선택창에서 '새 보드 생성'을 눌렀을 때 실행되는 함수입니다.
   // 새 보드를 데이터베이스에 만들고, 그 보드 ID를 현재 캔버스에 연결합니다.
@@ -1185,6 +847,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       startTextInViewRef.current();
     }
   };
+
+  const resetToIdleTool = () => {
+    if (locked) return;
+    setTool(useGropShell ? 'hand' : 'pen');
+  };
+
+  useEffect(() => {
+    onToolChange?.(tool);
+  }, [tool, onToolChange]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -2534,7 +2205,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       } satisfies TextAddPayload);
       commitHistory();
     }
-    if (!opts?.keepTool && !locked) setTool('pen');
+    if (!opts?.keepTool) resetToIdleTool();
   };
   commitTextDraftRef.current = commitTextDraft;
 
@@ -2976,7 +2647,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       snapshotRef.current = null;
       drawingRef.current = false;
       lastPointRef.current = null;
-      if (!locked) setTool('pen');
+      resetToIdleTool();
       commitHistory();
       return;
     }
@@ -3018,7 +2689,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   useImperativeHandle(ref, () => ({
     clearBoard: () => clearAllRef.current(),
     getCanvasElement: () => canvasRef.current,
-  }));
+    pickTool,
+    toggleLibrary: () => setShowLibrary((v) => !v),
+  }), [pickTool]);
 
   /* const downloadPng = () => {
     const canvas = canvasRef.current;
@@ -3041,10 +2714,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         height: '100%',
         width: '100%',
         fontFamily: "'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
-        background: meetingMode ? '#313338' : '#f3f4f6',
+        background: useGropShell ? '#ffffff' : meetingMode ? '#313338' : '#f3f4f6',
         overflow: 'hidden',
       }}
     >
+      {!useGropShell ? (
       <div
         style={{
           flexShrink: 0,
@@ -3132,24 +2806,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             </button>
             ) : null}
           </div>
-
-          {meetingMode ? (
-            <button
-              type="button"
-              onClick={() => setChatOpen((v) => !v)}
-              style={{
-                padding: '6px 8px',
-                border: '1px solid #1e1f22',
-                borderRadius: 6,
-                background: chatOpen ? '#5865f2' : '#313338',
-                color: '#dbdee1',
-                cursor: 'pointer',
-                fontSize: 12,
-              }}
-            >
-              {chatOpen ? '💬 채팅 닫기' : '💬 채팅 열기'}
-            </button>
-          ) : null}
           </div>
 
           <div style={{ display: 'flex', gap: 6, flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -3217,6 +2873,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         </div>
       </div>
       </div>
+      ) : null}
 
       <div className={cb.mainRow}>
       <div
@@ -3228,6 +2885,40 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           overflow: 'hidden',
         }}
       >
+        {useGropShell ? (
+          <div className="meeting-board-overlay">
+            <span>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
+            <select
+              value={boardId}
+              onChange={(e) => setBoardId(e.target.value)}
+              disabled={isLoadingBoards}
+            >
+              <option value="">선택...</option>
+              {boards.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {getBoardOptionLabel({ ...b, title: formatBoardTitle(b.title) }, boards.map((x) => ({ ...x, title: formatBoardTitle(x.title) })))}
+                </option>
+              ))}
+            </select>
+            <input
+              type="text"
+              value={boardTitle}
+              onChange={(e) => setBoardTitle(e.target.value)}
+              onBlur={() => void saveBoardTitle()}
+              placeholder="보드 이름"
+            />
+            <button type="button" className="primary" onClick={createBoard}>새 보드</button>
+            <label>
+              색
+              <input type="color" value={color} onChange={(e) => setColor(e.target.value)} disabled={tool === 'eraser'} />
+            </label>
+            {tool === 'text' || textDraft || selectedTextId ? (
+              <span>가 {textSize}</span>
+            ) : (
+              <span>굵기 {size}</span>
+            )}
+          </div>
+        ) : null}
         <div
           style={{
             position: 'absolute',
@@ -3318,7 +3009,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 if (e.key === 'Escape') {
                   e.preventDefault();
                   syncTextDraft(null);
-                  if (!locked) setTool('pen');
+                  resetToIdleTool();
                 }
               }}
               placeholder="텍스트 입력"
@@ -3760,7 +3451,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         </div>
       ) : null}
 
-      {meetingMode && chatOpen ? <MeetingChatPanel onClose={() => setChatOpen(false)} groupId={groupId} /> : null}
       </div>
     </div>
   );

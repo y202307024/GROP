@@ -1,0 +1,79 @@
+/* 설정 카드 안에 들어가는 마이크/헤드셋 조절 UI */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.warn {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-danger);
+}
+
+.warn a {
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.slider {
+  width: 100%;
+  max-width: 360px;
+  accent-color: var(--color-primary);
+}
+
+.testRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 4px;
+}
+
+.meter {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 28px;
+  flex: 1;
+  min-width: 0;
+}
+
+.bar {
+  flex: 1;
+  border-radius: 1px;
+  background: #e3e0db;
+}
+
+.barOn {
+  background: var(--color-primary);
+}
+
+.barHot {
+  background: var(--color-danger);
+}
+
+.error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--color-danger);
+  white-space: pre-wrap;
+}
+
+.help {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #888;
+}
+
+.helpBtn {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}

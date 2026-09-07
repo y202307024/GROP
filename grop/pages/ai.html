@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0">
+
+    <title>GROP - AI 요약</title>
+
+    <link
+        rel="stylesheet"
+        href="css/common.css">
+
+    <link
+        rel="stylesheet"
+        href="css/ai.css">
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+</head>
+
+
+<body>
+
+    <div class="ai-page">
+
+    <!-- =========================
+         상단 회의 영상 영역
+    ========================== -->
+
+    <section class="ai-video-section">
+
+        <div class="ai-video-header">
+
+            <span>회의 영상</span>
+
+            <div class="ai-video-tabs">
+
+                <button class="video-tab active">
+                    전체 회의
+                </button>
+
+                <button class="video-tab">
+                    발언자별
+                </button>
+
+            </div>
+
+        </div>
+
+
+        <!-- 영상이 들어갈 영역 -->
+        <div class="ai-video-box">
+
+            <!--
+                나중에 실제 회의 영상이나
+                영상 플레이어를 넣을 영역
+            -->
+
+        </div>
+
+    </section>
+
+
+
+    <!-- =========================
+         AI 요약 결과
+    ========================== -->
+
+    <section class="ai-summary-section">
+
+        <div class="ai-summary-title">
+            AI 요약 결과
+        </div>
+
+
+        <div class="ai-summary-content">
+
+            <!-- AI 요약 내용 -->
+            <div class="ai-summary-text">
+
+                <!--
+                    나중에 AI가 생성한
+                    회의 요약 내용이 들어감
+                -->
+
+            </div>
+
+
+            <!-- 회의 정보 -->
+            <aside class="meeting-info">
+
+                <div class="meeting-info-title">
+                    회의 정보
+                </div>
+
+
+                <div class="meeting-info-item">
+
+                    <i data-lucide="users"></i>
+
+                    <span>
+                        회의명
+                    </span>
+
+                </div>
+
+
+                <div class="meeting-info-item">
+
+                    <i data-lucide="clipboard-list"></i>
+
+                    <span>
+                        회의 안건
+                    </span>
+
+                </div>
+
+
+                <div class="meeting-info-item">
+
+                    <i data-lucide="user-round"></i>
+
+                    <span>
+                        참석자
+                    </span>
+
+                </div>
+
+
+                <div class="meeting-info-item">
+
+                    <i data-lucide="clock-3"></i>
+
+                    <span>
+                        회의 시간
+                    </span>
+
+                </div>
+
+
+                <div class="meeting-info-item">
+
+                    <i data-lucide="clock"></i>
+
+                    <span>
+                        생성 시간
+                    </span>
+
+                </div>
+
+            </aside>
+
+        </div>
+
+    </section>
+
+    </div>
+
+    <script src="js/ai.js"></script>
+
+</body>
+
+</html>

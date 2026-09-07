@@ -1,0 +1,207 @@
+/* =========================================
+   캘린더 페이지 전용 스타일
+   (공통 리셋/컬러 변수는 common.css,
+    사이드바/상단바는 main.css)
+========================================= */
+
+.page {
+    width: 100%;
+    height: 100%;
+
+    padding:
+        48px
+        58px
+        45px
+        62px;
+
+    display: flex;
+    flex-direction: column;
+
+    overflow-y: auto;
+}
+
+
+.page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 28px;
+}
+
+
+.page-header h1 {
+    margin: 0;
+
+    font-size: 26px;
+    font-weight: 700;
+
+    color: var(--color-primary);
+
+    letter-spacing: -1px;
+}
+
+
+/* =========================================
+   달력 카드
+========================================= */
+
+.calendar-card {
+    background: #ffffff;
+
+    border: 1px solid #eeeeee;
+    border-radius: 10px;
+
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+
+    padding: 20px;
+
+    flex: 1;
+
+    min-height: 0;
+
+    display: flex;
+    flex-direction: column;
+}
+
+
+.calendar-nav {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+
+    margin-bottom: 18px;
+}
+
+
+.calendar-nav-button {
+    width: 30px;
+    height: 30px;
+
+    border: 1px solid var(--color-border-strong);
+    border-radius: 6px;
+
+    background: #ffffff;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    cursor: pointer;
+}
+
+
+.calendar-nav-button svg {
+    width: 16px;
+    height: 16px;
+}
+
+
+.calendar-month-label {
+    font-size: 15px;
+    font-weight: 700;
+
+    min-width: 110px;
+}
+
+
+.calendar-today-button {
+    margin-left: auto;
+
+    border: 1px solid var(--color-border-strong);
+    border-radius: 6px;
+
+    background: #ffffff;
+
+    padding: 6px 12px;
+
+    font-size: 12px;
+
+    cursor: pointer;
+}
+
+
+.calendar-grid {
+    flex: 1;
+
+    min-height: 0;
+
+    display: grid;
+
+    grid-template-columns: repeat(7, 1fr);
+    grid-template-rows: 28px repeat(6, 1fr);
+
+    gap: 1px;
+
+    background: #f0f0f0;
+
+    border: 1px solid #f0f0f0;
+}
+
+
+.calendar-weekday {
+    background: #fafafa;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    font-size: 12px;
+    color: #777;
+}
+
+
+.calendar-day {
+    background: #ffffff;
+
+    padding: 6px 8px;
+
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+
+    font-size: 12px;
+
+    color: #333;
+}
+
+
+.calendar-day.is-other-month {
+    color: #cccccc;
+
+    background: #fcfcfc;
+}
+
+
+.calendar-day.is-today .day-number {
+    display: inline-flex;
+
+    align-items: center;
+    justify-content: center;
+
+    width: 20px;
+    height: 20px;
+
+    border-radius: 50%;
+
+    background: var(--color-primary);
+    color: white;
+
+    font-weight: 700;
+}
+
+
+.calendar-event {
+    font-size: 10px;
+
+    padding: 2px 6px;
+
+    border-radius: 4px;
+
+    background: var(--color-primary-tint);
+    color: var(--color-primary-hover);
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

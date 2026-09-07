@@ -1,0 +1,116 @@
+/* =========================================
+   알림 드롭다운
+========================================= */
+
+.notification-wrapper {
+    position: relative;
+}
+
+
+.notification-dropdown {
+    position: absolute;
+
+    top: calc(100% + 14px);
+    right: -6px;
+
+    width: 280px;
+
+    background: #ffffff;
+
+    border: 1px solid #eeeeee;
+    border-radius: 12px;
+
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+
+    z-index: 150;
+
+    overflow: hidden;
+}
+
+/* hidden 속성일 때 확실히 감춤 */
+.notification-dropdown[hidden] {
+    display: none;
+}
+
+
+/* 말풍선 꼬리 */
+
+.notification-dropdown-arrow {
+    position: absolute;
+
+    top: -6px;
+    right: 18px;
+
+    width: 12px;
+    height: 12px;
+
+    background: #ffffff;
+
+    border-left: 1px solid #eeeeee;
+    border-top: 1px solid #eeeeee;
+
+    transform: rotate(45deg);
+}
+
+
+.notification-dropdown-header {
+    padding: 14px 16px 10px;
+
+    font-size: 13px;
+    font-weight: 700;
+
+    border-bottom: 1px solid #f2f2f2;
+}
+
+
+.notification-list {
+    max-height: 280px;
+
+    overflow-y: auto;
+}
+
+
+.notification-item {
+    padding: 12px 16px;
+
+    border-bottom: 1px solid #f5f5f5;
+
+    cursor: default;
+}
+
+.notification-item:last-child {
+    border-bottom: none;
+}
+
+.notification-item:hover {
+    background: #fafafa;
+}
+
+
+.notification-item-title {
+    font-size: 12.5px;
+
+    color: #222;
+
+    margin-bottom: 3px;
+}
+
+
+.notification-item-time {
+    font-size: 11px;
+
+    color: #999;
+}
+
+
+/* 알림이 없을 때 */
+
+.notification-empty {
+    padding: 24px 16px;
+
+    text-align: center;
+
+    font-size: 12px;
+
+    color: #999;
+}

@@ -72,6 +72,37 @@ function findMeetingVideoByBasename(basename) {
   return null
 }
 
+/**
+ * 프론트가 넘기는 videoUrl(https://localhost:5173/videos/...)에서
+ * 디스크 상대경로만 꺼냅니다. Node는 mkcert 인증서를 못 믿어서 HTTPS로 다시 받으면 실패합니다.
+ */
+function extractVideosRelativePath(videoUrl) {
+  const raw = String(videoUrl || '').trim()
+  if (!raw) return null
+  const marker = '/videos/'
+  const idx = raw.indexOf(marker)
+  let rel = idx >= 0 ? raw.slice(idx + marker.length).split('?')[0] : raw.replace(/^\/+/, '')
+  try {
+    rel = decodeURIComponent(rel)
+  } catch {
+    // 이미 디코드된 경로는 그대로 씁니다.
+  }
+  rel = rel.replace(/\\/g, '/').replace(/^\/+/, '')
+  if (rel.endsWith('.url.txt')) rel = rel.slice(0, -'.url.txt'.length)
+  if (!rel || rel.includes('..')) return null
+  return rel
+}
+
+/** 이 서버에 저장된 녹화본이면 로컬 파일 경로를 돌려줍니다. */
+function resolveMeetingVideoFile(videoUrl) {
+  const rel = extractVideosRelativePath(videoUrl)
+  if (!rel) return null
+  const direct = path.resolve(MEETING_VIDEOS_DIR, rel)
+  if (!direct.startsWith(MEETING_VIDEOS_DIR)) return null
+  if (fs.existsSync(direct) && fs.statSync(direct).isFile()) return direct
+  return findMeetingVideoByBasename(path.basename(rel))
+}
+
 // 업로드 엔드포인트를 아무나 두드릴 수 없도록 최소한의 토큰 체크를 둡니다.
 // .env 에 MEETING_UPLOAD_TOKEN 을 설정하면 활성화되고, 없으면 검사를 생략합니다.
 function checkUploadToken(req, res, next) {
@@ -370,15 +401,28 @@ app.post('/api/summarize', async (req, res) => {
     }
     console.log('AI 요약 요청:', videoUrl)
 
-    // 1. 영상 파일 다운로드
-    console.log('영상 다운로드 중...')
-    const response = await fetch(videoUrl)
-    if (!response.ok) {
-      throw new Error(`영상을 내려받지 못했습니다 (HTTP ${response.status})`)
+    // 1. 영상은 HTTPS로 다시 받지 않고, 이 컴퓨터에 저장된 파일을 읽습니다.
+    // (Vite mkcert 인증서를 Node가 검증하지 못해 unable to verify the first certificate 가 납니다.)
+    let buffer
+    const localFile = resolveMeetingVideoFile(videoUrl)
+    if (localFile) {
+      console.log('디스크에서 영상 읽음:', localFile)
+      buffer = fs.readFileSync(localFile)
+    } else {
+      // 디스크에 없으면 같은 Node 서버의 HTTP /videos 로만 받습니다.
+      // Vite(https://localhost:5173) 주소는 mkcert 때문에 Node fetch가 실패합니다.
+      const rel = extractVideosRelativePath(videoUrl)
+      const fetchUrl = rel
+        ? `http://127.0.0.1:${process.env.PORT || 3001}/videos/${rel}`
+        : videoUrl
+      console.log('로컬 파일이 없어 URL로 받습니다:', fetchUrl)
+      const response = await fetch(fetchUrl)
+      if (!response.ok) {
+        throw new Error(`영상을 내려받지 못했습니다 (HTTP ${response.status})`)
+      }
+      buffer = Buffer.from(await response.arrayBuffer())
     }
-    const arrayBuffer = await response.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
-    console.log('다운로드 완료! 크기:', buffer.length)
+    console.log('영상 준비 완료! 크기:', buffer.length)
 
     if (buffer.length > MAX_AUDIO_BYTES) {
       throw new Error(

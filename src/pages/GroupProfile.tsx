@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { supabase } from '../services/supabaseClient'; // GroupPage.tsx와 동일한 경로로 맞춤
+import { supabase } from '../services/supabaseClient';
 import { useNavigate, useParams } from 'react-router-dom';
+import AppShell from '../components/AppShell';
 
 const avatars = ['🐱', '🐶', '🐸', '🐼', '🦊', '🐨', '🐯', '🦁', '🐙', '🐬'];
 const MAX_FILE_SIZE_MB = 3; // 업로드 사진 최대 용량
@@ -129,161 +130,77 @@ export default function GroupProfile() {
   };
 
   if (loading) {
-    return <div style={{ padding: '40px', textAlign: 'center' }}>불러오는 중...</div>;
+    return (
+      <AppShell activePage="setting">
+        <div className="page">불러오는 중...</div>
+      </AppShell>
+    );
   }
 
   return (
-    <div style={{ maxWidth: '400px', margin: '60px auto', fontFamily: 'sans-serif', textAlign: 'center' }}>
-      <h2>프로필 수정</h2>
-      <p style={{ color: '#888', marginTop: '-8px', marginBottom: '24px', fontSize: '14px' }}>
-        이 그룹에서만 사용되는 프로필이에요
-      </p>
+    <AppShell activePage="setting">
+      <div className="page">
+        <div className="profile-modal">
+          <div className="profile-modal-header">
+            <h2>프로필 수정</h2>
+          </div>
+          <p className="settings-desc">이 그룹에서만 사용되는 프로필이에요</p>
 
-      {/* 미리보기: 업로드 사진이 있으면 사진, 없으면 이모지 */}
-      <div style={{ marginBottom: '16px' }}>
-        {avatarUrl ? (
-          <img
-            src={avatarUrl}
-            alt="프로필 사진"
-            style={{
-              width: '96px',
-              height: '96px',
-              borderRadius: '50%',
-              objectFit: 'cover',
-              marginBottom: '8px',
-              border: '2px solid #3498db',
-            }}
-          />
-        ) : (
-          <div style={{ fontSize: '60px', marginBottom: '8px' }}>{selectedAvatar}</div>
-        )}
+          <div className="profile-photo-section">
+            <div className="profile-photo-preview">
+              {avatarUrl ? <img src={avatarUrl} alt="프로필 사진" /> : selectedAvatar}
+            </div>
+            <div className="profile-photo-actions">
+              <button type="button" className="secondary-button" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                {uploading ? '업로드 중...' : '사진 업로드'}
+              </button>
+              {avatarUrl && (
+                <button type="button" className="text-danger-button" onClick={handleRemovePhoto}>사진 제거</button>
+              )}
+            </div>
+            <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} hidden />
+          </div>
 
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '8px' }}>
-          {/* 실제 input은 숨기고 버튼 클릭 시 코드로 열어줌 */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            style={{
-              fontSize: '13px',
-              padding: '6px 12px',
-              borderRadius: '6px',
-              border: '1px solid #3498db',
-              background: 'white',
-              color: '#3498db',
-              cursor: 'pointer',
-            }}
-          >
-            {uploading ? '업로드 중...' : '📷 사진 업로드'}
-          </button>
-          {avatarUrl && (
-            <button
-              type="button"
-              onClick={handleRemovePhoto}
-              style={{
-                fontSize: '13px',
-                padding: '6px 12px',
-                borderRadius: '6px',
-                border: '1px solid #ddd',
-                background: 'white',
-                color: '#777',
-                cursor: 'pointer',
-              }}
-            >
-              사진 제거
+          <div className="profile-avatar-section">
+            <div className="profile-section-label">아바타 선택</div>
+            <div className="avatar-grid">
+              {avatars.map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  className={`avatar-option${!avatarUrl && selectedAvatar === a ? ' is-selected' : ''}`}
+                  onClick={() => {
+                    setSelectedAvatar(a);
+                    setAvatarUrl(null);
+                  }}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="profile-field">
+            <label htmlFor="group-nickname">닉네임</label>
+            <input
+              id="group-nickname"
+              className="profile-input"
+              type="text"
+              placeholder="닉네임 입력"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              maxLength={12}
+            />
+          </div>
+
+          <div className="profile-modal-actions">
+            <button type="button" className="secondary-button" onClick={() => navigate(`/group/${groupId}`)}>그룹으로</button>
+            <button type="button" className="primary-button" onClick={handleSave} disabled={saving || uploading}>
+              {saving ? '저장 중...' : '저장하기'}
             </button>
-          )}
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          onChange={handleFileChange}
-          style={{ display: 'none' }}
-        />
-      </div>
-
-      {/* 이모지 아바타 선택 (사진 없을 때 사용됨) */}
-      <div style={{ marginBottom: '24px' }}>
-        <div style={{ fontSize: '12px', color: '#999', marginBottom: '8px' }}>
-          또는 이모지 아바타 선택
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap' }}>
-          {avatars.map((a) => (
-            <button
-              key={a}
-              type="button"
-              onClick={() => {
-                setSelectedAvatar(a);
-                setAvatarUrl(null); // 이모지 선택 시 업로드 사진은 해제
-              }}
-              style={{
-                fontSize: '24px',
-                padding: '6px',
-                border: !avatarUrl && selectedAvatar === a ? '2px solid #3498db' : '2px solid transparent',
-                borderRadius: '8px',
-                background: !avatarUrl && selectedAvatar === a ? '#eaf4fd' : 'transparent',
-                cursor: 'pointer',
-              }}
-            >
-              {a}
-            </button>
-          ))}
+          </div>
         </div>
       </div>
-
-      {/* 닉네임 입력 */}
-      <div style={{ marginBottom: '16px' }}>
-        <input
-          type="text"
-          placeholder="닉네임 입력"
-          value={nickname}
-          onChange={(e) => setNickname(e.target.value)}
-          maxLength={12}
-          style={{
-            width: '100%',
-            padding: '10px',
-            boxSizing: 'border-box',
-            fontSize: '16px',
-            borderRadius: '6px',
-            border: '1px solid #ddd',
-          }}
-        />
-      </div>
-
-      <button
-        onClick={handleSave}
-        disabled={saving || uploading}
-        style={{
-          width: '100%',
-          padding: '12px',
-          backgroundColor: '#3498db',
-          color: 'white',
-          border: 'none',
-          cursor: 'pointer',
-          borderRadius: '6px',
-          fontSize: '16px',
-          marginBottom: '8px',
-        }}
-      >
-        {saving ? '저장 중...' : '저장하기'}
-      </button>
-
-      <button
-        onClick={() => navigate(`/group/${groupId}`)}
-        style={{
-          width: '100%',
-          padding: '12px',
-          backgroundColor: '#7f8c8d',
-          color: 'white',
-          border: 'none',
-          cursor: 'pointer',
-          borderRadius: '6px',
-          fontSize: '16px',
-        }}
-      >
-        ⬅️ 그룹으로
-      </button>
-    </div>
+    </AppShell>
   );
 }

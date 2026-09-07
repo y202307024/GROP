@@ -10,6 +10,7 @@ import SetupProfile from './pages/SetupProfile';
 import GroupPage from './pages/GroupPage'
 import GroupSettings from './pages/GroupSettings'
 import MeetingList from './pages/MeetingList'
+import DocumentList from './pages/DocumentList'
 import MeetingDetail from './pages/MeetingDetail'
 import MemberList from './pages/MemberList'
 import CanvasPage from './pages/CanvasPage'
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="/setup-profile" element={<SetupProfile />} />
         <Route path="/group/:id" element={<GroupPage />} />
         <Route path="/group/:id/settings" element={<GroupSettings />} />
+        <Route path="/documents" element={<DocumentList />} />
         <Route path="/group/:id/meetings" element={<MeetingList />} />
         <Route path="/group/:id/meeting/:meetingId" element={<MeetingDetail />} />
         <Route path="/group/:id/members" element={<MemberList />} />

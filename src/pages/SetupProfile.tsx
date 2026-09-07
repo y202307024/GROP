@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 
 const avatars = ['🐱','🐶','🐸','🐼','🦊','🐨','🐯','🦁','🐙','🐬'];
 
+/** 가입 직후 프로필 — grop 프로필 모달 CSS를 페이지로 사용합니다. */
 export default function SetupProfile() {
   const [nickname, setNickname] = useState('');
   const [selectedAvatar, setSelectedAvatar] = useState('🐱');
@@ -28,43 +29,53 @@ export default function SetupProfile() {
   };
 
   return (
-    <div style={{ maxWidth: '400px', margin: '60px auto', fontFamily: 'sans-serif', textAlign: 'center' }}>
-      <h2>프로필 설정</h2>
-      <p style={{ color: '#888', marginBottom: '24px' }}>처음 오셨군요! 프로필을 설정해주세요 👋</p>
+    <div className="signup-shell stage" style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <div className="profile-modal">
+        <div className="profile-modal-header">
+          <h2>프로필 설정</h2>
+        </div>
+        <p className="settings-desc">처음 오셨군요! 프로필을 설정해주세요</p>
 
-      <form onSubmit={handleSubmit}>
-        {/* 아바타 선택 */}
-        <div style={{ marginBottom: '24px' }}>
-          <div style={{ fontSize: '60px', marginBottom: '12px' }}>{selectedAvatar}</div>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            {avatars.map((a) => (
-              <button
-                key={a}
-                type="button"
-                onClick={() => setSelectedAvatar(a)}
-                style={{
-                  fontSize: '24px', padding: '6px', border: selectedAvatar === a ? '2px solid #3498db' : '2px solid transparent',
-                  borderRadius: '8px', background: selectedAvatar === a ? '#eaf4fd' : 'transparent', cursor: 'pointer'
-                }}
-              >{a}</button>
-            ))}
+        <form onSubmit={handleSubmit}>
+          <div className="profile-photo-section">
+            <div className="profile-photo-preview">{selectedAvatar}</div>
           </div>
-        </div>
 
-        {/* 닉네임 */}
-        <div style={{ marginBottom: '16px' }}>
-          <input
-            type="text" placeholder="닉네임 입력" value={nickname}
-            onChange={(e) => setNickname(e.target.value)} required maxLength={12}
-            style={{ width: '100%', padding: '10px', boxSizing: 'border-box', fontSize: '16px', borderRadius: '6px', border: '1px solid #ddd' }}
-          />
-        </div>
+          <div className="profile-avatar-section">
+            <div className="profile-section-label">아바타 선택</div>
+            <div className="avatar-grid">
+              {avatars.map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  className={`avatar-option${selectedAvatar === a ? ' is-selected' : ''}`}
+                  onClick={() => setSelectedAvatar(a)}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </div>
 
-        <button type="submit"
-          style={{ width: '100%', padding: '12px', backgroundColor: '#3498db', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '6px', fontSize: '16px' }}>
-          시작하기 🚀
-        </button>
-      </form>
+          <div className="profile-field">
+            <label htmlFor="setup-nickname">닉네임</label>
+            <input
+              id="setup-nickname"
+              className="profile-input"
+              type="text"
+              placeholder="닉네임 입력"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              required
+              maxLength={12}
+            />
+          </div>
+
+          <div className="profile-modal-actions">
+            <button type="submit" className="primary-button">시작하기</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

@@ -1,16 +1,18 @@
 import { useState, useEffect, useRef, type RefObject } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { RoomEvent, type Participant } from 'livekit-client';
+import { Link, useParams, useNavigate } from 'react-router-dom';
+import { RoomEvent } from 'livekit-client';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
   StartAudio,
   useLocalParticipant,
-  useParticipants,
   useRoomContext,
 } from '@livekit/components-react';
 import '@livekit/components-styles';
 import CanvasBoard, { type CanvasBoardHandle } from '../CanvasBoard';
+import MeetingChatPanel from '../components/MeetingChatPanel';
+import MeetingDrawingTools, { type MeetingDrawAction } from '../components/MeetingDrawingTools';
+import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import { createMeetingRecordingStream } from '../utils/meetingRecordingCapture';
@@ -34,15 +36,6 @@ type RecordingSyncHandle = {
   broadcastStop: () => void;
 };
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function getParticipantDisplayName(p: Participant) {
-  const name = p.name?.trim();
-  if (name) return name;
-  if (UUID_RE.test(p.identity)) return '참여자';
-  return p.identity;
-}
-
 function formatMeetingElapsed(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -56,23 +49,13 @@ function formatMeetingElapsed(seconds: number) {
 function MicInsecureBanner() {
   if (isSecureMediaContext()) return null;
   return (
-    <div style={{
-      flexShrink: 0,
-      padding: '8px 16px',
-      background: '#3a2a12',
-      color: '#f0c36d',
-      fontSize: 12,
-      lineHeight: 1.45,
-      borderBottom: '1px solid #5a4318',
-    }}>
+    <div className="meeting-recording-banner">
       지금 주소(<strong>{window.location.host}</strong>)는 HTTP라서 마이크가 차단됩니다.{' '}
-      <a href={`https://${window.location.host}${window.location.pathname}${window.location.search}`} style={{ color: '#fff', fontWeight: 700 }}>
+      <a href={`https://${window.location.host}${window.location.pathname}${window.location.search}`}>
         https로 다시 열기
       </a>
       {' '}또는{' '}
-      <a href={localhostAppUrl()} style={{ color: '#fff', fontWeight: 700 }}>
-        localhost로 접속
-      </a>
+      <a href={localhostAppUrl()}>localhost로 접속</a>
       하세요. 처음 HTTPS는 인증서 경고가 뜨면 고급 → 계속을 누르면 됩니다.
     </div>
   );
@@ -99,56 +82,13 @@ function RoomTopHeader({ groupName }: { groupName: string }) {
   }, [startedAt]);
 
   return (
-    <div style={{
-      padding: '0 16px', background: '#1a1b1e', color: 'white', display: 'flex', alignItems: 'center', gap: 8,
-      height: 48, borderBottom: '1px solid #2f3136', flexShrink: 0,
-    }}>
-      <span style={{ color: '#949ba4', fontSize: 20 }}>🔊</span>
-      <span style={{ fontWeight: 600, fontSize: 15 }}>회의 채널</span>
-      {groupName ? <span style={{ fontSize: 13, color: '#949ba4' }}>· {groupName}</span> : null}
-      <span style={{ fontSize: 11, color: '#57f287', background: '#1a3a2a', padding: '2px 8px', borderRadius: 10, marginLeft: 4 }}>
-        ● 진행 중
+    <header className="meeting-header">
+      <Link to="/main" className="logo">GROP</Link>
+      <span className="meeting-title">{groupName || '회의'}</span>
+      <span className="meeting-title-time">
+        · {startedAt ? formatMeetingElapsed(elapsed) : '0:00'}
       </span>
-      {startedAt ? (
-        <span style={{ fontSize: 12, color: '#dbdee1', marginLeft: 4, fontVariantNumeric: 'tabular-nums' }}>
-          ⏱ {formatMeetingElapsed(elapsed)}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function MeetingParticipantsBar() {
-  const participants = useParticipants();
-
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, overflowX: 'auto',
-      paddingBottom: 2,
-    }}>
-      <span style={{ fontSize: 11, color: '#949ba4', flexShrink: 0, fontWeight: 600 }}>
-        참여자 {participants.length}
-      </span>
-      {participants.map((p) => (
-        <div
-          key={p.identity}
-          title={p.isSpeaking ? '말하는 중' : '대기 중'}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
-            padding: '3px 10px 3px 6px', background: '#313338', borderRadius: 16,
-            border: p.isSpeaking ? '1px solid #57f287' : '1px solid #1e1f22',
-          }}
-        >
-          <span style={{
-            width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
-            background: p.isSpeaking ? '#57f287' : '#949ba4',
-          }} />
-          <span style={{ fontSize: 11, color: '#dbdee1', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {getParticipantDisplayName(p)}
-          </span>
-        </div>
-      ))}
-    </div>
+    </header>
   );
 }
 
@@ -182,7 +122,7 @@ function MeetingAudioSetup() {
         padding: '8px 12px',
         borderRadius: 8,
         border: 'none',
-        background: '#5865f2',
+        background: 'var(--color-primary-soft)',
         color: '#fff',
         fontSize: 12,
         cursor: 'pointer',
@@ -257,20 +197,16 @@ function RoomRecordingBridge({ bridgeRef }: { bridgeRef: RefObject<RecordingBrid
   return null;
 }
 
-function MeetingControls({
+function MeetingCallControls({
   onLeave,
   onToggleRecord,
   isRecording,
   savingRecording,
-  avatar,
-  userName,
 }: {
   onLeave: () => void;
   onToggleRecord: () => void;
   isRecording: boolean;
   savingRecording: boolean;
-  avatar: string;
-  userName: string;
 }) {
   const { localParticipant } = useLocalParticipant();
   const micOn = localParticipant.isMicrophoneEnabled;
@@ -286,60 +222,48 @@ function MeetingControls({
   };
 
   return (
-    <>
-      {(isRecording || savingRecording) && (
-        <div style={{ textAlign: 'center', padding: '6px', background: '#3a1a1a', color: '#ed4245', fontSize: 12, flexShrink: 0 }}>
-          {savingRecording ? '💾 회의록 저장 중...' : '🔴 회의 화면 녹화 중...'}
-        </div>
-      )}
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '8px 16px', background: '#232428', borderTop: '1px solid #1a1b1e', height: 52, flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#5865f2', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>
-            {avatar}
-          </div>
-          <div>
-            <div style={{ color: 'white', fontSize: 12, fontWeight: 600 }}>{userName}</div>
-            <div style={{ color: '#57f287', fontSize: 10 }}>● 연결됨</div>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <button type="button" onClick={toggleMic} title={micOn ? '마이크 끄기' : '마이크 켜기'} style={{
-            width: 36, height: 36, borderRadius: 8, border: 'none', cursor: 'pointer',
-            background: micOn ? '#35373c' : '#ed4245', color: 'white', fontSize: 16,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            {micOn ? '🎙️' : '🔇'}
-          </button>
-          <button
-            type="button"
-            onClick={onToggleRecord}
-            disabled={savingRecording}
-            title={isRecording ? '녹화 종료 및 회의록 저장' : '회의 화면 녹화 시작'}
-            style={{
-              width: 36, height: 36, borderRadius: 8, border: 'none', cursor: savingRecording ? 'wait' : 'pointer',
-              background: isRecording ? '#ed4245' : '#35373c', color: 'white', fontSize: 16,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              opacity: savingRecording ? 0.6 : 1,
-            }}
-          >
-            {isRecording ? '⏹️' : '🔴'}
-          </button>
-          <button type="button" onClick={onLeave} title="나가기" style={{
-            width: 36, height: 36, borderRadius: 8, border: 'none', cursor: 'pointer',
-            background: '#ed4245', color: 'white', fontSize: 16,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            📞
-          </button>
-        </div>
-
-        <div style={{ width: 80 }} />
-      </div>
-    </>
+    <div className="call-controls">
+      <button
+        type="button"
+        className={`call-icon-button${micOn ? ' active' : ''}`}
+        data-tooltip="마이크"
+        aria-label="마이크 켜기/끄기"
+        onClick={() => { void toggleMic(); }}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          {micOn ? (
+            <>
+              <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z" />
+              <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+              <path d="M12 18v3" />
+            </>
+          ) : (
+            <>
+              <path d="M9 9v3a3 3 0 0 0 5.12 2.12" />
+              <path d="M15 9.34V6a3 3 0 0 0-5.68-1.33" />
+              <path d="M19 10v1a7 7 0 0 1-1.2 3.8" />
+              <path d="M5 10v1a7 7 0 0 0 11 5.2" />
+              <path d="M12 18v3M2 2l20 20" />
+            </>
+          )}
+        </svg>
+      </button>
+      <button
+        type="button"
+        className={`call-icon-button${isRecording ? ' is-recording' : ''}`}
+        data-tooltip="녹화"
+        aria-label="녹화 시작/종료"
+        disabled={savingRecording}
+        onClick={onToggleRecord}
+      >
+        <svg viewBox="0 0 24 24" fill={isRecording ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="7" />
+        </svg>
+      </button>
+      <button type="button" className="leave-button" onClick={onLeave}>
+        나가기
+      </button>
+    </div>
   );
 }
 
@@ -356,8 +280,6 @@ function RoomContent({
   onRemoteStopRecording,
   isRecording,
   savingRecording,
-  avatar,
-  userName,
 }: {
   groupId: string;
   groupName: string;
@@ -371,11 +293,20 @@ function RoomContent({
   onRemoteStopRecording: () => void;
   isRecording: boolean;
   savingRecording: boolean;
-  avatar: string;
-  userName: string;
 }) {
+  const [drawTool, setDrawTool] = useState<MeetingDrawAction>('hand');
+
+  const handlePick = (next: MeetingDrawAction) => {
+    setDrawTool(next);
+    if (next === 'stamp') {
+      canvasBoardRef.current?.toggleLibrary();
+      return;
+    }
+    canvasBoardRef.current?.pickTool(next as ExcalidrawTool);
+  };
+
   return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden', position: 'relative', minWidth: 0 }}>
+    <>
       <RoomAudioRenderer volume={loadVoiceSettings().speakerVolume / 100} />
       <MeetingAudioSetup />
       <RecordingDataSync
@@ -385,27 +316,35 @@ function RoomContent({
         onRemoteStop={onRemoteStopRecording}
       />
       <RoomRecordingBridge bridgeRef={recordingBridgeRef} />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      {(isRecording || savingRecording) ? (
+        <div className="meeting-recording-banner">
+          {savingRecording ? '회의록 저장 중...' : '회의 화면 녹화 중...'}
+        </div>
+      ) : null}
+      <main className="meeting-main">
+        <div className="whiteboard">
           <CanvasBoard
             ref={canvasBoardRef}
             embedded
             meetingMode
-            meetingHeaderExtra={<MeetingParticipantsBar />}
+            gropShell
+            onToolChange={(tool) => setDrawTool(tool)}
             groupId={groupId}
             groupName={groupName}
           />
         </div>
-        <MeetingControls
+        <MeetingChatPanel groupId={groupId} />
+      </main>
+      <footer className="bottom-bar">
+        <MeetingDrawingTools active={drawTool} onPick={handlePick} />
+        <MeetingCallControls
           onLeave={onLeave}
           onToggleRecord={onToggleRecord}
           isRecording={isRecording}
           savingRecording={savingRecording}
-          avatar={avatar}
-          userName={userName}
         />
-      </div>
-    </div>
+      </footer>
+    </>
   );
 }
 
@@ -415,7 +354,6 @@ export default function Room() {
   const [token, setToken] = useState('');
   const [userId, setUserId] = useState('');
   const [userName, setUserName] = useState('');
-  const [avatar, setAvatar] = useState('🐱');
   const [groupName, setGroupName] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -531,13 +469,12 @@ export default function Room() {
         if (!userData.user) { navigate('/'); return; }
 
         const { data: profile } = await supabase
-          .from('profiles').select('nickname, avatar')
+          .from('profiles').select('nickname')
           .eq('id', userData.user.id).maybeSingle();
 
         const name = profile?.nickname || userData.user.email || '익명';
         setUserId(userData.user.id);
         setUserName(name);
-        setAvatar(profile?.avatar || '🐱');
 
         if (id) {
           const { data: group } = await supabase
@@ -759,19 +696,13 @@ export default function Room() {
 
   if (loading) {
     return (
-      <div style={{ height: '100vh', background: '#1e1f22', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 18 }}>
-        🎙️ 연결 중...
-      </div>
+      <div className="meeting-loading">연결 중...</div>
     );
   }
 
   if (saving) {
     return (
-      <div style={{ height: '100vh', background: '#1e1f22', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'white', gap: 16 }}>
-        <div style={{ fontSize: 40 }}>💾</div>
-        <div style={{ fontSize: 18 }}>회의록 저장 중...</div>
-        <div style={{ fontSize: 13, color: '#949ba4' }}>잠시만 기다려주세요</div>
-      </div>
+      <div className="meeting-loading">회의록 저장 중...</div>
     );
   }
 
@@ -781,7 +712,7 @@ export default function Room() {
   }
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: '#1e1f22', fontFamily: 'sans-serif' }}>
+    <div className="meeting-page stage">
       <LiveKitRoom
         token={token}
         serverUrl={import.meta.env.VITE_LIVEKIT_URL}
@@ -816,11 +747,10 @@ export default function Room() {
             onRemoteStopRecording={() => { void stopRecordingAndSave({ save: false }); }}
             isRecording={isRecording}
             savingRecording={savingRecording}
-            avatar={avatar}
-            userName={userName}
           />
         </div>
       </LiveKitRoom>
     </div>
   );
 }
+

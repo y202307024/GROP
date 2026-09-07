@@ -1,0 +1,115 @@
+/* =========================================
+   그룹 편집 모달
+
+   .modal-overlay, .profile-modal-header,
+   .profile-photo-section, .profile-photo-preview,
+   .profile-field, .profile-input, .secondary-button,
+   .primary-button, .profile-modal-actions,
+   .mini-avatar 는 다른 모달 css를 재사용합니다.
+========================================= */
+
+.group-edit-modal {
+    width: 420px;
+    max-width: 100%;
+    max-height: 90vh;
+
+    overflow-y: auto;
+
+    background: #ffffff;
+
+    border-radius: 16px;
+
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+
+    padding: 26px 28px;
+}
+
+
+.group-edit-textarea {
+    height: 56px;
+
+    padding-top: 8px;
+
+    resize: none;
+
+    font-family: inherit;
+}
+
+
+/* =========================================
+   멤버 권한
+========================================= */
+
+.group-edit-permission-section {
+    margin-bottom: 8px;
+}
+
+.group-edit-permission-title {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #555;
+
+    margin-bottom: 8px;
+}
+
+.group-edit-permission-hint {
+    color: #aaaaaa;
+    font-weight: 400;
+}
+
+
+.group-edit-member-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    padding: 9px 0;
+
+    border-bottom: 1px solid #f2f2f2;
+
+    font-size: 12.5px;
+}
+
+.group-edit-member-row:last-child {
+    border-bottom: none;
+}
+
+
+.group-edit-member-info {
+    display: flex;
+    align-items: center;
+
+    gap: 8px;
+}
+
+.group-edit-me-tag {
+    color: #999;
+}
+
+
+.group-edit-role-badge {
+    font-size: 11px;
+    font-weight: 700;
+
+    background: var(--color-primary-tint);
+    color: var(--color-primary-hover);
+
+    padding: 3px 10px;
+
+    border-radius: 20px;
+}
+
+
+.group-edit-role-select {
+    border: none;
+    border-radius: 20px;
+
+    background: #f4f3ee;
+    color: #333;
+
+    font-size: 11.5px;
+
+    padding: 5px 10px;
+
+    cursor: pointer;
+}

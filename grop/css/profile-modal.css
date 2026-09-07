@@ -1,0 +1,300 @@
+/* =========================================
+   프로필 편집 모달
+========================================= */
+
+.modal-overlay {
+    position: fixed;
+
+    inset: 0;
+
+    background: rgba(0, 0, 0, 0.45);
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    z-index: 200;
+
+    padding: 20px;
+}
+
+
+/* hidden 속성이 붙으면 확실히 감춤
+   (display:flex가 브라우저 기본 [hidden] 처리를 덮어쓰는 것을 방지) */
+
+.modal-overlay[hidden] {
+    display: none;
+}
+
+
+.profile-modal {
+    width: 420px;
+    max-width: 100%;
+    max-height: 90vh;
+
+    overflow-y: auto;
+
+    background: #ffffff;
+
+    border-radius: 14px;
+
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+
+    padding: 28px 30px;
+}
+
+
+.profile-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 22px;
+}
+
+.profile-modal-header h2 {
+    margin: 0;
+
+    font-size: 18px;
+    font-weight: 700;
+
+    color: var(--color-primary);
+}
+
+.modal-close-button {
+    width: 28px;
+    height: 28px;
+
+    border: none;
+    background: transparent;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    color: #888;
+
+    cursor: pointer;
+}
+
+.modal-close-button:hover {
+    color: #333;
+}
+
+.modal-close-button svg {
+    width: 18px;
+    height: 18px;
+}
+
+
+/* =========================================
+   프로필 사진
+========================================= */
+
+.profile-photo-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+
+    margin-bottom: 22px;
+}
+
+
+.profile-photo-preview {
+    width: 88px;
+    height: 88px;
+
+    border-radius: 50%;
+
+    background: var(--color-primary-soft);
+    color: white;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    font-size: 34px;
+
+    margin-bottom: 12px;
+
+    overflow: hidden;
+}
+
+.profile-photo-preview img {
+    width: 100%;
+    height: 100%;
+
+    object-fit: cover;
+}
+
+
+.profile-photo-actions {
+    display: flex;
+    gap: 10px;
+}
+
+
+/* 공용 보조 버튼 (사진 업로드 / 취소 등) */
+
+.secondary-button {
+    border: 1px solid var(--color-border-strong);
+    border-radius: 6px;
+
+    background: #ffffff;
+    color: #333;
+
+    padding: 7px 14px;
+
+    font-size: 12px;
+    font-weight: 600;
+
+    cursor: pointer;
+}
+
+.secondary-button:hover {
+    background: #f7f7f7;
+}
+
+
+/* 텍스트형 위험 버튼 (사진 제거) */
+
+.text-danger-button {
+    border: none;
+    background: transparent;
+
+    color: var(--color-danger);
+
+    font-size: 12px;
+    font-weight: 600;
+
+    cursor: pointer;
+
+    padding: 7px 4px;
+}
+
+
+/* =========================================
+   아바타 선택
+========================================= */
+
+.profile-avatar-section {
+    margin-bottom: 22px;
+}
+
+.profile-section-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+
+    margin-bottom: 8px;
+}
+
+.avatar-grid {
+    display: grid;
+
+    grid-template-columns: repeat(5, 1fr);
+
+    gap: 8px;
+}
+
+.avatar-option {
+    aspect-ratio: 1;
+
+    border-radius: 50%;
+
+    border: 2px solid transparent;
+
+    background: #f0efe9;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    font-size: 18px;
+
+    cursor: pointer;
+}
+
+.avatar-option.is-selected {
+    border-color: var(--color-primary);
+    background: var(--color-primary-tint);
+}
+
+
+/* =========================================
+   닉네임 입력
+========================================= */
+
+.profile-field {
+    margin-bottom: 26px;
+}
+
+.profile-field label {
+    display: block;
+
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+
+    margin-bottom: 6px;
+}
+
+.profile-input {
+    width: 100%;
+
+    height: 40px;
+
+    padding: 0 12px;
+
+    border: 1px solid var(--color-border-strong);
+    border-radius: 6px;
+
+    font-size: 13px;
+
+    outline: none;
+
+    box-sizing: border-box;
+}
+
+.profile-input:focus {
+    border-color: var(--color-primary);
+}
+
+
+/* =========================================
+   하단 버튼
+========================================= */
+
+.profile-modal-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.profile-modal-actions .secondary-button,
+.profile-modal-actions .primary-button {
+    flex: 1;
+
+    height: 42px;
+
+    font-size: 13px;
+}
+
+.profile-modal-actions .primary-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border: none;
+    border-radius: 6px;
+
+    background: var(--color-primary-soft);
+    color: white;
+
+    font-weight: 600;
+
+    cursor: pointer;
+}
+
+.profile-modal-actions .primary-button:hover {
+    background: var(--color-primary-hover);
+}
