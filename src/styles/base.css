@@ -7,10 +7,10 @@
 
 html {
   font-family: var(--font-sans);
-  font-size: var(--text-md);
+  font-size: 16px;
   line-height: var(--leading-normal);
-  color: var(--color-text-body);
-  background: var(--color-bg);
+  color: var(--color-text);
+  background: var(--color-bg-soft);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;

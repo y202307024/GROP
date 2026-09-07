@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0">
+
+    <title>GROP - 회의</title>
+
+    <link
+        rel="stylesheet"
+        href="css/common.css">
+
+    <link
+        rel="stylesheet"
+        href="css/meeting.css">
+
+    <script src="https://unpkg.com/lucide@latest" defer></script>
+
+</head>
+
+
+<body>
+
+
+    <div class="meeting-page stage">
+
+
+        <!-- =========================================
+             상단
+        ========================================== -->
+
+        <header class="meeting-header">
+
+            <a href="main.html" class="logo">
+                GROP
+            </a>
+
+            <span class="meeting-title" id="meetingTitle">
+                (회의명)
+            </span>
+
+            <span class="meeting-title-time" id="meetingTimer">
+                · 0:00
+            </span>
+
+        </header>
+
+
+
+        <!-- =========================================
+             화이트보드 + 채팅
+        ========================================== -->
+
+        <main class="meeting-main">
+
+            <div class="whiteboard" id="whiteboard"></div>
+
+
+            <aside class="chat-panel" id="chatPanel">
+
+                <button
+                    class="chat-collapse-tab"
+                    id="chatCollapseTab"
+                    aria-label="채팅 접기/펼치기">
+                    »
+                </button>
+
+                <div class="chat-title">
+
+                    <div class="chat-participants" id="chatParticipants">
+
+                        <div class="participant-avatar" title="한지우">한</div>
+                        <div class="participant-avatar" title="이서연">이</div>
+                        <div class="participant-avatar" title="박현우">박</div>
+
+                    </div>
+
+                    <span class="chat-participant-count" id="chatParticipantCount">
+                        4명
+                    </span>
+
+                </div>
+
+
+                <div class="chat-messages" id="chatMessages"></div>
+
+
+                <form class="chat-input-area" id="chatForm">
+
+                    <input
+                        type="text"
+                        id="chatInput"
+                        placeholder="메시지 입력..."
+                        autocomplete="off">
+
+                    <button type="submit">
+                        전송
+                    </button>
+
+                </form>
+
+            </aside>
+
+        </main>
+
+
+
+        <!-- =========================================
+             하단
+        ========================================== -->
+
+        <footer class="bottom-bar">
+
+            <div class="drawing-tools">
+
+                <button class="tool-button active" data-tooltip="선택">
+                    <i data-lucide="mouse-pointer-2"></i>
+                </button>
+
+                <button class="tool-button" data-tooltip="연결선">
+                    <i data-lucide="link-2"></i>
+                </button>
+
+                <button class="tool-button" data-tooltip="텍스트">
+                    <i data-lucide="type"></i>
+                </button>
+
+                <button class="tool-button" data-tooltip="도형">
+                    <i data-lucide="triangle"></i>
+                </button>
+
+                <button class="tool-button" data-tooltip="스티커노트">
+                    <i data-lucide="sticky-note"></i>
+                </button>
+
+                <button class="tool-button" data-tooltip="지우개">
+                    <i data-lucide="eraser"></i>
+                </button>
+
+                <button class="tool-button" data-tooltip="파일 첨부">
+                    <i data-lucide="paperclip"></i>
+                </button>
+
+            </div>
+
+
+            <div class="call-controls">
+
+                <button
+                    class="call-icon-button"
+                    id="micButton"
+                    data-tooltip="마이크"
+                    aria-label="마이크 켜기/끄기">
+
+                    <i data-lucide="mic"></i>
+
+                </button>
+
+                <button
+                    class="call-icon-button"
+                    id="recordButton"
+                    data-tooltip="녹화"
+                    aria-label="녹화 시작/종료">
+
+                    <i data-lucide="circle"></i>
+
+                </button>
+
+                <button class="leave-button" id="leaveButton">
+                    나가기
+                </button>
+
+            </div>
+
+        </footer>
+
+
+    </div>
+
+
+    <script src="js/meeting.js" defer></script>
+
+</body>
+
+</html>

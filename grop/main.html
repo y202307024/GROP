@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GROP - 메인</title>
+
+<script src="js/auth-utils.js"></script>
+<script src="js/auth-guard.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Roboto:wght@400;500;700&family=Poppins:wght@400;500&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="css/common.css">
+<link rel="stylesheet" href="css/main.css">
+<link rel="stylesheet" href="css/ai.css">
+<link rel="stylesheet" href="css/document.css">
+<link rel="stylesheet" href="css/calendar.css">
+<link rel="stylesheet" href="css/member.css">
+<link rel="stylesheet" href="css/setting.css">
+<link rel="stylesheet" href="css/notification.css">
+<link rel="stylesheet" href="css/profile-modal.css">
+<link rel="stylesheet" href="css/group-modal.css">
+<link rel="stylesheet" href="css/group-detail.css">
+<link rel="stylesheet" href="css/group-edit-modal.css">
+
+<script src="https://unpkg.com/lucide@latest" defer></script>
+
+<script src="js/document.js" defer></script>
+<script src="js/calendar.js" defer></script>
+<script src="js/member.js" defer></script>
+<script src="js/setting.js" defer></script>
+<script src="js/profile-modal.js" defer></script>
+<script src="js/group-modal.js" defer></script>
+<script src="js/notification.js" defer></script>
+<script src="js/group-detail.js" defer></script>
+<script src="js/group-edit-modal.js" defer></script>
+
+</head>
+<body>
+<div class="app stage">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="logo">GROP</div>
+    <nav class="nav">
+      <button class="nav-item menu active" data-page="main">
+        <i data-lucide="home"></i>
+        메인
+      </button>
+      <button class="nav-item menu" data-page="meeting">
+        <i data-lucide="clipboard-list"></i>
+        회의
+      </button>
+      <button class="nav-item menu" data-page="document">
+        <i data-lucide="file-text"></i>
+        문서
+      </button>
+      <button class="nav-item menu" data-page="ai">
+        <i data-lucide="sparkles"></i>
+        AI 요약
+      </button>
+      <button class="nav-item menu" data-page="calendar">
+        <i data-lucide="calendar"></i>
+        캘린더
+      </button>
+      <button class="nav-item menu" data-page="member">
+        <i data-lucide="users"></i>
+        팀원
+      </button>
+      <button class="nav-item menu" data-page="setting">
+        <i data-lucide="settings"></i>
+        설정
+      </button>
+    </nav>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <div class="topbar">
+
+      <div class="notification-wrapper">
+        <button class="icon-btn" id="notificationButton" aria-label="알림">
+          <i data-lucide="bell"></i>
+        </button>
+        <div class="notification-dropdown" id="notificationDropdown" hidden>
+          <div class="notification-dropdown-arrow"></div>
+          <div class="notification-dropdown-header">알림</div>
+          <div class="notification-list" id="notificationList">
+            <div class="notification-item">
+              <div class="notification-item-title">새 회의가 생성됐어요</div>
+              <div class="notification-item-time">5분 전</div>
+            </div>
+            <div class="notification-item">
+              <div class="notification-item-title">AI 요약이 완료됐어요</div>
+              <div class="notification-item-time">1시간 전</div>
+            </div>
+            <div class="notification-item">
+              <div class="notification-item-title">이서연 님이 그룹에 참여했어요</div>
+              <div class="notification-item-time">어제</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button class="icon-btn profile-button" id="topProfileButton" aria-label="내 프로필">
+        <span class="profile-button-avatar" id="topProfileAvatar">🙂</span>
+      </button>
+
+    </div>
+
+    <!-- 탭에 따라 바뀌는 중앙 영역 -->
+    <div id="content"></div>
+
+  </main>
+</div>
+
+
+<!-- =========================================
+     프로필 편집 모달
+========================================== -->
+
+<div class="modal-overlay" id="profileModalOverlay" hidden>
+
+    <div class="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profileModalTitle">
+
+        <div class="profile-modal-header">
+            <h2 id="profileModalTitle">프로필 수정</h2>
+            <button class="modal-close-button" id="profileModalCloseButton" aria-label="닫기">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+
+        <div class="profile-photo-section">
+            <div class="profile-photo-preview" id="profilePhotoPreview">🙂</div>
+            <div class="profile-photo-actions">
+                <button class="secondary-button" id="profileUploadButton" type="button">사진 업로드</button>
+                <button class="text-danger-button" id="profileRemoveButton" type="button" hidden>사진 제거</button>
+            </div>
+            <input type="file" id="profilePhotoInput" accept="image/*" hidden>
+        </div>
+
+        <div class="profile-avatar-section">
+            <div class="profile-section-label">아바타 선택</div>
+            <div class="avatar-grid" id="avatarGrid">
+                <button class="avatar-option is-selected" data-avatar="🙂" type="button">🙂</button>
+                <button class="avatar-option" data-avatar="🐱" type="button">🐱</button>
+                <button class="avatar-option" data-avatar="🐶" type="button">🐶</button>
+                <button class="avatar-option" data-avatar="🐼" type="button">🐼</button>
+                <button class="avatar-option" data-avatar="🦊" type="button">🦊</button>
+                <button class="avatar-option" data-avatar="🐰" type="button">🐰</button>
+                <button class="avatar-option" data-avatar="🐻" type="button">🐻</button>
+                <button class="avatar-option" data-avatar="🦁" type="button">🦁</button>
+                <button class="avatar-option" data-avatar="🐨" type="button">🐨</button>
+                <button class="avatar-option" data-avatar="🐯" type="button">🐯</button>
+            </div>
+        </div>
+
+        <div class="profile-field">
+            <label for="profileNicknameInput">닉네임</label>
+            <input type="text" id="profileNicknameInput" class="profile-input" value="한지우" maxlength="12">
+        </div>
+
+        <div class="profile-modal-actions">
+            <button class="secondary-button" id="profileCancelButton" type="button">취소</button>
+            <button class="primary-button" id="profileSaveButton" type="button">저장하기</button>
+        </div>
+
+    </div>
+
+</div>
+
+
+<!-- =========================================
+     그룹 추가 모달
+========================================== -->
+
+<div class="modal-overlay" id="groupModalOverlay" hidden>
+
+    <div class="group-modal" role="dialog" aria-modal="true" aria-labelledby="groupModalTitle">
+
+        <div class="profile-modal-header">
+            <h2 id="groupModalTitle">그룹 추가</h2>
+            <button class="modal-close-button" id="groupModalCloseButton" aria-label="닫기">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+
+        <div class="group-modal-tabs">
+            <button class="group-tab is-active" id="groupTabCreate" type="button">그룹 만들기</button>
+            <button class="group-tab" id="groupTabJoin" type="button">초대코드로 참여</button>
+        </div>
+
+        <div class="group-panel" id="groupPanelCreate">
+            <div class="profile-field">
+                <label for="groupNameInput">그룹 이름</label>
+                <input type="text" id="groupNameInput" class="profile-input" placeholder="예: 디자인팀 그룹" maxlength="20">
+            </div>
+            <p class="group-modal-message" id="groupCreateMessage"></p>
+            <button class="primary-button group-submit-button" id="groupCreateButton" type="button">그룹 생성하기</button>
+        </div>
+
+        <div class="group-panel" id="groupPanelJoin" hidden>
+            <div class="profile-field">
+                <label for="inviteCodeInput">초대코드</label>
+                <input type="text" id="inviteCodeInput" class="profile-input group-invite-input" placeholder="예: 8GQK41" maxlength="10">
+            </div>
+            <p class="group-modal-message" id="groupJoinMessage"></p>
+            <button class="primary-button group-submit-button" id="groupJoinButton" type="button">그룹 참여하기</button>
+        </div>
+
+    </div>
+
+</div>
+
+
+<!-- =========================================
+     그룹 편집 모달
+========================================== -->
+
+<div class="modal-overlay" id="groupEditModalOverlay" hidden>
+
+    <div class="group-edit-modal" role="dialog" aria-modal="true" aria-labelledby="groupEditModalTitle">
+
+        <div class="profile-modal-header">
+            <h2 id="groupEditModalTitle">그룹 편집</h2>
+            <button class="modal-close-button" id="groupEditCloseButton" aria-label="닫기">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+
+        <div class="profile-photo-section">
+            <div class="profile-photo-preview" id="groupEditAvatarPreview">D</div>
+            <div class="profile-photo-actions">
+                <button class="secondary-button" id="groupEditPhotoButton" type="button">대표 이미지 변경</button>
+            </div>
+            <input type="file" id="groupEditPhotoInput" accept="image/*" hidden>
+        </div>
+
+        <div class="profile-field">
+            <label for="groupEditNameInput">그룹 이름</label>
+            <input type="text" id="groupEditNameInput" class="profile-input" maxlength="20">
+        </div>
+
+        <div class="profile-field">
+            <label for="groupEditMemoInput">그룹 메모</label>
+            <textarea id="groupEditMemoInput" class="profile-input group-edit-textarea" maxlength="80"></textarea>
+        </div>
+
+        <div class="group-edit-permission-section">
+            <div class="group-edit-permission-title">
+                멤버 권한
+                <span class="group-edit-permission-hint">· 방장만 변경할 수 있어요</span>
+            </div>
+
+            <div class="group-edit-member-row">
+                <div class="group-edit-member-info">
+                    <div class="mini-avatar">한</div>
+                    한지우 <span class="group-edit-me-tag">(나)</span>
+                </div>
+                <span class="group-edit-role-badge">👑 방장</span>
+            </div>
+
+            <div class="group-edit-member-row">
+                <div class="group-edit-member-info">
+                    <div class="mini-avatar">이</div>
+                    이서연
+                </div>
+                <select class="group-edit-role-select">
+                    <option>멤버</option>
+                    <option>방장</option>
+                </select>
+            </div>
+
+            <div class="group-edit-member-row">
+                <div class="group-edit-member-info">
+                    <div class="mini-avatar">박</div>
+                    박현우
+                </div>
+                <select class="group-edit-role-select">
+                    <option>멤버</option>
+                    <option>방장</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="profile-modal-actions">
+            <button class="secondary-button" id="groupEditCancelButton" type="button">취소</button>
+            <button class="primary-button" id="groupEditSaveButton" type="button">저장하기</button>
+        </div>
+
+    </div>
+
+</div>
+
+
+<script src="js/main.js" defer></script>
+
+</body>
+</html>

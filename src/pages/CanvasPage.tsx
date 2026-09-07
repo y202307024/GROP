@@ -1,15 +1,23 @@
-import { useEffect, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import CanvasBoard from '../CanvasBoard';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import CanvasBoard, { type CanvasBoardHandle } from '../CanvasBoard';
+import MeetingDrawingTools, { type MeetingDrawAction } from '../components/MeetingDrawingTools';
+import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
 import { ensureGroupCanvasAccess } from '../utils/groupAccess';
 
+/**
+ * 단독 캔버스 페이지
+ * 회의방과 같은 meeting.html 껍데기를 쓰되, 채팅·통화 버튼은 없습니다.
+ */
 export default function CanvasPage() {
   const navigate = useNavigate();
   const { id: groupId } = useParams();
   const [searchParams] = useSearchParams();
   const [authReady, setAuthReady] = useState(false);
   const [groupName, setGroupName] = useState('');
+  const [drawTool, setDrawTool] = useState<MeetingDrawAction>('hand');
+  const canvasBoardRef = useRef<CanvasBoardHandle | null>(null);
 
   const initialBoardId = searchParams.get('boardId') ?? undefined;
   const initialTimelapseSaveId = searchParams.get('saveId') ?? undefined;
@@ -61,24 +69,53 @@ export default function CanvasPage() {
     };
   }, [groupId, navigate]);
 
+  const handlePick = (next: MeetingDrawAction) => {
+    setDrawTool(next);
+    if (next === 'stamp') {
+      canvasBoardRef.current?.toggleLibrary();
+      return;
+    }
+    canvasBoardRef.current?.pickTool(next as ExcalidrawTool);
+  };
+
+  const goBack = () => navigate(groupId ? `/group/${groupId}` : '/main');
+
   if (!authReady) {
-    return (
-      <div style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: '#fff' }}>
-        로그인 확인 중…
-      </div>
-    );
+    return <div className="meeting-loading">로그인 확인 중…</div>;
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: '#fff' }}>
-      <CanvasBoard
-        onBack={() => navigate(groupId ? `/group/${groupId}` : '/main')}
-        groupId={groupId}
-        groupName={groupName}
-        initialBoardId={initialBoardId}
-        initialTimelapseSaveId={initialTimelapseSaveId}
-        autoPlayTimelapse={autoPlayTimelapse}
-      />
+    <div className="meeting-page stage">
+      <header className="meeting-header">
+        <Link to="/main" className="logo">GROP</Link>
+        <span className="meeting-title">{groupName || '캔버스'}</span>
+      </header>
+
+      <main className="meeting-main">
+        <div className="whiteboard">
+          <CanvasBoard
+            ref={canvasBoardRef}
+            embedded
+            gropShell
+            onBack={goBack}
+            onToolChange={(tool) => setDrawTool(tool)}
+            groupId={groupId}
+            groupName={groupName}
+            initialBoardId={initialBoardId}
+            initialTimelapseSaveId={initialTimelapseSaveId}
+            autoPlayTimelapse={autoPlayTimelapse}
+          />
+        </div>
+      </main>
+
+      <footer className="bottom-bar">
+        <MeetingDrawingTools active={drawTool} onPick={handlePick} />
+        <div className="call-controls">
+          <button type="button" className="leave-button" onClick={goBack}>
+            나가기
+          </button>
+        </div>
+      </footer>
     </div>
   );
 }

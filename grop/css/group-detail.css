@@ -1,0 +1,382 @@
+/* =========================================
+   그룹 상세 페이지
+========================================= */
+
+.group-detail-page {
+    background: #f4f3ee;
+}
+
+
+/* 뒤로가기 - 여백 없는 아이콘 */
+
+.group-back-button {
+    border: none;
+    background: transparent;
+
+    padding: 0;
+
+    color: #444;
+
+    cursor: pointer;
+
+    margin-bottom: 20px;
+    align-self: flex-start;
+}
+
+.group-back-button svg {
+    width: 20px;
+    height: 20px;
+}
+
+
+/* =========================================
+   프로필 영역 + 편집 아이콘
+========================================= */
+
+.group-detail-profile-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 14px;
+}
+
+
+.group-detail-identity {
+    display: flex;
+    align-items: center;
+
+    gap: 16px;
+}
+
+
+.group-detail-avatar {
+    width: 76px;
+    height: 76px;
+
+    flex-shrink: 0;
+
+    border-radius: 18px;
+
+    background: var(--color-primary-soft);
+    color: white;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    font-size: 28px;
+    font-weight: 700;
+
+    overflow: hidden;
+}
+
+.group-detail-avatar img {
+    width: 100%;
+    height: 100%;
+
+    object-fit: cover;
+}
+
+
+.group-detail-name {
+    font-size: 20px;
+    font-weight: 800;
+
+    color: #111;
+}
+
+
+.group-detail-invite {
+    display: flex;
+    align-items: center;
+
+    gap: 6px;
+
+    margin-top: 4px;
+
+    font-size: 12px;
+    color: #666;
+}
+
+
+.group-invite-copy-button {
+    width: 20px;
+    height: 20px;
+
+    border: none;
+    border-radius: 5px;
+
+    background: #eeeeee;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    color: #555;
+
+    cursor: pointer;
+}
+
+.group-invite-copy-button:hover {
+    background: #e2e2e2;
+}
+
+.group-invite-copy-button svg {
+    width: 11px;
+    height: 11px;
+}
+
+.group-invite-copy-button.is-copied {
+    background: var(--color-primary-tint);
+    color: var(--color-primary-hover);
+}
+
+
+.group-edit-icon-button {
+    width: 36px;
+    height: 36px;
+
+    flex-shrink: 0;
+
+    border: none;
+    border-radius: 50%;
+
+    background: #ffffff;
+
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    color: #444;
+
+    cursor: pointer;
+}
+
+.group-edit-icon-button:hover {
+    background: #f2f2f2;
+}
+
+.group-edit-icon-button svg {
+    width: 15px;
+    height: 15px;
+}
+
+
+/* =========================================
+   멤버 요약 줄 + 회의방 이동 버튼
+========================================= */
+
+.group-detail-member-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 20px;
+}
+
+
+.group-detail-member-summary {
+    display: flex;
+    align-items: center;
+
+    gap: 10px;
+
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #555;
+}
+
+
+.group-detail-avatar-stack {
+    display: flex;
+}
+
+.mini-avatar {
+    width: 28px;
+    height: 28px;
+
+    border-radius: 50%;
+
+    background: var(--color-primary-soft);
+    color: white;
+
+    border: 2px solid #f4f3ee;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.mini-avatar:not(:first-child) {
+    margin-left: -9px;
+}
+
+.mini-avatar-more {
+    background: #dddddd;
+    color: #666;
+}
+
+
+.group-meeting-button {
+    border: none;
+    border-radius: 10px;
+
+    background: var(--color-primary-hover);
+    color: white;
+
+    padding: 9px 15px;
+
+    font-size: 12.5px;
+    font-weight: 700;
+
+    white-space: nowrap;
+
+    cursor: pointer;
+
+    box-shadow: 0 3px 8px rgba(86, 112, 74, 0.3);
+}
+
+.group-meeting-button:hover {
+    background: #47603c;
+}
+
+
+/* =========================================
+   메모
+========================================= */
+
+.group-detail-memo {
+    background: #ffffff;
+
+    border-radius: 14px;
+
+    padding: 14px 18px;
+
+    margin-bottom: 18px;
+
+    font-size: 12.5px;
+    color: #666;
+
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+}
+
+
+/* =========================================
+   정보 카드 3개
+========================================= */
+
+.group-detail-stats {
+    display: grid;
+
+    grid-template-columns: repeat(3, 1fr);
+
+    gap: 12px;
+
+    margin-bottom: 20px;
+}
+
+
+.group-stat-card {
+    background: #ffffff;
+
+    border-radius: 16px;
+
+    padding: 16px 14px;
+
+    text-align: center;
+
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+}
+
+
+.group-stat-emoji {
+    font-size: 20px;
+
+    margin-bottom: 6px;
+}
+
+
+.group-stat-label {
+    font-size: 10.5px;
+    color: #999;
+
+    margin-bottom: 3px;
+}
+
+
+.group-stat-value {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: #333;
+}
+
+
+/* =========================================
+   멤버 / 최근 회의록 미리보기
+========================================= */
+
+.group-detail-preview-grid {
+    display: grid;
+
+    grid-template-columns: 1fr 1fr;
+
+    gap: 12px;
+}
+
+
+.group-preview-card {
+    background: #ffffff;
+
+    border-radius: 16px;
+
+    padding: 16px 18px;
+
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+}
+
+
+.group-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 10px;
+
+    font-size: 13px;
+    font-weight: 700;
+}
+
+
+.group-preview-link {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-primary-hover);
+}
+
+
+.group-preview-list {
+    display: flex;
+    flex-direction: column;
+
+    gap: 8px;
+
+    font-size: 12px;
+    color: #333;
+}
+
+
+.group-preview-row {
+    display: flex;
+    justify-content: space-between;
+}
+
+
+.group-preview-muted {
+    color: #999;
+}

@@ -1,0 +1,101 @@
+/* 그룹 설정 — grop/css/setting.css */
+
+.card {
+  background: #ffffff;
+  border: 1px solid #eeeeee;
+  border-radius: 10px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  padding: 8px 28px;
+  max-width: 720px;
+}
+
+.section {
+  padding: 24px 0;
+  border-bottom: 1px solid #f2f2f2;
+}
+
+.section:last-child {
+  border-bottom: none;
+}
+
+.section h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.desc {
+  margin: 0 0 16px;
+  font-size: 12px;
+  color: #888;
+}
+
+.field {
+  width: 100%;
+  max-width: 360px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 5px;
+  font-size: 13px;
+  outline: none;
+  margin-bottom: 10px;
+}
+
+.field:focus {
+  border-color: var(--color-primary);
+}
+
+.inviteRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.inviteCode {
+  flex: 1;
+  max-width: 360px;
+  padding: 10px 12px;
+  background: #f7f7f7;
+  border-radius: 5px;
+  font-weight: 600;
+  letter-spacing: 2px;
+}
+
+.copyBtn {
+  padding: 9px 16px;
+  background: #eeeeee;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.copyBtnDone {
+  background: var(--color-primary-soft);
+}
+
+.saveBtn {
+  padding: 9px 16px;
+  background: var(--color-primary-button);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.saveBtn:hover {
+  background: var(--color-primary-hover);
+}
+
+.backBtn {
+  margin-top: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
