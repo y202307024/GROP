@@ -427,6 +427,27 @@
 }
 
 
+/* 회의 목록 컬럼 헤더 (제목 / 상태 / 참석자 / AI 요약) */
+.ai-meeting-list-head {
+    display: flex;
+    align-items: center;
+
+    padding: 0 14px 10px;
+
+    font-size: 13px;
+    color: #777777;
+}
+
+.ai-meeting-list-head .col-title {
+    flex: 1;
+}
+
+.ai-meeting-list-head .col-meta {
+    display: flex;
+    gap: 18px;
+}
+
+
 .ai-meeting-list {
     display: flex;
     flex-direction: column;

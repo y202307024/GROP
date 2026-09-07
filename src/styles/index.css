@@ -25,6 +25,7 @@
 @import '../../grop/css/login.css';
 @import '../../grop/css/signup.css';
 @import '../../grop/css/meeting.css';
+@import '../../grop/css/ai.css';
 
 /* 로그인/회원가입은 각각 .btn 정의가 달라서, 소셜 줄은 원본 signup처럼 flex 아이템으로 */
 .social-row .btn {

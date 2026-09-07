@@ -22,7 +22,12 @@ type IconProps = {
     | 'clipboard'
     | 'pencil'
     | 'user-plus'
-    | 'plus';
+    | 'plus'
+    | 'clock'
+    | 'download'
+    | 'copy'
+    | 'share-2'
+    | 'minus-circle';
   className?: string;
 };
 
@@ -168,6 +173,43 @@ export default function Icon({ name, className }: IconProps) {
       return (
         <svg {...common}>
           <path d="M12 5v14M5 12h14" />
+        </svg>
+      );
+    case 'clock':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+        </svg>
+      );
+    case 'download':
+      return (
+        <svg {...common}>
+          <path d="M12 3v12M7 10l5 5 5-5" />
+          <path d="M5 21h14" />
+        </svg>
+      );
+    case 'copy':
+      return (
+        <svg {...common}>
+          <rect x="9" y="9" width="12" height="12" rx="2" />
+          <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+        </svg>
+      );
+    case 'share-2':
+      return (
+        <svg {...common}>
+          <circle cx="18" cy="5" r="3" />
+          <circle cx="6" cy="12" r="3" />
+          <circle cx="18" cy="19" r="3" />
+          <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+        </svg>
+      );
+    case 'minus-circle':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M8 12h8" />
         </svg>
       );
     default:

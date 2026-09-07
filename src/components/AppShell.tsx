@@ -13,7 +13,7 @@ const navItems = [
   { id: 'main', label: '메인', icon: 'home' as const, path: '/main' },
   { id: 'meeting', label: '회의', icon: 'clipboard-list' as const, path: '/canvas' },
   { id: 'document', label: '문서', icon: 'file-text' as const, path: '/documents' },
-  { id: 'ai', label: 'AI 요약', icon: 'sparkles' as const, comingSoon: true },
+  { id: 'ai', label: 'AI 요약', icon: 'sparkles' as const, path: '/ai' },
   { id: 'calendar', label: '캘린더', icon: 'calendar' as const, comingSoon: true },
   { id: 'member', label: '팀원', icon: 'users' as const, path: '/main' },
   { id: 'setting', label: '설정', icon: 'settings' as const, path: '/profile' },
