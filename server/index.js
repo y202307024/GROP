@@ -6,6 +6,17 @@ const Groq = require('groq-sdk')
 const { toFile } = require('groq-sdk')
 const multer = require('multer')
 const fs = require('fs')
+const os = require('os')
+const { execFile } = require('child_process')
+
+// 오디오 추출용 ffmpeg. server 에 설치된 ffmpeg-static 을 우선 쓰고,
+// 없으면 FFMPEG_PATH 환경변수, 그것도 없으면 PATH 의 ffmpeg 를 씁니다.
+let FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg'
+try {
+  FFMPEG_PATH = require('ffmpeg-static') || FFMPEG_PATH
+} catch {
+  /* ffmpeg-static 미설치 → PATH 의 ffmpeg 사용 */
+}
 
 // node-fetch dynamic import
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args))
@@ -392,6 +403,57 @@ app.use('/files', (req, res, next) => {
   return res.status(404).json({ error: '파일을 찾지 못했습니다', path: relPath })
 })
 
+/**
+ * 녹화 파일에서 오디오만 뽑아 16kHz mono MP3(32kbps)로 변환합니다.
+ * 회의 녹화(webm, 영상+음성)는 금방 25MB(Whisper 업로드 한도)를 넘지만,
+ * 이렇게 줄이면 1시간짜리도 약 14MB 안쪽이라 한도 문제가 사라집니다.
+ *
+ * @param {string} inputPath 로컬 파일 경로 (없으면 buffer 사용)
+ * @param {Buffer|null} inputBuffer 경로가 없을 때 임시 파일로 쓸 원본 버퍼
+ * @returns {Promise<Buffer>} 변환된 mp3 버퍼
+ */
+function extractAudio(inputPath, inputBuffer) {
+  return new Promise((resolve, reject) => {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const outPath = path.join(os.tmpdir(), `grop-audio-${stamp}.mp3`)
+
+    // 경로가 없으면(HTTP fallback 등) 버퍼를 임시 파일로 떨어뜨려 입력으로 씁니다.
+    let tmpInPath = null
+    let realInput = inputPath
+    if (!realInput) {
+      if (!Buffer.isBuffer(inputBuffer)) {
+        reject(new Error('오디오 추출 입력이 없습니다'))
+        return
+      }
+      tmpInPath = path.join(os.tmpdir(), `grop-src-${stamp}.webm`)
+      fs.writeFileSync(tmpInPath, inputBuffer)
+      realInput = tmpInPath
+    }
+
+    const cleanup = () => {
+      if (tmpInPath) fs.rmSync(tmpInPath, { force: true })
+      fs.rmSync(outPath, { force: true })
+    }
+
+    const args = ['-y', '-i', realInput, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', outPath]
+    execFile(FFMPEG_PATH, args, { timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 * 10 }, (err) => {
+      if (err) {
+        cleanup()
+        reject(new Error(`오디오 추출 실패: ${err.message}`))
+        return
+      }
+      try {
+        const out = fs.readFileSync(outPath)
+        resolve(out)
+      } catch (readErr) {
+        reject(readErr)
+      } finally {
+        cleanup()
+      }
+    })
+  })
+}
+
 // AI 요약 엔드포인트 — 타임스탬프가 붙은 챕터까지 생성합니다.
 app.post('/api/summarize', async (req, res) => {
   try {
@@ -424,18 +486,35 @@ app.post('/api/summarize', async (req, res) => {
     }
     console.log('영상 준비 완료! 크기:', buffer.length)
 
-    if (buffer.length > MAX_AUDIO_BYTES) {
+    // 영상 전체를 그대로 올리면 Whisper 25MB 한도를 금방 넘습니다.
+    // 오디오만 16kHz mono 32kbps mp3로 뽑아 용량을 10~20배 줄입니다.
+    let audioBuffer
+    try {
+      audioBuffer = await extractAudio(localFile, buffer)
+      console.log('오디오 추출 완료! 크기:', audioBuffer.length)
+    } catch (audioErr) {
+      console.warn('오디오 추출 실패, 원본 파일로 시도합니다:', audioErr.message)
+      audioBuffer = buffer
+    }
+
+    if (audioBuffer.length > MAX_AUDIO_BYTES) {
       throw new Error(
-        `녹화 파일이 너무 큽니다 (${(buffer.length / 1024 / 1024).toFixed(1)}MB). ` +
-        `현재 한도는 ${MAX_AUDIO_BYTES / 1024 / 1024}MB 입니다.`
+        `오디오가 여전히 너무 큽니다 (${(audioBuffer.length / 1024 / 1024).toFixed(1)}MB). ` +
+        `현재 한도는 ${MAX_AUDIO_BYTES / 1024 / 1024}MB 입니다. 회의를 나눠서 녹화해 주세요.`
       )
     }
 
     // 2. Groq Whisper로 음성 → 텍스트 (구간별 타임스탬프 포함)
     console.log('음성 변환 중...')
     const groq = getGroq()
+    // 추출 성공 시 mp3, 실패해 원본을 그대로 쓰면 webm 으로 올립니다.
+    const isMp3 = audioBuffer !== buffer
     const transcription = await groq.audio.transcriptions.create({
-      file: await toFile(buffer, 'audio.webm', { type: 'audio/webm' }),
+      file: await toFile(
+        audioBuffer,
+        isMp3 ? 'audio.mp3' : 'audio.webm',
+        { type: isMp3 ? 'audio/mpeg' : 'audio/webm' }
+      ),
       model: TRANSCRIBE_MODEL,
       language: 'ko',
       response_format: 'verbose_json',

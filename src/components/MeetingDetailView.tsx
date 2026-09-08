@@ -85,6 +85,50 @@ function SummaryWithTimestamps({
 }
 
 /**
+ * meetings.summary 텍스트를 '핵심 요약'과 '타임라인'으로 나눕니다.
+ * 서버(buildSummaryText)가 만드는 형식:
+ *   📋 회의 핵심 요약 / 개요 ... / (빈 줄) / 🕘 타임라인 / [MM:SS] 제목 / "    설명" / (빈 줄) / ✅ ... / ⚡ ...
+ *
+ * @returns core - 타임라인 블록을 뺀 나머지(핵심 요약 + 결정/할 일)
+ * @returns timeline - chapters 배열이 있으면 그대로, 없으면 요약 텍스트에서 파싱한 구간
+ */
+function splitSummary(rawSummary: string | null, chapters: MeetingChapter[]): {
+  core: string;
+  timeline: MeetingChapter[];
+} {
+  const text = rawSummary ?? '';
+  const lines = text.split('\n');
+  // '🕘 타임라인' 처럼 '타임라인'만 있는 짧은 헤더 줄을 찾습니다.
+  const start = lines.findIndex((l) => l.trim().length <= 20 && l.includes('타임라인'));
+
+  const parsed: MeetingChapter[] = [];
+  let core = text;
+
+  if (start !== -1) {
+    // 타임라인 끝 = 다음 빈 줄 / 다음 섹션(✅·⚡) / 문서 끝
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t === '' || t.startsWith('✅') || t.startsWith('⚡')) { end = i; break; }
+    }
+    for (let i = start + 1; i < end; i++) {
+      const m = /^\[(\d{1,2}(?::\d{2}){1,2})\]\s*(.*)$/.exec(lines[i].trim());
+      if (m) {
+        parsed.push({ time: parseTimestamp(m[1]) ?? 0, title: m[2], summary: undefined });
+      } else if (parsed.length > 0 && lines[i].trim()) {
+        // 들여쓴 설명 줄은 직전 구간에 붙입니다.
+        const last = parsed[parsed.length - 1];
+        last.summary = last.summary ? `${last.summary} ${lines[i].trim()}` : lines[i].trim();
+      }
+    }
+    // 왼쪽에 보여줄 텍스트에서는 타임라인 블록(헤더~end)을 들어냅니다.
+    core = [...lines.slice(0, start), ...lines.slice(end)].join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  return { core, timeline: chapters.length > 0 ? chapters : parsed };
+}
+
+/**
  * 회의록 상세 본문 (영상 녹화 + AI 회의록)
  * - 단독 페이지(MeetingDetail)와 AI 요약 탭의 왼쪽 열에서 함께 씁니다.
  * - meetingId 가 바뀌면 해당 회의 데이터로 다시 불러옵니다.
@@ -101,7 +145,6 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   // ai 목업 레이아웃 전용 상태 (탭 하이라이트 / 대화록 더보기)
   const [videoTab, setVideoTab] = useState<'all' | 'speaker'>('all');
   const [summaryTab, setSummaryTab] = useState<'core' | 'detail' | 'topic'>('core');
-  const [showAllChapters, setShowAllChapters] = useState(false);
 
   // 챕터 타임라인 관련
   const [chapters, setChapters] = useState<MeetingChapter[]>([]);
@@ -325,9 +368,6 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   if (loading) return <div style={{ padding: 40, fontFamily: 'sans-serif', color: '#888' }}>불러오는 중...</div>;
   if (!meeting) return <div style={{ padding: 40, fontFamily: 'sans-serif', color: '#888' }}>회의록을 찾을 수 없어요</div>;
 
-  // 화면에 표시할 대화록 구간 (chapters). '전체 채팅 보기' 전에는 4개까지만.
-  const visibleChapters = showAllChapters ? chapters : chapters.slice(0, 4);
-
   /* =====================================================================
      AI 요약 탭 레이아웃 — grop/css/ai.css 목업 구조에 실제 회의 데이터를 채웁니다.
      상태·핸들러(seekTo, generateAiSummary, downloadSummary 등)는 아래 페이지
@@ -343,6 +383,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       alert('회의록 링크를 복사했어요.');
     };
     const hasSummary = !!meeting.summary;
+    // 왼쪽엔 핵심 요약만, 오른쪽(영상 옆)엔 타임라인만 보여줍니다.
+    const { core: coreSummary, timeline } = splitSummary(meeting.summary, chapters);
 
     return (
       <>
@@ -391,11 +433,11 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
               </div>
             )}
 
-            {/* 오른쪽 열: 대화록(타임라인 구간) + '전체 채팅 보기' */}
+            {/* 오른쪽 열: 타임라인 (많으면 세로 스크롤) */}
             <div className="ai-transcript">
               <div className="ai-transcript-list">
-                {chapters.length > 0 ? (
-                  visibleChapters.map((c, i) => (
+                {timeline.length > 0 ? (
+                  timeline.map((c, i) => (
                     <button
                       type="button"
                       key={`${c.time}-${i}`}
@@ -412,20 +454,12 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                   ))
                 ) : (
                   <p className="ai-transcript-text" style={{ color: '#999' }}>
-                    아직 타임라인이 없어요. AI 요약을 생성하면 구간별 내용이 여기에 표시됩니다.
+                    {hasSummary
+                      ? '이 회의에는 타임라인이 없어요.'
+                      : '아직 타임라인이 없어요. AI 요약을 생성하면 구간별 내용이 여기에 표시됩니다.'}
                   </p>
                 )}
               </div>
-
-              {chapters.length > 4 && (
-                <button
-                  type="button"
-                  className="ai-transcript-more-button"
-                  onClick={() => setShowAllChapters((v) => !v)}
-                >
-                  {showAllChapters ? '접기' : '전체 채팅 보기'}
-                </button>
-              )}
             </div>
           </div>
         </section>
@@ -487,29 +521,9 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                   placeholder="회의 내용을 입력하세요"
                 />
               ) : hasSummary ? (
-                <>
-                  <p className="ai-summary-paragraph" style={{ whiteSpace: 'pre-wrap' }}>
-                    <SummaryWithTimestamps text={meeting.summary as string} onSeek={(s) => void seekTo(s)} />
-                  </p>
-
-                  {chapters.length > 0 && (
-                    <>
-                      <div className="ai-checklist-title">주요 논의 사항</div>
-                      <ul className="ai-checklist">
-                        {chapters.map((c, i) => (
-                          <li
-                            key={`${c.time}-${i}`}
-                            onClick={() => void seekTo(c.time)}
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <Icon name="check-circle" />
-                            {c.title}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-                </>
+                <p className="ai-summary-paragraph" style={{ whiteSpace: 'pre-wrap' }}>
+                  <SummaryWithTimestamps text={coreSummary} onSeek={(s) => void seekTo(s)} />
+                </p>
               ) : (
                 <p className="ai-summary-paragraph" style={{ color: '#999' }}>
                   아직 AI 요약이 없어요.{' '}
