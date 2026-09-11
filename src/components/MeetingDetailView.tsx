@@ -20,7 +20,36 @@ type Meeting = {
   group_id: string;
   created_at?: string | null;
   chapters?: unknown;
+  transcript?: string | null; // 상세요약: [MM:SS] 붙은 전체 녹취록
+  topics?: unknown; // 주제별요약: [{ topic, detail }]
+  speakers?: unknown; // 발언자별요약: [{ speaker, summary }] (AI 추정)
 };
+
+/** meetings.topics(신뢰 못 할 형태) → { topic, detail }[] 로 정규화 */
+function normalizeTopics(raw: unknown): { topic: string; detail: string }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((t) => {
+      const rec = t as Record<string, unknown>;
+      const topic = typeof rec?.topic === 'string' ? rec.topic.trim() : '';
+      const detail = typeof rec?.detail === 'string' ? rec.detail.trim() : '';
+      return { topic, detail };
+    })
+    .filter((t) => t.topic);
+}
+
+/** meetings.speakers → { speaker, summary }[] 로 정규화 */
+function normalizeSpeakers(raw: unknown): { speaker: string; summary: string }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((s) => {
+      const rec = s as Record<string, unknown>;
+      const speaker = typeof rec?.speaker === 'string' ? rec.speaker.trim() : '';
+      const summary = typeof rec?.summary === 'string' ? rec.summary.trim() : '';
+      return { speaker, summary };
+    })
+    .filter((s) => s.speaker && s.summary);
+}
 
 type Props = {
   /** 보여 줄 회의 id */
@@ -269,25 +298,40 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       const nextChapters = normalizeChapters(data.chapters, data.duration);
 
       setAiStep('💾 저장 중...');
-      // chapters 컬럼이 아직 없는 DB에서도 요약은 저장되도록 분리 처리
-      const { error } = await supabase
-        .from('meetings')
-        .update({ summary: data.summary, chapters: nextChapters })
-        .eq('id', meetingId);
+      // 새 컬럼(transcript·topics·chapters)이 아직 없는 DB도 있어, 단계적으로 낮춰가며 저장합니다.
+      const upd = (payload: Record<string, unknown>) =>
+        supabase.from('meetings').update(payload).eq('id', meetingId);
 
-      if (error?.message?.includes('chapters')) {
-        await supabase
-          .from('meetings')
-          .update({ summary: data.summary })
-          .eq('id', meetingId);
-        setChapters(nextChapters);
-        alert(
-          '요약은 저장했지만 타임라인은 저장하지 못했어요.\n' +
-          'supabase/meeting_chapters.sql 을 실행하면 다음부터 저장됩니다.'
-        );
-      } else if (error) {
-        throw new Error(error.message);
+      let error = (await upd({
+        summary: data.summary,
+        chapters: nextChapters,
+        transcript: data.transcript ?? null,
+        topics: data.topics ?? null,
+        speakers: data.speakers ?? null,
+      })).error;
+
+      if (error) {
+        // transcript/topics 컬럼이 없을 때 → 요약 + 타임라인까지만
+        error = (await upd({ summary: data.summary, chapters: nextChapters })).error;
+        if (!error) {
+          alert(
+            '요약·타임라인은 저장했어요. 상세·주제별·발언자별 요약까지 저장하려면\n' +
+            'supabase/05_회의록_및_영상.sql 의 transcript·topics·speakers 컬럼을 적용하세요.'
+          );
+        }
       }
+      if (error) {
+        // chapters 컬럼도 없을 때 → 요약만
+        error = (await upd({ summary: data.summary })).error;
+        if (!error) {
+          setChapters(nextChapters);
+          alert(
+            '요약만 저장했어요. supabase/05_회의록_및_영상.sql 을 적용하면\n' +
+            '타임라인·상세요약·주제별요약도 저장됩니다.'
+          );
+        }
+      }
+      if (error) throw new Error(error.message);
 
       await fetchMeeting();
       alert(
@@ -385,6 +429,12 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     const hasSummary = !!meeting.summary;
     // 왼쪽엔 핵심 요약만, 오른쪽(영상 옆)엔 타임라인만 보여줍니다.
     const { core: coreSummary, timeline } = splitSummary(meeting.summary, chapters);
+    // 상세요약 = 전체 녹취록(영상 풀내용), 없으면 요약 전문으로 대체
+    const detailText = meeting.transcript?.trim() || meeting.summary || '';
+    // 주제별요약 = { topic, detail }[], 없으면 타임라인 구간을 대신 사용
+    const topics = normalizeTopics(meeting.topics);
+    // 발언자별요약 = { speaker, summary }[] (녹취록에 화자 표시가 없어 AI 추정치)
+    const speakers = normalizeSpeakers(meeting.speakers);
 
     return (
       <>
@@ -433,10 +483,28 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
               </div>
             )}
 
-            {/* 오른쪽 열: 타임라인 (많으면 세로 스크롤) */}
+            {/* 오른쪽 열: '전체 채팅' → 타임라인 / '발언자별' → 화자별 요약 (많으면 세로 스크롤) */}
             <div className="ai-transcript">
               <div className="ai-transcript-list">
-                {timeline.length > 0 ? (
+                {videoTab === 'speaker' ? (
+                  speakers.length > 0 ? (
+                    speakers.map((s, i) => (
+                      <div key={i}>
+                        <div className="ai-transcript-meta">
+                          <Icon name="circle-user" />
+                          <span className="ai-transcript-speaker">{s.speaker}</span>
+                        </div>
+                        <p className="ai-transcript-text">{s.summary}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="ai-transcript-text" style={{ color: '#999' }}>
+                      {hasSummary
+                        ? '녹음에 화자 구분 정보가 없어 발언자별 요약을 만들지 못했어요.'
+                        : 'AI 요약을 생성하면 발언자별 요약이 여기에 표시됩니다.'}
+                    </p>
+                  )
+                ) : timeline.length > 0 ? (
                   timeline.map((c, i) => (
                     <button
                       type="button"
@@ -521,9 +589,65 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                   placeholder="회의 내용을 입력하세요"
                 />
               ) : hasSummary ? (
-                <p className="ai-summary-paragraph" style={{ whiteSpace: 'pre-wrap' }}>
-                  <SummaryWithTimestamps text={coreSummary} onSeek={(s) => void seekTo(s)} />
-                </p>
+                summaryTab === 'topic' ? (
+                  // 주제별요약: "무슨 주제로 무슨 얘기가 나왔는지"
+                  topics.length > 0 ? (
+                    <div>
+                      {topics.map((t, i) => (
+                        <div key={i} style={{ marginBottom: 18 }}>
+                          <div className="ai-checklist-title" style={{ fontSize: 15, marginBottom: 6 }}>
+                            {t.topic}
+                          </div>
+                          {t.detail && (
+                            <p className="ai-summary-paragraph" style={{ margin: 0 }}>{t.detail}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : timeline.length > 0 ? (
+                    // topics 컬럼이 아직 없으면 타임라인 구간 요약으로 대체
+                    <div>
+                      {timeline.map((c, i) => (
+                        <div key={`${c.time}-${i}`} style={{ marginBottom: 16 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                            <button
+                              type="button"
+                              onClick={() => void seekTo(c.time)}
+                              style={{
+                                background: '#E1F5EE', color: '#085041', border: 'none', borderRadius: 4,
+                                padding: '1px 6px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                                fontVariantNumeric: 'tabular-nums',
+                              }}
+                            >
+                              {formatTimestamp(c.time)}
+                            </button>
+                            <strong style={{ fontSize: 15 }}>{c.title}</strong>
+                          </div>
+                          {c.summary && (
+                            <p className="ai-summary-paragraph" style={{ margin: 0 }}>{c.summary}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="ai-summary-paragraph" style={{ color: '#999' }}>
+                      주제별 요약이 아직 없어요. “AI 요약 생성”을 다시 실행해 주세요.
+                    </p>
+                  )
+                ) : summaryTab === 'detail' ? (
+                  // 상세요약: 전체 녹취록(영상 풀내용) — 길면 안에서 스크롤
+                  <div
+                    className="ai-summary-paragraph"
+                    style={{ whiteSpace: 'pre-wrap', maxHeight: 420, overflowY: 'auto', paddingRight: 6 }}
+                  >
+                    <SummaryWithTimestamps text={detailText} onSeek={(s) => void seekTo(s)} />
+                  </div>
+                ) : (
+                  // 핵심요약: 개요만
+                  <p className="ai-summary-paragraph" style={{ whiteSpace: 'pre-wrap' }}>
+                    <SummaryWithTimestamps text={coreSummary} onSeek={(s) => void seekTo(s)} />
+                  </p>
+                )
               ) : (
                 <p className="ai-summary-paragraph" style={{ color: '#999' }}>
                   아직 AI 요약이 없어요.{' '}

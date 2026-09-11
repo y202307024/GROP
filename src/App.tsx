@@ -15,6 +15,7 @@ import MeetingDetail from './pages/MeetingDetail'
 import MemberList from './pages/MemberList'
 import CanvasPage from './pages/CanvasPage'
 import AiSummaryPage from './pages/AiSummaryPage'
+import CalendarPage from './pages/CalendarPage'
 import JoinGroupPage from './pages/JoinGroupPage'
 import TimelapsePage from './pages/TimelapsePage'
 import NotFound from './pages/NotFound'
@@ -42,6 +43,7 @@ export default function App() {
         <Route path="/group/:id/canvas" element={<CanvasPage />} />
         <Route path="/canvas" element={<CanvasPage />} />
         <Route path="/ai" element={<AiSummaryPage />} />
+        <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/timelapse" element={<TimelapsePage />} />
         {/* 등록되지 않은 경로는 흰 화면 대신 안내 페이지로 */}
         <Route path="*" element={<NotFound />} />

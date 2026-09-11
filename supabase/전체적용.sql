@@ -476,6 +476,20 @@ create index if not exists meetings_group_date_idx
 alter table public.meetings
   add column if not exists chapters jsonb;
 
+-- 상세요약용 전체 녹취록([MM:SS] 타임스탬프 포함)
+alter table public.meetings
+  add column if not exists transcript text;
+
+-- 주제별요약
+--   [{ "topic": "모니터 사양", "detail": "..." }, ...]
+alter table public.meetings
+  add column if not exists topics jsonb;
+
+-- 발언자별요약 (녹취록에 화자 표시가 없어 AI 추정)
+--   [{ "speaker": "화자 1", "summary": "..." }, ...]
+alter table public.meetings
+  add column if not exists speakers jsonb;
+
 -- ── 권한 / RLS ──────────────────────────────────────────────
 grant select, insert, update, delete on public.meetings to authenticated;
 

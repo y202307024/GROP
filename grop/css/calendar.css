@@ -1,44 +1,20 @@
 /* =========================================
    캘린더 페이지 전용 스타일
-   (공통 리셋/컬러 변수는 common.css,
-    사이드바/상단바는 main.css)
+   (.page 는 document.css 에서 재사용, 여백만 캘린더용으로 좁힘)
 ========================================= */
 
-.page {
-    width: 100%;
-    height: 100%;
-
-    padding:
-        48px
-        58px
-        45px
-        62px;
-
-    display: flex;
-    flex-direction: column;
-
-    overflow-y: auto;
+.calendar-page {
+    padding: 36px 40px;
 }
 
+/* 위: 달력 + 우측 레일 / 아래: 내 회의 링크 */
+.calendar-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 285px;
+    gap: 24px;
+    align-items: start;
 
-.page-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    margin-bottom: 28px;
-}
-
-
-.page-header h1 {
-    margin: 0;
-
-    font-size: 26px;
-    font-weight: 700;
-
-    color: var(--color-primary);
-
-    letter-spacing: -1px;
+    margin-bottom: 30px;
 }
 
 
@@ -50,27 +26,20 @@
     background: #ffffff;
 
     border: 1px solid #eeeeee;
-    border-radius: 10px;
+    border-radius: 12px;
 
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
 
     padding: 20px;
-
-    flex: 1;
-
-    min-height: 0;
-
-    display: flex;
-    flex-direction: column;
 }
 
 
 .calendar-nav {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 10px;
 
-    margin-bottom: 18px;
+    margin-bottom: 16px;
 }
 
 
@@ -79,7 +48,7 @@
     height: 30px;
 
     border: 1px solid var(--color-border-strong);
-    border-radius: 6px;
+    border-radius: 8px;
 
     background: #ffffff;
 
@@ -90,6 +59,9 @@
     cursor: pointer;
 }
 
+.calendar-nav-button:hover {
+    background: #f5f5f5;
+}
 
 .calendar-nav-button svg {
     width: 16px;
@@ -98,95 +70,85 @@
 
 
 .calendar-month-label {
-    font-size: 15px;
+    margin-left: 6px;
+
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    font-size: 16px;
     font-weight: 700;
-
-    min-width: 110px;
-}
-
-
-.calendar-today-button {
-    margin-left: auto;
-
-    border: 1px solid var(--color-border-strong);
-    border-radius: 6px;
-
-    background: #ffffff;
-
-    padding: 6px 12px;
-
-    font-size: 12px;
-
-    cursor: pointer;
 }
 
 
 .calendar-grid {
-    flex: 1;
-
-    min-height: 0;
-
     display: grid;
-
     grid-template-columns: repeat(7, 1fr);
-    grid-template-rows: 28px repeat(6, 1fr);
 
-    gap: 1px;
+    border: 1px solid #ececec;
+    border-radius: 8px;
 
-    background: #f0f0f0;
-
-    border: 1px solid #f0f0f0;
+    overflow: hidden;
 }
 
 
 .calendar-weekday {
-    background: #fafafa;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    padding: 9px 10px;
 
     font-size: 12px;
-    color: #777;
+    color: #888888;
+
+    background: #ffffff;
+    border-right: 1px solid #f1f1f1;
+    border-bottom: 1px solid #ececec;
+}
+
+.calendar-weekday:nth-child(7) {
+    border-right: none;
 }
 
 
 .calendar-day {
-    background: #ffffff;
+    min-height: 80px;
 
-    padding: 6px 8px;
+    padding: 8px;
 
     display: flex;
     flex-direction: column;
     gap: 4px;
 
     font-size: 12px;
+    color: #333333;
 
-    color: #333;
+    background: #ffffff;
+    border-right: 1px solid #f1f1f1;
+    border-bottom: 1px solid #f1f1f1;
+}
+
+/* 마지막 열/행 테두리 정리 */
+.calendar-day:nth-child(7n) {
+    border-right: none;
 }
 
 
 .calendar-day.is-other-month {
-    color: #cccccc;
-
-    background: #fcfcfc;
+    background: #fafafa;
+    color: #c8c8c8;
 }
 
 
 .calendar-day.is-today .day-number {
     display: inline-flex;
-
     align-items: center;
     justify-content: center;
 
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
 
     border-radius: 50%;
 
     background: var(--color-primary);
-    color: white;
-
+    color: #ffffff;
     font-weight: 700;
 }
 
@@ -204,4 +166,220 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+
+    cursor: pointer;
+}
+
+
+/* =========================================
+   우측 레일 (오늘 일정 / 다가오는 일정)
+========================================= */
+
+.calendar-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+
+.rail-card {
+    background: #ffffff;
+
+    border: 1px solid #eeeeee;
+    border-radius: 12px;
+
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+
+    padding: 16px 18px;
+
+    min-height: 262px;
+
+    display: flex;
+    flex-direction: column;
+}
+
+
+.rail-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+
+    margin-bottom: 12px;
+}
+
+.rail-head h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.rail-head a {
+    font-size: 12px;
+    font-weight: 500;
+    color: #555555;
+}
+
+
+.rail-body {
+    flex: 1;
+
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+
+.rail-empty {
+    margin: auto;
+
+    color: #aaaaaa;
+    font-size: 13px;
+}
+
+
+.rail-item {
+    padding: 8px 10px;
+
+    border-radius: 8px;
+    background: #faf8f6;
+
+    cursor: pointer;
+}
+
+.rail-item:hover {
+    background: #f3efea;
+}
+
+.rail-item .t {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.rail-item .d {
+    margin-top: 2px;
+
+    font-size: 12px;
+    color: #888888;
+}
+
+
+/* =========================================
+   내 회의 링크
+========================================= */
+
+.meeting-links-head h2 {
+    margin: 0 0 2px;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+.meeting-links-head p {
+    margin: 0 0 14px;
+    font-size: 13px;
+    color: #888888;
+}
+
+
+.meeting-links-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+
+    /* 사진처럼 카드가 너무 넓어지지 않도록 왼쪽 정렬 + 최대폭 */
+    max-width: 940px;
+}
+
+
+.link-card {
+    background: #ffffff;
+
+    border: 1px solid #eeeeee;
+    border-radius: 12px;
+
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+
+    padding: 16px;
+
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    min-height: 120px;
+}
+
+.link-card .name {
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.link-card .url {
+    flex: 1;
+
+    font-size: 12px;
+    color: #888888;
+    word-break: break-all;
+}
+
+.link-card .actions {
+    display: flex;
+    gap: 8px;
+}
+
+.link-card .actions button {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: #ffffff;
+
+    padding: 4px 10px;
+
+    font-size: 12px;
+
+    cursor: pointer;
+}
+
+.link-card .actions button:hover {
+    background: #f5f5f5;
+}
+
+.link-card .actions button svg {
+    width: 13px;
+    height: 13px;
+}
+
+
+.link-card--add {
+    align-items: center;
+    justify-content: center;
+
+    border-style: dashed;
+
+    color: var(--color-primary);
+    font-size: 13px;
+    font-weight: 700;
+
+    cursor: pointer;
+}
+
+.link-card--add:hover {
+    background: #f7faf6;
+}
+
+.link-card--add .plus {
+    font-size: 28px;
+    line-height: 1;
+}
+
+
+/* 좁은 화면 대응 */
+@media (max-width: 1100px) {
+    .calendar-layout {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .meeting-links-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
 }

@@ -549,9 +549,15 @@ app.post('/api/summarize', async (req, res) => {
 화제가 바뀌는 지점을 찾아 챕터로 나누고, 반드시 아래 구조의 JSON만 출력하세요.
 
 {
-  "overview": "회의 전체를 2~3문장으로 요약",
+  "overview": "회의 전체를 2~3문장으로 요약 (핵심요약용)",
   "chapters": [
     { "time": 0, "title": "짧은 소제목 (20자 이내)", "summary": "이 구간에서 다룬 내용 1~2문장" }
+  ],
+  "topics": [
+    { "topic": "논의 주제 이름 (예: 모니터 사양, 응답속도, 가격)", "detail": "그 주제로 오간 이야기를 3~5문장으로 자세히 정리. 나온 수치·의견·비교 내용을 포함" }
+  ],
+  "speakers": [
+    { "speaker": "화자 1", "summary": "이 화자가 회의에서 한 이야기를 2~4문장으로 요약" }
   ],
   "decisions": ["확정된 결정 사항"],
   "actionItems": ["담당자와 할 일"]
@@ -562,6 +568,9 @@ app.post('/api/summarize', async (req, res) => {
 - 챕터는 녹취록에 실제로 등장한 타임스탬프만 사용하세요. 지어내지 마세요.
 - 챕터는 3~8개가 적당하며, 시간 순으로 정렬하세요.
 - 첫 챕터는 time 0 으로 시작하세요.
+- topics는 '시간'이 아니라 '무엇에 대해 이야기했는지' 기준으로 묶으세요. 2~6개가 적당합니다.
+- topics의 detail은 녹취록에 실제로 나온 내용만 쓰고, 없는 내용을 지어내지 마세요.
+- 녹취록에는 화자 표시가 없습니다. speakers는 대화의 말투·호칭·문맥으로 화자 전환을 추정해 "화자 1", "화자 2" …로 구분하고 각자 한 말을 요약하세요. 이름이 대화 중 언급되면 그 이름을 써도 됩니다. 화자를 도저히 구분할 수 없으면 speakers는 빈 배열로 두세요(억지로 나누지 마세요).
 - 내용이 없는 항목은 빈 배열로 두세요.`,
         },
         {
@@ -581,13 +590,29 @@ app.post('/api/summarize', async (req, res) => {
 
     const chapters = normalizeChapters(parsed.chapters, durationSec)
     const summaryText = buildSummaryText(parsed, chapters)
-    console.log(`요약 완료! 챕터 ${chapters.length}개`)
+
+    // 주제별요약: { topic, detail } 배열만 추려서 그대로 넘깁니다.
+    const topics = Array.isArray(parsed.topics)
+      ? parsed.topics
+          .filter((t) => t && typeof t.topic === 'string' && t.topic.trim())
+          .map((t) => ({ topic: String(t.topic).trim(), detail: String(t.detail || '').trim() }))
+      : []
+    // 발언자별요약: { speaker, summary } (녹취록에 화자 표시가 없어 LLM 추정치)
+    const speakers = Array.isArray(parsed.speakers)
+      ? parsed.speakers
+          .filter((s) => s && typeof s.speaker === 'string' && s.speaker.trim() && String(s.summary || '').trim())
+          .map((s) => ({ speaker: String(s.speaker).trim(), summary: String(s.summary).trim() }))
+      : []
+    console.log(`요약 완료! 챕터 ${chapters.length}개, 주제 ${topics.length}개, 화자 ${speakers.length}명`)
 
     res.json({
       success: true,
-      transcript,
+      // 상세요약 = 타임스탬프가 붙은 전체 녹취록(영상 풀내용)
+      transcript: transcriptForLlm,
       summary: summaryText,
       chapters,
+      topics,
+      speakers,
       duration: durationSec,
     })
   } catch (err) {

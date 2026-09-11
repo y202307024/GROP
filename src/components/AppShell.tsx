@@ -14,7 +14,7 @@ const navItems = [
   { id: 'meeting', label: '회의', icon: 'clipboard-list' as const, path: '/canvas' },
   { id: 'document', label: '문서', icon: 'file-text' as const, path: '/documents' },
   { id: 'ai', label: 'AI 요약', icon: 'sparkles' as const, path: '/ai' },
-  { id: 'calendar', label: '캘린더', icon: 'calendar' as const, comingSoon: true },
+  { id: 'calendar', label: '캘린더', icon: 'calendar' as const, path: '/calendar' },
   { id: 'member', label: '팀원', icon: 'users' as const, path: '/main' },
   { id: 'setting', label: '설정', icon: 'settings' as const, path: '/profile' },
 ];
@@ -62,14 +62,7 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
               key={item.id}
               type="button"
               className={`nav-item menu${current === item.id ? ' active' : ''}`}
-              onClick={() => {
-                // 원본 HTML과 같이 AI/캘린더는 아직 화면이 없습니다.
-                if (item.comingSoon) {
-                  alert('아직 준비 중인 기능입니다');
-                  return;
-                }
-                if (item.path) navigate(item.path);
-              }}
+              onClick={() => navigate(item.path)}
             >
               <Icon name={item.icon} />
               {item.label}
