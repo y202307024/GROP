@@ -24,7 +24,7 @@ export function getMicrophoneFailureMessage(failure?: string | null): string {
     return '마이크 권한이 거부되었습니다.\n주소창 왼쪽 자물쇠에서 마이크를 허용한 뒤 새로고침해 주세요.';
   }
   if (type.includes('NotFound')) {
-    return '마이크를 찾지 못했습니다.\nWindows 설정 → 소리 → 입력에서 장치가 켜져 있는지 확인해 주세요.';
+    return '마이크를 찾지 못했습니다.\n장치가 없으면 음성 설정에서 없음을 선택하세요.\nWindows 설정 → 소리 → 입력에서 장치가 켜져 있는지도 확인해 주세요.';
   }
   if (type.includes('DeviceInUse')) {
     return '마이크를 사용할 수 없습니다. 다른 프로그램이 마이크를 쓰고 있지 않은지 확인해 주세요.';

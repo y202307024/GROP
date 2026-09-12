@@ -1,0 +1,198 @@
+/* 화이트보드 위 메모장. 위치·크기는 인라인 style, 종이/제본만 여기서 잡습니다. */
+
+.note {
+  position: absolute;
+  z-index: 18;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #d8d2c6;
+  border-radius: 4px;
+  background: #fffef8;
+  box-shadow:
+    0 10px 24px rgba(40, 32, 18, 0.14),
+    0 1px 0 rgba(255, 255, 255, 0.7) inset;
+  overflow: visible;
+  font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+}
+
+.noteSelected {
+  z-index: 22;
+  box-shadow:
+    0 12px 28px rgba(40, 32, 18, 0.18),
+    0 0 0 2px rgba(102, 124, 85, 0.45);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 34px;
+  padding: 0 8px 0 12px;
+  background: #667c55;
+  color: #fff;
+  cursor: grab;
+  user-select: none;
+}
+
+.header:active {
+  cursor: grabbing;
+}
+
+.title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.modeBtn,
+.removeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #eef3ea;
+  cursor: pointer;
+}
+
+.modeBtn:hover,
+.removeBtn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.modeBtnActive {
+  background: rgba(255, 255, 255, 0.24);
+  color: #fff;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.page {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 왼쪽 스프링 제본 */
+.spine {
+  position: relative;
+  flex-shrink: 0;
+  width: 22px;
+  background: linear-gradient(90deg, #f3efe6 0%, #efe8da 100%);
+  border-right: 1px solid #e4ddcf;
+}
+
+.hole {
+  position: absolute;
+  left: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c5bba8;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.18);
+}
+
+.body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  /* 빨간 여백선 + 가로 줄 */
+  background-color: #fffef8;
+  background-image:
+    linear-gradient(90deg, transparent 27px, #e8a0a0 27px, #e8a0a0 28px, transparent 28px),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 27px,
+      #d7e4f2 27px,
+      #d7e4f2 28px
+    );
+  background-position: 0 8px;
+}
+
+.editor {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 8px 12px 14px 36px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: #222;
+  font: inherit;
+  font-size: 14px;
+  line-height: 28px;
+  caret-color: #222;
+}
+
+.editorIdle {
+  pointer-events: none;
+}
+
+.editor::placeholder {
+  color: #b0b0b0;
+}
+
+/* 펜 그림은 줄 위에, 글자는 그 위에 올려 메모처럼 보이게 합니다. */
+.drawLayer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.drawLayerIdle {
+  pointer-events: none;
+}
+
+.drawLayerActive {
+  cursor: crosshair;
+}
+
+.penColors {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 8px 30px;
+}
+
+.swatch {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.swatchActive {
+  border-color: #667c55;
+}
+
+.handle {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  background: #fff;
+  border: 2px solid #667c55;
+  border-radius: 2px;
+  cursor: nwse-resize;
+  z-index: 23;
+}

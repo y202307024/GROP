@@ -29,7 +29,7 @@ import {
   isSecureMediaContext,
   localhostAppUrl,
 } from '../utils/microphoneAccess';
-import { loadVoiceSettings, voiceCaptureOptions } from '../utils/voiceSettings';
+import { isNoneDevice, loadVoiceSettings, syncMicrophoneSetting, voiceCaptureOptions } from '../utils/voiceSettings';
 
 type RecordingSyncHandle = {
   broadcastStart: () => void;
@@ -100,8 +100,14 @@ function MeetingAudioSetup() {
     const enableMic = async () => {
       const settings = loadVoiceSettings();
       try {
-        await room.localParticipant.setMicrophoneEnabled(true, voiceCaptureOptions(settings));
-        if (settings.speakerDeviceId) {
+        // 없음으로 둔 사용자는 마이크를 켜지 않습니다.
+        if (!isNoneDevice(settings.micDeviceId)) {
+          const capture = voiceCaptureOptions(settings);
+          if (capture) {
+            await room.localParticipant.setMicrophoneEnabled(true, capture);
+          }
+        }
+        if (settings.speakerDeviceId && !isNoneDevice(settings.speakerDeviceId)) {
           await room.switchActiveDevice('audiooutput', settings.speakerDeviceId);
         }
       } catch (err) {
@@ -212,6 +218,10 @@ function MeetingCallControls({
   const micOn = localParticipant.isMicrophoneEnabled;
 
   const toggleMic = async () => {
+    if (isNoneDevice(loadVoiceSettings().micDeviceId)) {
+      alert('마이크가 없음으로 설정되어 있습니다.\n프로필 또는 그룹 설정에서 장치를 고른 뒤 다시 시도해 주세요.');
+      return;
+    }
     const next = !micOn;
     try {
       await localParticipant.setMicrophoneEnabled(next);
@@ -299,7 +309,7 @@ function RoomContent({
   const handlePick = (next: MeetingDrawAction) => {
     setDrawTool(next);
     if (next === 'stamp') {
-      canvasBoardRef.current?.toggleLibrary();
+      canvasBoardRef.current?.addStickyNote();
       return;
     }
     canvasBoardRef.current?.pickTool(next as ExcalidrawTool);
@@ -307,7 +317,9 @@ function RoomContent({
 
   return (
     <>
-      <RoomAudioRenderer volume={loadVoiceSettings().speakerVolume / 100} />
+      <RoomAudioRenderer
+        volume={isNoneDevice(loadVoiceSettings().speakerDeviceId) ? 0 : loadVoiceSettings().speakerVolume / 100}
+      />
       <MeetingAudioSetup />
       <RecordingDataSync
         userId={userId}
@@ -501,6 +513,8 @@ export default function Room() {
           throw new Error('LiveKit 토큰을 받지 못했습니다. .env의 LIVEKIT 키를 확인해 주세요.');
         }
 
+        // 연결 전에 마이크 유무를 맞춰, 없는 기기에서는 권한 오류가 안 나게 합니다.
+        await syncMicrophoneSetting();
         setToken(data.token);
         setLoading(false);
       } catch (err) {
@@ -721,6 +735,7 @@ export default function Room() {
         video={false}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
         onMediaDeviceFailure={(failure) => {
+          if (isNoneDevice(loadVoiceSettings().micDeviceId)) return;
           console.error('미디어 장치 오류:', failure);
           alert(getMicrophoneFailureMessage(failure != null ? String(failure) : null));
         }}

@@ -4,7 +4,7 @@ import {
   isSecureMediaContext,
   localhostAppUrl,
 } from '../utils/microphoneAccess';
-import { loadVoiceSettings, saveVoiceSettings, type VoiceSettings } from '../utils/voiceSettings';
+import { isNoneDevice, loadVoiceSettings, NONE_DEVICE_ID, saveVoiceSettings, syncMicrophoneSetting, type VoiceSettings } from '../utils/voiceSettings';
 import s from './VoiceSettingsPanel.module.css';
 
 const BAR_COUNT = 24;
@@ -48,6 +48,9 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
     setSettings(saveVoiceSettings(partial));
   };
 
+  const micNone = isNoneDevice(settings.micDeviceId);
+  const speakerNone = isNoneDevice(settings.speakerDeviceId);
+
   useEffect(() => {
     if (gainNodeRef.current) gainNodeRef.current.gain.value = settings.micVolume / 100;
     if (playbackRef.current) playbackRef.current.volume = settings.speakerVolume / 100;
@@ -58,18 +61,17 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
 
     const refreshDevices = async () => {
       if (!navigator.mediaDevices?.enumerateDevices) return;
-      if (isSecureMediaContext()) {
-        try {
-          const preview = await navigator.mediaDevices.getUserMedia({ audio: true });
-          preview.getTracks().forEach((track) => track.stop());
-        } catch (err) {
-          if (!cancelled) setError(getMicrophoneExceptionMessage(err));
-        }
-      }
+      // 시스템 마이크 유무를 보고, 없으면 없음 / 있으면 기본 장치로 맞춥니다.
+      const next = await syncMicrophoneSetting();
+      if (cancelled) return;
+      setSettings(next);
+      settingsRef.current = next;
+
+      if (!cancelled && isNoneDevice(next.micDeviceId)) setError('');
       const all = await navigator.mediaDevices.enumerateDevices();
       if (cancelled) return;
-      setMics(all.filter((device) => device.kind === 'audioinput'));
-      setSpeakers(all.filter((device) => device.kind === 'audiooutput'));
+      setMics(all.filter((device) => device.kind === 'audioinput' && device.deviceId));
+      setSpeakers(all.filter((device) => device.kind === 'audiooutput' && device.deviceId));
     };
 
     void refreshDevices();
@@ -95,6 +97,10 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
   const startTest = async () => {
     if (testing) {
       stopTest();
+      return;
+    }
+    if (isNoneDevice(settingsRef.current.micDeviceId)) {
+      setError('마이크가 없음으로 설정되어 있습니다. 테스트하려면 장치를 고르세요.');
       return;
     }
     if (!isSecureMediaContext()) {
@@ -169,7 +175,8 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
       '1) 주소창 왼쪽 자물쇠에서 마이크를 허용하세요.\n' +
       '2) Windows 설정 → 소리에서 입력/출력 장치가 켜져 있는지 확인하세요.\n' +
       '3) 다른 프로그램이 마이크를 독점하면 끄고 새로고침하세요.\n' +
-      '4) 회의방에서는 여기서 저장한 장치·음량이 그대로 적용됩니다.',
+      '4) 마이크나 헤드셋이 없으면 목록에서 없음을 고르면 됩니다.\n' +
+      '5) 회의방에서는 여기서 저장한 장치·음량이 그대로 적용됩니다.',
     );
   };
 
@@ -191,8 +198,13 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
           id="voice-mic"
           className="settings-field"
           value={settings.micDeviceId}
-          onChange={(e) => update({ micDeviceId: e.target.value })}
+          onChange={(e) => {
+            setError('');
+            if (isNoneDevice(e.target.value)) stopTest();
+            update({ micDeviceId: e.target.value, micManual: true });
+          }}
         >
+          <option value={NONE_DEVICE_ID}>없음</option>
           <option value="">Windows 기본 설정</option>
           {mics.map((device) => (
             <option key={device.deviceId} value={device.deviceId}>
@@ -202,18 +214,25 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
         </select>
       </div>
 
-      <div className="settings-row">
-        <label htmlFor="voice-mic-vol">마이크 음량</label>
-        <input
-          id="voice-mic-vol"
-          className={s.slider}
-          type="range"
-          min={0}
-          max={100}
-          value={settings.micVolume}
-          onChange={(e) => update({ micVolume: Number(e.target.value) })}
-        />
-      </div>
+      {micNone ? (
+        <div className={s.noneWindow} role="status">
+          <strong>없음</strong>
+          <span>마이크 없이 회의에 참여합니다. 내 목소리는 나가지 않습니다.</span>
+        </div>
+      ) : (
+        <div className="settings-row">
+          <label htmlFor="voice-mic-vol">마이크 음량</label>
+          <input
+            id="voice-mic-vol"
+            className={s.slider}
+            type="range"
+            min={0}
+            max={100}
+            value={settings.micVolume}
+            onChange={(e) => update({ micVolume: Number(e.target.value) })}
+          />
+        </div>
+      )}
 
       <div className="settings-row">
         <label htmlFor="voice-speaker">헤드셋 / 스피커</label>
@@ -223,6 +242,7 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
           value={settings.speakerDeviceId}
           onChange={(e) => update({ speakerDeviceId: e.target.value })}
         >
+          <option value={NONE_DEVICE_ID}>없음</option>
           <option value="">Windows 기본 설정</option>
           {speakers.map((device) => (
             <option key={device.deviceId} value={device.deviceId}>
@@ -232,23 +252,31 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
         </select>
       </div>
 
-      <div className="settings-row">
-        <label htmlFor="voice-speaker-vol">스피커 음량</label>
-        <input
-          id="voice-speaker-vol"
-          className={s.slider}
-          type="range"
-          min={0}
-          max={100}
-          value={settings.speakerVolume}
-          onChange={(e) => update({ speakerVolume: Number(e.target.value) })}
-        />
-      </div>
+      {speakerNone ? (
+        <div className={s.noneWindow} role="status">
+          <strong>없음</strong>
+          <span>헤드셋·스피커 없이 참여합니다. 상대 소리는 들리지 않습니다.</span>
+        </div>
+      ) : (
+        <div className="settings-row">
+          <label htmlFor="voice-speaker-vol">스피커 음량</label>
+          <input
+            id="voice-speaker-vol"
+            className={s.slider}
+            type="range"
+            min={0}
+            max={100}
+            value={settings.speakerVolume}
+            onChange={(e) => update({ speakerVolume: Number(e.target.value) })}
+          />
+        </div>
+      )}
 
       <div className={s.testRow}>
         <button
           type="button"
           className={testing ? 'danger-button' : 'secondary-button'}
+          disabled={micNone}
           onClick={() => { void startTest(); }}
         >
           {testing ? '테스트 중지' : '마이크 테스트'}

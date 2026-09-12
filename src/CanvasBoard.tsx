@@ -14,6 +14,7 @@ import BoardFilePreview from './components/BoardFilePreview';
 import { expandedFileSize, getFilePreviewKind } from './filePreviewUtils';
 import { rasterizeBoardFile } from './rasterizeBoardFile';
 import { chatFileUrl, displayFileName, formatChatFileSize, MAX_CHAT_FILE_BYTES } from './utils/meetingChat';
+import StickyNoteOverlay, { type PlacedSticky, type StickyEditMode } from './components/StickyNoteOverlay';
 
 const MEETING_BOARD_TOPIC = 'meeting-board';
 
@@ -83,6 +84,8 @@ export type CanvasBoardHandle = {
   getCanvasElement: () => HTMLCanvasElement | null;
   pickTool: (tool: ExcalidrawTool) => void;
   toggleLibrary: () => void;
+  /** 보이는 화면 가운데에 메모장을 바로 붙입니다. */
+  addStickyNote: () => void;
 };
 
 type Point = { x: number; y: number };
@@ -103,7 +106,11 @@ type EventType =
   | 'file.add'
   | 'file.transform'
   | 'file.remove'
-  | 'stamp.add';
+  | 'stamp.add'
+  | 'sticky.add'
+  | 'sticky.update'
+  | 'sticky.transform'
+  | 'sticky.remove';
 
 // 캔버스에 붙이는 이미지: 파일 용량 상한, 화면에 그릴 때 가로 최대 픽셀
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -451,6 +458,49 @@ type StampAddPayload = {
   size: number;
 };
 
+type StickyAddPayload = {
+  id?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  text: string;
+  drawing: string;
+};
+
+type StickyUpdatePayload = {
+  id: string;
+  text: string;
+  drawing: string;
+};
+
+type StickyTransformPayload = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type StickyRemovePayload = {
+  id: string;
+};
+
+const DEFAULT_STICKY_W = 280;
+const DEFAULT_STICKY_H = 340;
+const MIN_STICKY_W = 200;
+const MIN_STICKY_H = 220;
+const STICKY_PAPER = '#fffef8';
+
+function resizePlacedSticky(note: PlacedSticky, p: Point): PlacedSticky {
+  return {
+    ...note,
+    width: Math.max(MIN_STICKY_W, p.x - note.x),
+    height: Math.max(MIN_STICKY_H, p.y - note.y),
+  };
+}
+
 function isHistoryCommitEvent(type: EventType): boolean {
   return (
     type === 'stroke.end' ||
@@ -463,6 +513,9 @@ function isHistoryCommitEvent(type: EventType): boolean {
     type === 'file.transform' ||
     type === 'file.remove' ||
     type === 'stamp.add' ||
+    type === 'sticky.add' ||
+    type === 'sticky.transform' ||
+    type === 'sticky.remove' ||
     type === 'board.clear'
   );
 }
@@ -561,6 +614,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     startPoint: Point;
     start: PlacedText;
   } | null>(null);
+  const placedStickiesRef = useRef<PlacedSticky[]>([]);
+  const selectedStickyIdRef = useRef<string | null>(null);
+  const placedStickyDragRef = useRef<{
+    id: string;
+    mode: 'move' | 'se';
+    startPoint: Point;
+    start: PlacedSticky;
+  } | null>(null);
+  const removePlacedStickyRef = useRef<(id: string) => void>(() => {});
+  const stickyTextTimerRef = useRef<number | null>(null);
   const lastSavedTitleRef = useRef<Record<string, string>>({});
   const replaySpeedRef = useRef(10);
   const compressGapsRef = useRef(true);
@@ -584,6 +647,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [placedTexts, setPlacedTexts] = useState<PlacedText[]>([]);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [placedStickies, setPlacedStickies] = useState<PlacedSticky[]>([]);
+  const [selectedStickyId, setSelectedStickyId] = useState<string | null>(null);
+  const [stickyEditMode, setStickyEditMode] = useState<StickyEditMode>('text');
+  const [stickyPenColor, setStickyPenColor] = useState('#222222');
   const [color, setColor] = useState('#111827');
   const [size, setSize] = useState(6);
   const [textSize, setTextSize] = useState(DEFAULT_TEXT_SIZE);
@@ -889,6 +956,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedFileIdRef.current) {
         e.preventDefault();
         removePlacedFileRef.current(selectedFileIdRef.current);
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedStickyIdRef.current) {
+        e.preventDefault();
+        removePlacedStickyRef.current(selectedStickyIdRef.current);
         return;
       }
       const mapped = toolShortcutMap[e.key];
@@ -1376,6 +1448,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     replacePlacedFiles([]);
     selectPlacedFile(null);
     placedFileDragRef.current = null;
+    replacePlacedStickies([]);
+    selectPlacedSticky(null);
+    placedStickyDragRef.current = null;
+    if (stickyTextTimerRef.current) {
+      window.clearTimeout(stickyTextTimerRef.current);
+      stickyTextTimerRef.current = null;
+    }
   };
 
   const loadCachedImage = (dataUrl: string): Promise<HTMLImageElement> => {
@@ -1421,6 +1500,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const selectPlacedImage = (id: string | null) => {
     selectedImageIdRef.current = id;
     setSelectedImageId(id);
+    if (id && selectedStickyIdRef.current) {
+      selectedStickyIdRef.current = null;
+      setSelectedStickyId(null);
+    }
   };
 
   const replacePlacedImages = (next: PlacedImage[]) => {
@@ -1477,6 +1560,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const selectPlacedFile = (id: string | null) => {
     selectedFileIdRef.current = id;
     setSelectedFileId(id);
+    if (id && selectedStickyIdRef.current) {
+      selectedStickyIdRef.current = null;
+      setSelectedStickyId(null);
+    }
   };
 
   const replacePlacedFiles = (next: PlacedFile[]) => {
@@ -1540,6 +1627,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const selectPlacedText = (id: string | null) => {
     selectedTextIdRef.current = id;
     setSelectedTextId(id);
+    if (id && selectedStickyIdRef.current) {
+      selectedStickyIdRef.current = null;
+      setSelectedStickyId(null);
+    }
   };
 
   const replacePlacedTexts = (next: PlacedText[]) => {
@@ -1568,6 +1659,100 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     void persistTextTransform(item).then(() => {
       if (boardId) return loadAndRenderBoard(boardId);
     }).then(() => selectPlacedText(item.id));
+  };
+
+  const selectPlacedSticky = (id: string | null) => {
+    selectedStickyIdRef.current = id;
+    setSelectedStickyId(id);
+  };
+
+  const replacePlacedStickies = (next: PlacedSticky[]) => {
+    placedStickiesRef.current = next;
+    setPlacedStickies(next);
+  };
+
+  const upsertPlacedSticky = (item: PlacedSticky) => {
+    const next = placedStickiesRef.current.filter((x) => x.id !== item.id);
+    next.push(item);
+    replacePlacedStickies(next);
+  };
+
+  const persistStickyTransform = (item: PlacedSticky) => {
+    return insertEvent('sticky.transform', {
+      id: item.id,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+    } satisfies StickyTransformPayload);
+  };
+
+  const persistStickyUpdate = (item: PlacedSticky) => {
+    return insertEvent('sticky.update', {
+      id: item.id,
+      text: item.text,
+      drawing: item.drawing,
+    } satisfies StickyUpdatePayload);
+  };
+
+  // 타이핑마다 이벤트를 넣지 않고, 잠깐 멈춘 뒤에만 저장합니다.
+  const scheduleStickyTextPersist = (item: PlacedSticky) => {
+    if (stickyTextTimerRef.current) window.clearTimeout(stickyTextTimerRef.current);
+    stickyTextTimerRef.current = window.setTimeout(() => {
+      const latest = placedStickiesRef.current.find((x) => x.id === item.id);
+      if (latest) void persistStickyUpdate(latest);
+    }, 400);
+  };
+
+  const removePlacedSticky = (id: string) => {
+    const exists = placedStickiesRef.current.some((x) => x.id === id);
+    if (!exists) return;
+    replacePlacedStickies(placedStickiesRef.current.filter((x) => x.id !== id));
+    if (selectedStickyIdRef.current === id) selectPlacedSticky(null);
+    void insertEvent('sticky.remove', { id } satisfies StickyRemovePayload);
+  };
+  removePlacedStickyRef.current = removePlacedSticky;
+
+  /** 지금 보이는 화면 가운데에 메모장을 붙입니다. */
+  const addStickyNote = () => {
+    setShowLibrary(false);
+    setPendingStampKind(null);
+    pendingStampRef.current = null;
+    selectPlacedImage(null);
+    selectPlacedText(null);
+    selectPlacedFile(null);
+    const area = canvasAreaRef.current;
+    const offset = placedStickiesRef.current.length % 6;
+    let x = 48 + offset * 20;
+    let y = 48 + offset * 20;
+    if (area) {
+      x = Math.max(24, (area.clientWidth / 2 - panOffset.x) / zoomScale - DEFAULT_STICKY_W / 2) + offset * 20;
+      y = Math.max(24, (area.clientHeight / 2 - panOffset.y) / zoomScale - DEFAULT_STICKY_H / 2) + offset * 20;
+    }
+    const note: PlacedSticky = {
+      id: crypto.randomUUID(),
+      x,
+      y,
+      width: DEFAULT_STICKY_W,
+      height: DEFAULT_STICKY_H,
+      color: STICKY_PAPER,
+      text: '',
+      drawing: '',
+    };
+    upsertPlacedSticky(note);
+    selectPlacedSticky(note.id);
+    setStickyEditMode('text');
+    void insertEvent('sticky.add', {
+      id: note.id,
+      x: note.x,
+      y: note.y,
+      width: note.width,
+      height: note.height,
+      color: note.color,
+      text: note.text,
+      drawing: note.drawing,
+    } satisfies StickyAddPayload);
+    commitHistory();
   };
 
   const enqueueStrokeWrite = (type: EventType, payload: unknown): Promise<void> => {
@@ -1830,7 +2015,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const transforms = new Map<string, ImageTransformPayload>();
     const textTransforms = new Map<string, TextTransformPayload>();
     const fileTransforms = new Map<string, FileTransformPayload>();
+    const stickyTransforms = new Map<string, StickyTransformPayload>();
+    const stickyUpdates = new Map<string, StickyUpdatePayload>();
     const removedFiles = new Set<string>();
+    const removedStickies = new Set<string>();
     for (const ev of events) {
       if (ev.type === 'image.transform') {
         const p = ev.payload as ImageTransformPayload;
@@ -1848,11 +2036,31 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         const p = ev.payload as FileRemovePayload;
         if (p?.id) removedFiles.add(p.id);
       }
+      if (ev.type === 'sticky.transform') {
+        const p = ev.payload as StickyTransformPayload;
+        if (p?.id) stickyTransforms.set(p.id, p);
+      }
+      if (ev.type === 'sticky.update') {
+        const p = ev.payload as StickyUpdatePayload;
+        if (p?.id) stickyUpdates.set(p.id, p);
+      }
+      if (ev.type === 'sticky.remove') {
+        const p = ev.payload as StickyRemovePayload;
+        if (p?.id) removedStickies.add(p.id);
+      }
     }
 
     resetHistory();
     for (const ev of events) {
-      if (ev.type === 'image.transform' || ev.type === 'text.transform' || ev.type === 'file.transform' || ev.type === 'file.remove') {
+      if (
+        ev.type === 'image.transform' ||
+        ev.type === 'text.transform' ||
+        ev.type === 'file.transform' ||
+        ev.type === 'file.remove' ||
+        ev.type === 'sticky.transform' ||
+        ev.type === 'sticky.update' ||
+        ev.type === 'sticky.remove'
+      ) {
         continue;
       }
       if (ev.type === 'image.add') {
@@ -1885,6 +2093,26 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         const folded: FileAddPayload = t
           ? { ...p, id, x: t.x, y: t.y, width: t.width, height: t.height, expanded: t.expanded ?? p.expanded }
           : { ...p, id };
+        await applyEvent({ ...ev, payload: folded });
+        if (isHistoryCommitEvent(ev.type)) commitHistory();
+        continue;
+      }
+      if (ev.type === 'sticky.add') {
+        const p = ev.payload as StickyAddPayload;
+        const id = p.id || ev.id;
+        if (removedStickies.has(id)) continue;
+        const t = stickyTransforms.get(id);
+        const u = stickyUpdates.get(id);
+        const folded: StickyAddPayload = {
+          ...p,
+          id,
+          x: t?.x ?? p.x,
+          y: t?.y ?? p.y,
+          width: t?.width ?? p.width,
+          height: t?.height ?? p.height,
+          text: u?.text ?? p.text,
+          drawing: u?.drawing ?? p.drawing,
+        };
         await applyEvent({ ...ev, payload: folded });
         if (isHistoryCommitEvent(ev.type)) commitHistory();
         continue;
@@ -2147,6 +2375,58 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const ctx = ctxRef.current ?? ensureContext();
       if (!ctx) return;
       drawStamp(ctx, { x: p.x, y: p.y }, p.kind, { strokeStyle: p.color, lineWidth: p.size });
+    }
+
+    if (ev.type === 'sticky.add') {
+      const p = ev.payload as StickyAddPayload;
+      upsertPlacedSticky({
+        id: p.id || ev.id,
+        x: p.x,
+        y: p.y,
+        width: p.width || DEFAULT_STICKY_W,
+        height: p.height || DEFAULT_STICKY_H,
+        color: p.color || STICKY_PAPER,
+        text: p.text ?? '',
+        drawing: p.drawing ?? '',
+      });
+      return;
+    }
+
+    if (ev.type === 'sticky.update') {
+      const p = ev.payload as StickyUpdatePayload;
+      if (!p?.id) return;
+      const prev = placedStickiesRef.current.find((x) => x.id === p.id);
+      if (prev) {
+        upsertPlacedSticky({
+          ...prev,
+          text: p.text,
+          drawing: p.drawing,
+        });
+      }
+      return;
+    }
+
+    if (ev.type === 'sticky.transform') {
+      const p = ev.payload as StickyTransformPayload;
+      if (!p?.id) return;
+      const prev = placedStickiesRef.current.find((x) => x.id === p.id);
+      if (prev) {
+        upsertPlacedSticky({
+          ...prev,
+          x: p.x,
+          y: p.y,
+          width: p.width,
+          height: p.height,
+        });
+      }
+      return;
+    }
+
+    if (ev.type === 'sticky.remove') {
+      const p = ev.payload as StickyRemovePayload;
+      if (!p?.id) return;
+      replacePlacedStickies(placedStickiesRef.current.filter((x) => x.id !== p.id));
+      if (selectedStickyIdRef.current === p.id) selectPlacedSticky(null);
     }
   };
 
@@ -2412,6 +2692,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (selectedTextIdRef.current) selectPlacedText(null);
     if (selectedImageIdRef.current) selectPlacedImage(null);
     if (selectedFileIdRef.current) selectPlacedFile(null);
+    if (selectedStickyIdRef.current) selectPlacedSticky(null);
 
     if (pendingStampRef.current) {
       const kind = pendingStampRef.current;
@@ -2545,6 +2826,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       return;
     }
 
+    if (placedStickyDragRef.current) {
+      const p = getPoint(e.nativeEvent);
+      if (!p) return;
+      const drag = placedStickyDragRef.current;
+      if (drag.mode === 'move') {
+        upsertPlacedSticky({
+          ...drag.start,
+          x: drag.start.x + (p.x - drag.startPoint.x),
+          y: drag.start.y + (p.y - drag.startPoint.y),
+        });
+      } else {
+        upsertPlacedSticky(resizePlacedSticky(drag.start, p));
+      }
+      return;
+    }
+
     if (imageDragRef.current) {
       const p = getPoint(e.nativeEvent);
       if (!p) return;
@@ -2606,6 +2903,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       placedFileDragRef.current = null;
       const item = placedFilesRef.current.find((x) => x.id === id);
       if (item) persistAndReloadFile(item);
+      return;
+    }
+
+    if (placedStickyDragRef.current) {
+      const id = placedStickyDragRef.current.id;
+      placedStickyDragRef.current = null;
+      const item = placedStickiesRef.current.find((x) => x.id === id);
+      if (item) void persistStickyTransform(item);
       return;
     }
 
@@ -2691,7 +2996,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     getCanvasElement: () => canvasRef.current,
     pickTool,
     toggleLibrary: () => setShowLibrary((v) => !v),
-  }), [pickTool]);
+    addStickyNote,
+  }), [pickTool, addStickyNote]);
 
   /* const downloadPng = () => {
     const canvas = canvasRef.current;
@@ -3305,6 +3611,53 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               </div>
             );
           })}
+          {placedStickies.map((item) => (
+            <StickyNoteOverlay
+              key={item.id}
+              note={item}
+              selected={item.id === selectedStickyId}
+              editMode={item.id === selectedStickyId ? stickyEditMode : 'text'}
+              penColor={stickyPenColor}
+              onSelect={() => {
+                selectPlacedImage(null);
+                selectPlacedText(null);
+                selectPlacedFile(null);
+                selectPlacedSticky(item.id);
+              }}
+              onEditMode={setStickyEditMode}
+              onPenColor={setStickyPenColor}
+              onTextChange={(text) => {
+                const next = { ...item, text };
+                upsertPlacedSticky(next);
+                scheduleStickyTextPersist(next);
+              }}
+              onDrawingChange={(drawing) => {
+                const next = { ...item, drawing };
+                upsertPlacedSticky(next);
+                void persistStickyUpdate(next);
+              }}
+              onRemove={() => removePlacedSticky(item.id)}
+              onMovePointerDown={(e) => {
+                e.stopPropagation();
+                selectPlacedImage(null);
+                selectPlacedText(null);
+                selectPlacedFile(null);
+                selectPlacedSticky(item.id);
+                const p = getPoint(e.nativeEvent);
+                if (!p) return;
+                placedStickyDragRef.current = { id: item.id, mode: 'move', startPoint: p, start: { ...item } };
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
+              onResizePointerDown={(e) => {
+                const p = getPoint(e.nativeEvent);
+                if (!p) return;
+                placedStickyDragRef.current = { id: item.id, mode: 'se', startPoint: p, start: { ...item } };
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+            />
+          ))}
         </div>
 
         <input

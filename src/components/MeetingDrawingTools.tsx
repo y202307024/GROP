@@ -14,13 +14,13 @@ const TOOLS: ToolItem[] = [
   { id: 'arrow', tooltip: '연결선', icon: 'link' },
   { id: 'text', tooltip: '텍스트', icon: 'type' },
   { id: 'rectangle', tooltip: '도형', icon: 'shape' },
-  { id: 'stamp', tooltip: '스티커노트', icon: 'sticky' },
+  { id: 'stamp', tooltip: '메모장', icon: 'sticky' },
   { id: 'eraser', tooltip: '지우개', icon: 'eraser' },
   { id: 'file', tooltip: '파일 첨부', icon: 'clip' },
 ];
 
 type Props = {
-  /** 현재 선택된 그리기 도구. 스티커는 stamp */
+  /** 현재 선택된 그리기 도구. 메모장은 stamp */
   active: MeetingDrawAction;
   onPick: (tool: MeetingDrawAction) => void;
 };

@@ -72,7 +72,7 @@ export default function CanvasPage() {
   const handlePick = (next: MeetingDrawAction) => {
     setDrawTool(next);
     if (next === 'stamp') {
-      canvasBoardRef.current?.toggleLibrary();
+      canvasBoardRef.current?.addStickyNote();
       return;
     }
     canvasBoardRef.current?.pickTool(next as ExcalidrawTool);

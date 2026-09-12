@@ -77,3 +77,32 @@
   font-weight: 600;
   cursor: pointer;
 }
+
+/* 장치 없는 사용자를 위한 빈 미리보기 창 */
+.noneWindow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 88px;
+  margin: 0 0 12px;
+  padding: 16px 18px;
+  box-sizing: border-box;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-primary-subtle);
+  text-align: center;
+}
+
+.noneWindow strong {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.noneWindow span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-text-muted);
+}

@@ -172,7 +172,7 @@ export default function DefaultProfile() {
         <div className="settings-card" style={{ marginTop: 24 }}>
           <div className="settings-section">
             <h3>음성</h3>
-            <p className="settings-desc">마이크와 헤드셋을 고르고 음량을 조절합니다. 회의방에 그대로 적용됩니다.</p>
+            <p className="settings-desc">마이크와 헤드셋을 고르고 음량을 조절합니다. 장치가 없으면 없음을 선택하세요. 회의방에 그대로 적용됩니다.</p>
             <VoiceSettingsPanel hideHeading />
           </div>
         </div>
