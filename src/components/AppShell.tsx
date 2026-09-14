@@ -2,6 +2,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
 import Icon from './Icon';
+import ProfileEditModal from './ProfileEditModal';
+import { DEFAULT_AVATAR_KEY, getAvatarSrc } from '../utils/avatarOptions';
 
 type Props = {
   children: ReactNode;
@@ -28,8 +30,10 @@ const navItems = [
 export default function AppShell({ children, activePage = 'main' }: Props) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const [avatar, setAvatar] = useState('🙂');
+  const [avatar, setAvatar] = useState(DEFAULT_AVATAR_KEY);
   const [notifyOpen, setNotifyOpen] = useState(false);
+  // 상단바 프로필 아이콘을 누르면 페이지 이동 없이 이 모달을 띄웁니다.
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -41,7 +45,7 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
         .eq('id', data.user.id)
         .maybeSingle();
       if (!mounted || !profile) return;
-      setAvatar(profile.avatar_url || profile.avatar || '🙂');
+      setAvatar(profile.avatar_url || profile.avatar || DEFAULT_AVATAR_KEY);
     });
     return () => {
       mounted = false;
@@ -106,16 +110,22 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
             className="icon-btn profile-button"
             type="button"
             aria-label="내 프로필"
-            onClick={() => navigate('/profile')}
+            onClick={() => setProfileModalOpen(true)}
           >
             <span className="profile-button-avatar">
-              {avatar.startsWith('http') ? <img src={avatar} alt="" /> : avatar}
+              <img src={getAvatarSrc(avatar)} alt="" />
             </span>
           </button>
         </div>
 
         {children}
       </main>
+
+      <ProfileEditModal
+        open={profileModalOpen}
+        onClose={() => setProfileModalOpen(false)}
+        onSaved={setAvatar}
+      />
     </div>
   );
 }

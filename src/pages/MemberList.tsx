@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
+import { getAvatarSrc } from '../utils/avatarOptions';
 
 type Member = {
   id: string;
@@ -73,7 +74,7 @@ export default function MemberList() {
               return (
                 <div key={m.id} className="list-row member-row">
                   <div className="person-cell">
-                    <div className="avatar-circle">{m.avatar || '🙂'}</div>
+                    <div className="avatar-circle"><img src={getAvatarSrc(m.avatar)} alt="" /></div>
                     <div>
                       <div className="person-name">{m.nickname || '알 수 없음'}</div>
                       <div className="person-sub">{isMe ? '나' : ''}</div>

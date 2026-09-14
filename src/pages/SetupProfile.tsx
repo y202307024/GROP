@@ -1,13 +1,12 @@
 import { useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { useNavigate } from 'react-router-dom';
-
-const avatars = ['🐱','🐶','🐸','🐼','🦊','🐨','🐯','🦁','🐙','🐬'];
+import { AVATAR_OPTIONS, DEFAULT_AVATAR_KEY, getAvatarSrc } from '../utils/avatarOptions';
 
 /** 가입 직후 프로필 — grop 프로필 모달 CSS를 페이지로 사용합니다. */
 export default function SetupProfile() {
   const [nickname, setNickname] = useState('');
-  const [selectedAvatar, setSelectedAvatar] = useState('🐱');
+  const [selectedAvatar, setSelectedAvatar] = useState(DEFAULT_AVATAR_KEY);
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -38,20 +37,22 @@ export default function SetupProfile() {
 
         <form onSubmit={handleSubmit}>
           <div className="profile-photo-section">
-            <div className="profile-photo-preview">{selectedAvatar}</div>
+            <div className="profile-photo-preview">
+              <img src={getAvatarSrc(selectedAvatar)} alt="" />
+            </div>
           </div>
 
           <div className="profile-avatar-section">
             <div className="profile-section-label">아바타 선택</div>
             <div className="avatar-grid">
-              {avatars.map((a) => (
+              {AVATAR_OPTIONS.map((a) => (
                 <button
-                  key={a}
+                  key={a.key}
                   type="button"
-                  className={`avatar-option${selectedAvatar === a ? ' is-selected' : ''}`}
-                  onClick={() => setSelectedAvatar(a)}
+                  className={`avatar-option${selectedAvatar === a.key ? ' is-selected' : ''}`}
+                  onClick={() => setSelectedAvatar(a.key)}
                 >
-                  {a}
+                  <img src={a.src} alt="" />
                 </button>
               ))}
             </div>

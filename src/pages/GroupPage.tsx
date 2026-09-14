@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
+import { getAvatarSrc } from '../utils/avatarOptions';
 
 type Group = { id: string; name: string; invite_code: string };
 type MyProfile = { nickname: string | null; avatar: string | null; avatar_url: string | null };
@@ -132,7 +133,9 @@ export default function GroupPage() {
           <div className="group-detail-member-summary">
             <div className="group-detail-avatar-stack">
               {members.slice(0, 3).map((m, i) => (
-                <div className="mini-avatar" key={`${m.nickname}-${i}`}>{m.avatar}</div>
+                <div className="mini-avatar" key={`${m.nickname}-${i}`}>
+                  <img src={getAvatarSrc(m.avatar)} alt="" />
+                </div>
               ))}
               {extra > 0 && <div className="mini-avatar mini-avatar-more">+{extra}</div>}
             </div>

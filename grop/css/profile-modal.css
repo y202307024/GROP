@@ -8,6 +8,9 @@
     inset: 0;
 
     background: rgba(0, 0, 0, 0.45);
+    /* 뒤 화면을 살짝 흐리게 — 모달이 떠 있는 동안 배경이 흐려집니다 */
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
 
     display: flex;
     align-items: center;
@@ -192,9 +195,10 @@
 .avatar-grid {
     display: grid;
 
-    grid-template-columns: repeat(5, 1fr);
+    /* 아바타가 12개라 4열 x 3행으로 배치합니다 */
+    grid-template-columns: repeat(4, 1fr);
 
-    gap: 8px;
+    gap: 10px;
 }
 
 .avatar-option {
@@ -210,9 +214,16 @@
     align-items: center;
     justify-content: center;
 
-    font-size: 18px;
+    overflow: hidden;
 
     cursor: pointer;
+}
+
+.avatar-option img {
+    width: 100%;
+    height: 100%;
+
+    object-fit: cover;
 }
 
 .avatar-option.is-selected {
