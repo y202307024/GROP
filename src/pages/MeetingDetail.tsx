@@ -9,15 +9,27 @@ export default function MeetingDetail() {
   const { id: groupId, meetingId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const fromDocuments = (location.state as { from?: string } | null)?.from === 'documents';
+  const from = (location.state as { from?: string } | null)?.from;
 
   if (!meetingId) return null;
+
+  const backToMeetings = () => {
+    if (from === 'documents') {
+      navigate('/documents');
+      return;
+    }
+    if (from === 'meetings') {
+      navigate('/meetings');
+      return;
+    }
+    navigate(`/group/${groupId}/meetings`);
+  };
 
   return (
     <MeetingDetailView
       meetingId={meetingId}
-      backLabel={fromDocuments ? '문서 목록' : '회의록 목록'}
-      onBack={() => navigate(fromDocuments ? '/documents' : `/group/${groupId}/meetings`)}
+      backLabel={from === 'documents' ? '문서 목록' : '회의록 목록'}
+      onBack={backToMeetings}
     />
   );
 }

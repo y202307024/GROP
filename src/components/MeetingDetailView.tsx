@@ -650,8 +650,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                 )
               ) : (
                 <p className="ai-summary-paragraph" style={{ color: '#999' }}>
-                  아직 AI 요약이 없어요.{' '}
-                  {meeting.video_url ? '오른쪽 위 “AI 요약 생성”을 눌러보세요.' : '녹화 파일이 있어야 요약을 만들 수 있어요.'}
+                  아무 내용이 없습니다.
+                  {meeting.video_url ? ' 오른쪽 위 “AI 요약 생성”을 누르면 요약이 만들어집니다.' : ''}
                 </p>
               )}
 
@@ -923,9 +923,11 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         {!aiLoading && !editingSummary && !meeting.summary && (
           <div style={{ textAlign: 'center', padding: '30px 0', color: '#aaa' }}>
             <div style={{ fontSize: 28, marginBottom: 8 }}>🤖</div>
-            <div style={{ fontSize: 14 }}>아직 AI 요약이 없어요</div>
+            <div style={{ fontSize: 14 }}>아무 내용이 없습니다</div>
             <div style={{ fontSize: 12, marginTop: 4 }}>
-              {meeting.video_url ? '✨ AI 요약 생성 버튼을 눌러보세요!' : '녹화 파일이 있어야 AI 요약이 가능해요'}
+              {meeting.video_url
+                ? '✨ AI 요약 생성 버튼을 누르면 요약이 만들어집니다.'
+                : '파일만 올린 문서이거나, 아직 녹화가 없어요.'}
             </div>
           </div>
         )}

@@ -28,6 +28,8 @@ type Props = {
   selected: boolean;
   editMode: StickyEditMode;
   penColor: string;
+  /** 지우개 등에서 클릭을 캔버스로 통과시킵니다 */
+  passThrough?: boolean;
   onSelect: () => void;
   onEditMode: (mode: StickyEditMode) => void;
   onPenColor: (color: string) => void;
@@ -50,6 +52,7 @@ export default function StickyNoteOverlay({
   selected,
   editMode,
   penColor,
+  passThrough = false,
   onSelect,
   onEditMode,
   onPenColor,
@@ -138,6 +141,9 @@ export default function StickyNoteOverlay({
         top: note.y,
         width: note.width,
         height: note.height,
+        // 툴바에서 고른 종이색을 카드 전체에 반영합니다.
+        backgroundColor: note.color || '#fffef8',
+        pointerEvents: passThrough ? 'none' : 'auto',
       }}
       onPointerDown={(e) => {
         e.stopPropagation();
@@ -199,7 +205,7 @@ export default function StickyNoteOverlay({
             <span key={top} className={styles.hole} style={{ top }} />
           ))}
         </div>
-        <div className={styles.body}>
+        <div className={styles.body} style={{ backgroundColor: note.color || '#fffef8' }}>
           {/* 그림은 줄 위에, 글자는 그 위에 올려 메모처럼 보이게 합니다. */}
           <canvas
             ref={canvasRef}
@@ -228,6 +234,7 @@ export default function StickyNoteOverlay({
           <textarea
             ref={editorRef}
             className={`${styles.editor}${editMode === 'pen' ? ` ${styles.editorIdle}` : ''}`}
+            data-board-text-editor="true"
             value={note.text}
             placeholder="내용을 입력하세요"
             spellCheck={false}

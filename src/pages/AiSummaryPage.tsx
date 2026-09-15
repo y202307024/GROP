@@ -11,6 +11,7 @@ type MeetingRow = {
   title: string | null;
   date: string;
   summary: string | null;
+  video_url?: string | null;
   group_id: string;
 };
 
@@ -62,7 +63,7 @@ export default function AiSummaryPage() {
 
       const { data } = await supabase
         .from('meetings')
-        .select('id, title, date, summary, group_id')
+        .select('id, title, date, summary, video_url, group_id')
         .in('group_id', ids)
         .order('date', { ascending: false });
 
@@ -115,8 +116,11 @@ export default function AiSummaryPage() {
               </div>
             ) : (
               meetings.map((m) => {
-                const done = !!m.summary; // 요약이 있으면 완료로 표시
+                const hasSummary = !!m.summary?.trim();
                 const active = m.id === selectedId;
+                // 요약이 없으면 진행 상태에 '내용 없음' 표시 (상세 본문은 '아무 내용이 없습니다')
+                const statusLabel = hasSummary ? '완료' : '내용 없음';
+                const statusClass = hasSummary ? 'done' : 'progress';
                 return (
                   <div
                     className="meeting-card-row"
@@ -126,8 +130,8 @@ export default function AiSummaryPage() {
                   >
                     <div className="meeting-card-row-top">
                       <span className="title">{m.title?.trim() || '회의'}</span>
-                      <span className={`status-pill ${done ? 'done' : 'progress'}`}>
-                        {done ? '완료' : '진행중'}
+                      <span className={`status-pill ${statusClass}`}>
+                        {statusLabel}
                       </span>
                     </div>
                     <div className="meeting-card-row-bottom">
@@ -138,7 +142,7 @@ export default function AiSummaryPage() {
                         <Icon name="circle-user" />
                       </span>
                       <span className="ai-icon">
-                        {done
+                        {hasSummary
                           ? <Icon name="check-circle" className="done" />
                           : <Icon name="minus-circle" className="pending" />}
                       </span>

@@ -3,7 +3,7 @@ import { supabase } from './services/supabaseClient';
 import ExcalidrawToolbar, { toolShortcutMap, type ExcalidrawTool } from './components/ExcalidrawToolbar';
 // 타임랩스 사이드 패널 컴포넌트 import (현재 비활성화)
 import CanvasViewportControls from './components/CanvasViewportControls';
-import { CANVAS_FONT_FAMILY, drawShapeTool, drawStamp, drawText, textFontSize, type ShapeTool } from './canvasShapeUtils';
+import { CANVAS_FONT_FAMILY, colorWithOpacity, drawShapeTool, drawStamp, drawText, shapeDashArray, textFontSize, type ShapeTool } from './canvasShapeUtils';
 import { explainBoardError } from './boardErrors';
 import { dedupeBoardsById, getBoardOptionLabel } from './timelapseApi';
 // 타임랩스 사이드 패널 CSS import (현재 비활성화)
@@ -77,6 +77,14 @@ type Props = {
   initialBoardId?: string;
   initialTimelapseSaveId?: string;
   autoPlayTimelapse?: boolean;
+  /** 텍스트를 선택했을 때 툴바 정렬 상태를 맞춥니다. */
+  onTextAlignChange?: (align: 'left' | 'center' | 'right') => void;
+  /** 텍스트를 선택했을 때 굵게/취소선/밑줄 상태를 맞춥니다. */
+  onTextDecorChange?: (style: { bold: boolean; strike: boolean; underline: boolean }) => void;
+  /** 배치된 텍스트 선택/해제 — 하단 서식 메뉴 표시에 씁니다. */
+  onTextSelectedChange?: (selected: boolean) => void;
+  /** 텍스트를 선택했을 때 툴바 글자 크기를 맞춥니다. */
+  onTextFontSizeChange?: (size: number) => void;
 };
 
 export type CanvasBoardHandle = {
@@ -84,8 +92,37 @@ export type CanvasBoardHandle = {
   getCanvasElement: () => HTMLCanvasElement | null;
   pickTool: (tool: ExcalidrawTool) => void;
   toggleLibrary: () => void;
-  /** 보이는 화면 가운데에 메모장을 바로 붙입니다. */
+  /** 보이는 화면을 한 번 더 클릭하면 그 위치에 메모장을 붙입니다. */
   addStickyNote: () => void;
+  /** 메모장 클릭 배치 모드를 끕니다. */
+  cancelStickyPlace: () => void;
+  /** 펜/도형 획 색·굵기·불투명도·점선 (하단 서브메뉴와 연동) */
+  setStrokeStyle: (style: {
+    color?: string;
+    size?: number;
+    opacity?: number;
+    dash?: 'solid' | 'dashed';
+  }) => void;
+  /** 캔버스에서 색을 찍어 콜백으로 돌려줍니다. */
+  startEyedropper: (onPick: (color: string) => void) => void;
+  /** 도형 테두리/채우기 옵션 */
+  setShapeStyle: (style: Partial<{
+    dash: 'solid' | 'dashed';
+    strokeOpacity: number;
+    fillEnabled: boolean;
+    fillColor: string;
+    fillOpacity: number;
+  }>) => void;
+  /** 다음 메모장 기본색 + 선택 중인 메모장 배경색 */
+  setStickyPaperColor: (color: string) => void;
+  /** 텍스트 도구 글자 크기 */
+  setTextFontSize: (size: number) => void;
+  /** 텍스트 가로 정렬 */
+  setTextAlign: (align: 'left' | 'center' | 'right') => void;
+  /** 텍스트 굵게·취소선·밑줄 */
+  setTextDecor: (style: Partial<{ bold: boolean; strike: boolean; underline: boolean }>) => void;
+  /** 네모 드래그로 영역 안 객체·획을 지우는 모드 */
+  setAreaEraseMode: (on: boolean) => void;
 };
 
 type Point = { x: number; y: number };
@@ -99,10 +136,14 @@ type EventType =
   | 'stroke.end'
   | 'board.clear'
   | 'shape.add'
+  | 'shape.transform'
+  | 'shape.remove'
   | 'image.add'
   | 'image.transform'
+  | 'image.remove'
   | 'text.add'
   | 'text.transform'
+  | 'text.remove'
   | 'file.add'
   | 'file.transform'
   | 'file.remove'
@@ -110,7 +151,8 @@ type EventType =
   | 'sticky.add'
   | 'sticky.update'
   | 'sticky.transform'
-  | 'sticky.remove';
+  | 'sticky.remove'
+  | 'region.erase';
 
 // 캔버스에 붙이는 이미지: 파일 용량 상한, 화면에 그릴 때 가로 최대 픽셀
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -133,6 +175,10 @@ type StrokeBeginPayload = {
   color: string;
   size: number;
   point: Point;
+  /** 0~1, 없으면 1 */
+  opacity?: number;
+  /** solid | dashed */
+  dash?: 'solid' | 'dashed';
 };
 
 type StrokeAppendPayload = {
@@ -145,12 +191,108 @@ type StrokeEndPayload = {
 };
 
 type ShapeAddPayload = {
+  /** 있으면 선택·이동용 PlacedShape id */
+  id?: string;
   tool: ShapeTool;
   from: Point;
   to: Point;
   color: string;
   size: number;
+  /** 채우기 색. 없으면/빈 값이면 투명 */
+  fill?: string;
+  /** solid | dashed */
+  dash?: 'solid' | 'dashed';
+  strokeOpacity?: number;
+  fillOpacity?: number;
 };
+
+/** 배치된 도형 위치만 바꿉니다. (선택 도구로 드래그) */
+type ShapeTransformPayload = {
+  id: string;
+  from: Point;
+  to: Point;
+};
+
+type ShapeRemovePayload = {
+  id: string;
+};
+
+type TextRemovePayload = {
+  id: string;
+};
+
+type ImageRemovePayload = {
+  id: string;
+};
+
+/** 네모 영역 지우기 — 획 픽셀을 destination-out 으로 지웁니다. */
+type RegionErasePayload = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type Rect = { x: number; y: number; width: number; height: number };
+
+function normalizeRect(from: Point, to: Point): Rect {
+  const x = Math.min(from.x, to.x);
+  const y = Math.min(from.y, to.y);
+  return {
+    x,
+    y,
+    width: Math.abs(to.x - from.x),
+    height: Math.abs(to.y - from.y),
+  };
+}
+
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return !(a.x + a.width < b.x || b.x + b.width < a.x || a.y + a.height < b.y || b.y + b.height < a.y);
+}
+
+/** 캔버스에 그린 뒤 선택·이동할 수 있는 도형 */
+type PlacedShape = {
+  id: string;
+  tool: ShapeTool;
+  from: Point;
+  to: Point;
+  color: string;
+  size: number;
+  fill?: string;
+  dash: 'solid' | 'dashed';
+  strokeOpacity: number;
+  fillOpacity?: number;
+};
+
+/** 도형 from~to 의 축 정렬 바운딩 박스 */
+function shapeBounds(from: Point, to: Point) {
+  const x = Math.min(from.x, to.x);
+  const y = Math.min(from.y, to.y);
+  return {
+    x,
+    y,
+    width: Math.max(Math.abs(to.x - from.x), 1),
+    height: Math.max(Math.abs(to.y - from.y), 1),
+  };
+}
+
+/** 위쪽 도형부터 히트 테스트 (얇은 선도 잡히게 패딩) */
+function hitTestShape(shapes: PlacedShape[], p: Point): PlacedShape | null {
+  const pad = 10;
+  for (let i = shapes.length - 1; i >= 0; i -= 1) {
+    const s = shapes[i];
+    const b = shapeBounds(s.from, s.to);
+    if (
+      p.x >= b.x - pad &&
+      p.x <= b.x + b.width + pad &&
+      p.y >= b.y - pad &&
+      p.y <= b.y + b.height + pad
+    ) {
+      return s;
+    }
+  }
+  return null;
+}
 
 type ImageAddPayload = {
   id?: string;
@@ -322,6 +464,11 @@ type TextAddPayload = {
   fontSize?: number;
   width?: number;
   height?: number;
+  /** 없으면 left */
+  align?: 'left' | 'center' | 'right';
+  bold?: boolean;
+  strike?: boolean;
+  underline?: boolean;
 };
 
 type TextTransformPayload = {
@@ -331,6 +478,10 @@ type TextTransformPayload = {
   width: number;
   height: number;
   fontSize: number;
+  align?: 'left' | 'center' | 'right';
+  bold?: boolean;
+  strike?: boolean;
+  underline?: boolean;
 };
 
 type PlacedText = {
@@ -342,6 +493,10 @@ type PlacedText = {
   fontSize: number;
   width: number;
   height: number;
+  align: 'left' | 'center' | 'right';
+  bold: boolean;
+  strike: boolean;
+  underline: boolean;
 };
 
 /** 캔버스 위 인라인 텍스트 입력 중인 초안. size는 글자 크기(px)입니다. */
@@ -353,6 +508,10 @@ type TextDraft = {
   size: number;
   width: number;
   height: number;
+  align: 'left' | 'center' | 'right';
+  bold: boolean;
+  strike: boolean;
+  underline: boolean;
 };
 
 const MIN_TEXT_SIZE = 12;
@@ -436,6 +595,10 @@ function resizePlacedText(item: PlacedText, handle: ImageResizeHandle, p: Point)
       size: item.fontSize,
       width: item.width,
       height: item.height,
+      align: item.align,
+      bold: item.bold,
+      strike: item.strike,
+      underline: item.underline,
     },
     handle,
     p,
@@ -448,6 +611,10 @@ function resizePlacedText(item: PlacedText, handle: ImageResizeHandle, p: Point)
     height: draft.height,
     fontSize: draft.size,
   };
+}
+
+function normalizeTextAlign(align?: string): 'left' | 'center' | 'right' {
+  return align === 'center' || align === 'right' ? align : 'left';
 }
 
 type StampAddPayload = {
@@ -473,6 +640,8 @@ type StickyUpdatePayload = {
   id: string;
   text: string;
   drawing: string;
+  /** 있으면 메모장 종이 배경색도 같이 맞춥니다. */
+  color?: string;
 };
 
 type StickyTransformPayload = {
@@ -505,10 +674,14 @@ function isHistoryCommitEvent(type: EventType): boolean {
   return (
     type === 'stroke.end' ||
     type === 'shape.add' ||
+    type === 'shape.transform' ||
+    type === 'shape.remove' ||
     type === 'image.add' ||
     type === 'image.transform' ||
+    type === 'image.remove' ||
     type === 'text.add' ||
     type === 'text.transform' ||
+    type === 'text.remove' ||
     type === 'file.add' ||
     type === 'file.transform' ||
     type === 'file.remove' ||
@@ -516,6 +689,7 @@ function isHistoryCommitEvent(type: EventType): boolean {
     type === 'sticky.add' ||
     type === 'sticky.transform' ||
     type === 'sticky.remove' ||
+    type === 'region.erase' ||
     type === 'board.clear'
   );
 }
@@ -535,6 +709,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   initialBoardId,
   initialTimelapseSaveId,
   autoPlayTimelapse = false,
+  onTextAlignChange,
+  onTextDecorChange,
+  onTextSelectedChange,
+  onTextFontSizeChange,
 }, ref) {
   const isEmbedded = embedded || meetingMode;
   // 회의방·단독 캔버스 모두 원본 CSS 껍데기를 쓰면 내부 상단바를 숨깁니다.
@@ -555,7 +733,18 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const remotePendingEndsRef = useRef<Set<string>>(new Set());
   const replayTimerRef = useRef<number | null>(null);
   const isReplayingRef = useRef(false);
-  const strokeStyleByIdRef = useRef<Map<string, { tool: StrokeTool; color: string; size: number }>>(new Map());
+  const strokeStyleByIdRef = useRef<Map<string, {
+    tool: StrokeTool;
+    color: string;
+    size: number;
+    opacity: number;
+    dash: 'solid' | 'dashed';
+  }>>(new Map());
+  // 반투명(마커) 획: 구간 겹침으로 동그란 점이 생기지 않게, 끝날 때까지 점을 모았다가 한 경로로 그립니다.
+  const translucentStrokePointsRef = useRef<Map<string, Point[]>>(new Map());
+  // 로컬 반투명 획 미리보기용 점 목록 (스냅샷 위에 통째로 다시 그림)
+  const liveStrokePointsRef = useRef<Point[] | null>(null);
+  const eyedropperCallbackRef = useRef<((color: string) => void) | null>(null);
   const replayRafRef = useRef<number | null>(null);
   const lastReplayUiUpdateMsRef = useRef<number>(0);
   const replayEventsRef = useRef<BoardEventRow[]>([]);
@@ -578,11 +767,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     start: PlacedFile;
   } | null>(null);
   const removePlacedFileRef = useRef<(id: string) => void>(() => {});
+  const removePlacedTextRef = useRef<(id: string) => void>(() => {});
+  const removePlacedShapeRef = useRef<(id: string) => void>(() => {});
+  const removePlacedImageRef = useRef<(id: string) => void>(() => {});
   const undoHistoryRef = useRef<() => void>(() => {});
   const redoHistoryRef = useRef<() => void>(() => {});
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   const textDraftRef = useRef<TextDraft | null>(null);
-  const commitTextDraftRef = useRef<(opts?: { keepTool?: boolean }) => void>(() => {});
+  const commitTextDraftRef = useRef<() => void>(() => {});
   const startTextInViewRef = useRef<() => void>(() => {});
   const ignoreTextBlurRef = useRef(false);
   const textResizeRef = useRef<{
@@ -593,6 +785,18 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const pendingImagePointRef = useRef<Point | null>(null);
   const pendingStampRef = useRef<'rect' | 'circle' | 'triangle' | null>(null);
   const actorIdRef = useRef('unknown');
+  const onToolChangeRef = useRef(onToolChange);
+  onToolChangeRef.current = onToolChange;
+  // 메모 배치 시 내부적으로 hand로 돌려도 하단 stamp UI는 유지하기 위해 알림을 한 번 건너뜁니다.
+  const skipToolChangeNotifyRef = useRef(false);
+  const onTextSelectedChangeRef = useRef(onTextSelectedChange);
+  onTextSelectedChangeRef.current = onTextSelectedChange;
+  const onTextFontSizeChangeRef = useRef(onTextFontSizeChange);
+  onTextFontSizeChangeRef.current = onTextFontSizeChange;
+  const onTextAlignChangeRef = useRef(onTextAlignChange);
+  onTextAlignChangeRef.current = onTextAlignChange;
+  const onTextDecorChangeRef = useRef(onTextDecorChange);
+  onTextDecorChangeRef.current = onTextDecorChange;
   const lastInsertErrorAlertMsRef = useRef(0);
   const deepLinkHandledRef = useRef(false);
   const historyRef = useRef<ImageData[]>([]);
@@ -613,6 +817,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     mode: 'move' | ImageResizeHandle;
     startPoint: Point;
     start: PlacedText;
+  } | null>(null);
+  // 그린 도형을 나중에 선택·이동하기 위한 목록
+  const placedShapesRef = useRef<PlacedShape[]>([]);
+  const selectedShapeIdRef = useRef<string | null>(null);
+  const placedShapeDragRef = useRef<{
+    id: string;
+    startPoint: Point;
+    start: PlacedShape;
   } | null>(null);
   const placedStickiesRef = useRef<PlacedSticky[]>([]);
   const selectedStickyIdRef = useRef<string | null>(null);
@@ -647,14 +859,42 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [placedTexts, setPlacedTexts] = useState<PlacedText[]>([]);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [placedShapes, setPlacedShapes] = useState<PlacedShape[]>([]);
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
   const [placedStickies, setPlacedStickies] = useState<PlacedSticky[]>([]);
   const [selectedStickyId, setSelectedStickyId] = useState<string | null>(null);
   const [stickyEditMode, setStickyEditMode] = useState<StickyEditMode>('text');
   const [stickyPenColor, setStickyPenColor] = useState('#222222');
   const [color, setColor] = useState('#111827');
   const [size, setSize] = useState(6);
+  // 펜 전용: 불투명도 · 실선/점선
+  const [penOpacity, setPenOpacity] = useState(1);
+  const [penDash, setPenDash] = useState<'solid' | 'dashed'>('solid');
+  const [eyedropperActive, setEyedropperActive] = useState(false);
+  // 도형 전용: 점선/채우기/불투명도
+  const [shapeDash, setShapeDash] = useState<'solid' | 'dashed'>('solid');
+  const [shapeStrokeOpacity, setShapeStrokeOpacity] = useState(1);
+  const [shapeFillEnabled, setShapeFillEnabled] = useState(false);
+  const [shapeFillColor, setShapeFillColor] = useState('#93c5a0');
+  const [shapeFillOpacity, setShapeFillOpacity] = useState(0.35);
+  // 하단 툴바 메모 색상 — 새로 붙일 노트와 선택 노트에 반영
+  const stickyPaperColorRef = useRef(STICKY_PAPER);
   const [textSize, setTextSize] = useState(DEFAULT_TEXT_SIZE);
+  // 새 텍스트·입력 중 초안의 가로 정렬
+  const textAlignRef = useRef<'left' | 'center' | 'right'>('left');
+  const textBoldRef = useRef(false);
+  const textStrikeRef = useRef(false);
+  const textUnderlineRef = useRef(false);
   const [textDraft, setTextDraft] = useState<TextDraft | null>(null);
+  /** 네모 드래그로 영역 안을 지우는 모드 (지우개 사이드바 → 영역 지우기) */
+  const [areaEraseMode, setAreaEraseModeState] = useState(false);
+  const areaEraseModeRef = useRef(false);
+  const areaEraseDragRef = useRef<{ start: Point } | null>(null);
+  const [areaErasePreview, setAreaErasePreview] = useState<Rect | null>(null);
+  const areaErasePreviewRef = useRef<Rect | null>(null);
+  /** 메모장 도구: 다음 캔버스 클릭 위치에 붙입니다. */
+  const [stickyPlaceMode, setStickyPlaceModeState] = useState(false);
+  const stickyPlaceModeRef = useRef(false);
 
   const [actorId, setActorId] = useState<string>('unknown');
 
@@ -878,18 +1118,49 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     durationMs: number;
   } | null>(null);
 
-  const effectiveStrokeStyle = useMemo(() => {
-    return tool === 'eraser' ? '#ffffff' : color;
-  }, [tool, color]);
+  /** 획 ID별 스타일로 선분/점을 그릴 때 씁니다. */
+  const strokePaintColor = (strokeColor: string, opacity: number, strokeTool: StrokeTool) => {
+    if (strokeTool === 'eraser') return '#000000';
+    return colorWithOpacity(strokeColor, opacity);
+  };
+
+  /** 마커처럼 알파가 1 미만이면 구간 겹침 아티팩트가 납니다. */
+  const isTranslucentPen = (opacity: number, strokeTool: StrokeTool) =>
+    strokeTool !== 'eraser' && opacity < 0.999;
+
+  const strokeDashArray = (dash: 'solid' | 'dashed', strokeSize: number) => {
+    if (dash !== 'dashed') return [] as number[];
+    const a = Math.max(4, strokeSize * 1.8);
+    const b = Math.max(3, strokeSize * 1.2);
+    return [a, b];
+  };
 
   const activeTool = spacePressed ? 'hand' : tool;
   const zoomScale = ZOOM_STEPS[zoomIndex];
   const zoomPercent = Math.round(zoomScale * 100);
   const isShapeTool = (t: Tool): t is ShapeTool =>
-    t === 'rectangle' || t === 'diamond' || t === 'ellipse' || t === 'arrow' || t === 'line';
+    t === 'rectangle' || t === 'diamond' || t === 'triangle' || t === 'pentagon' || t === 'hexagon' || t === 'star' || t === 'ellipse' || t === 'arrow' || t === 'line' || t === 'elbowArrow' || t === 'curveArrow';
 
   // 이 도구들은 펼친 파일 위를 통과해서 캔버스에 그립니다. 손 도구는 파일 스크롤을 남깁니다.
-  const drawThroughFile = isShapeTool(activeTool) || activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'text' || Boolean(pendingStampKind);
+  const drawThroughFile =
+    isShapeTool(activeTool) ||
+    activeTool === 'pen' ||
+    activeTool === 'eraser' ||
+    activeTool === 'text' ||
+    Boolean(pendingStampKind) ||
+    stickyPlaceMode;
+  // 펜/도형/지우개일 때만 기존 텍스트 박스 클릭을 막습니다. 텍스트·선택 도구에서는 나중에 서식 수정이 되게 고를 수 있습니다.
+  const drawThroughText =
+    isShapeTool(activeTool) ||
+    activeTool === 'pen' ||
+    activeTool === 'eraser' ||
+    Boolean(pendingStampKind) ||
+    stickyPlaceMode;
+  // 도형 오버레이: 선택(손) 도구에서만 클릭해 이동합니다.
+  const drawThroughShape = activeTool !== 'hand' || stickyPlaceMode;
+  // 영역 지우기/지우개일 때만 이미지·메모 클릭을 통과시킵니다.
+  // 메모 배치 모드에서는 기존 메모장을 눌러 편집할 수 있어야 해서 통과시키지 않습니다.
+  const drawThroughMedia = activeTool === 'eraser' || areaEraseMode;
 
   useEffect(() => {
     if (!drawThroughFile) return;
@@ -897,61 +1168,91 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     canvasRef.current?.focus({ preventScroll: true });
   }, [drawThroughFile]);
 
+  const setAreaEraseMode = (on: boolean) => {
+    areaEraseModeRef.current = on;
+    setAreaEraseModeState(on);
+    areaEraseDragRef.current = null;
+    areaErasePreviewRef.current = null;
+    setAreaErasePreview(null);
+  };
+
   const pickTool = (next: ExcalidrawTool) => {
     // A(텍스트)는 고르는 즉시 입력칸을 엽니다. 다른 도구로 바꿀 때만 초안을 확정합니다.
     if (next !== 'text') {
-      commitTextDraftRef.current({ keepTool: true });
+      commitTextDraftRef.current();
     }
     if (next !== 'image') {
       void commitUncommittedImage();
       selectPlacedImage(null);
     }
+    // 손 도구가 아니면 배치된 텍스트·도형 선택을 해제합니다.
+    if (next !== 'hand') {
+      selectPlacedText(null);
+      selectPlacedShape(null);
+    }
     if (next !== 'hand' && tool === 'hand') {
       setPanOffset({ x: 0, y: 0 });
     }
+    // 지우개가 아니면 영역 지우기 드래그를 끕니다.
+    if (next !== 'eraser') {
+      setAreaEraseMode(false);
+    }
+    // 다른 보드 도구를 고르면 메모 클릭 배치를 끕니다.
+    stickyPlaceModeRef.current = false;
+    setStickyPlaceModeState(false);
     setTool(next);
     if (next === 'text') {
       startTextInViewRef.current();
     }
   };
 
-  const resetToIdleTool = () => {
-    if (locked) return;
-    setTool(useGropShell ? 'hand' : 'pen');
-  };
-
   useEffect(() => {
-    onToolChange?.(tool);
-  }, [tool, onToolChange]);
+    // onToolChange 참조가 매 렌더 바뀌어도 tool이 같을 때는 부모 active를 덮어쓰지 않습니다.
+    // (하단 파일/메모 등 메타 도구가 즉시 hand로 되돌아가는 문제 방지)
+    if (skipToolChangeNotifyRef.current) {
+      skipToolChangeNotifyRef.current = false;
+      return;
+    }
+    onToolChangeRef.current?.(tool);
+  }, [tool]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // 인라인 텍스트/입력칸에 타이핑 중이면 스페이스·단축키를 가로채지 않습니다.
+      const key = typeof e.key === 'string' ? e.key.toLowerCase() : '';
+      // 한글 IME에서도 Ctrl+Z/Y 가 동작하도록 code 우선
+      const isZ = e.code === 'KeyZ' || key === 'z';
+      const isY = e.code === 'KeyY' || key === 'y';
+      const wantUndo = (e.ctrlKey || e.metaKey) && isZ && !e.shiftKey;
+      const wantRedo = (e.ctrlKey || e.metaKey) && (isY || (isZ && e.shiftKey));
+
+      // 보드 위 텍스트/메모 편집 중일 때만 브라우저 기본 실행취소에 맡깁니다.
+      // (채팅·보드이름 등 다른 input에 포커스가 있어도 캔버스 실행취소는 동작하게 합니다.)
+      const target = e.target;
+      const editingBoardText =
+        target instanceof HTMLTextAreaElement &&
+        target.dataset.boardTextEditor === 'true' &&
+        !target.readOnly;
+
+      if (wantUndo || wantRedo) {
+        if (editingBoardText) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (wantUndo) undoHistoryRef.current();
+        else redoHistoryRef.current();
+        return;
+      }
+
+      // 인라인 텍스트/입력칸에 타이핑 중이면 스페이스·도구 단축키를 가로채지 않습니다.
       if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement ||
-        e.target instanceof HTMLSelectElement
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
       ) {
         return;
       }
       if (e.code === 'Space') {
         e.preventDefault();
         setSpacePressed(true);
-      }
-      // 한글 입력기에서는 e.key 가 z 가 아닐 수 있어 code 로 받습니다.
-      const isZ = e.code === 'KeyZ' || e.key.toLowerCase() === 'z';
-      const isY = e.code === 'KeyY' || e.key.toLowerCase() === 'y';
-      if ((e.ctrlKey || e.metaKey) && isZ && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        undoHistoryRef.current();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && (isY || (isZ && e.shiftKey))) {
-        e.preventDefault();
-        e.stopPropagation();
-        redoHistoryRef.current();
-        return;
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedFileIdRef.current) {
         e.preventDefault();
@@ -961,6 +1262,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedStickyIdRef.current) {
         e.preventDefault();
         removePlacedStickyRef.current(selectedStickyIdRef.current);
+        return;
+      }
+      // 선택 중인 텍스트·도형·이미지도 Del/Backspace 로 지웁니다.
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTextIdRef.current) {
+        e.preventDefault();
+        removePlacedTextRef.current(selectedTextIdRef.current);
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedShapeIdRef.current) {
+        e.preventDefault();
+        removePlacedShapeRef.current(selectedShapeIdRef.current);
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedImageIdRef.current) {
+        e.preventDefault();
+        removePlacedImageRef.current(selectedImageIdRef.current);
         return;
       }
       const mapped = toolShortcutMap[e.key];
@@ -1031,6 +1348,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     revealExpandedFilesOnCanvas();
+    // 픽셀 크기가 바뀌면 이전 ImageData 히스토리는 쓸 수 없어 현재 화면만 기준으로 다시 둡니다.
+    // (도형 직후 툴바 높이 변화로 리사이즈가 나면 실행취소가 통째로 사라지던 원인)
     initHistory();
   };
 
@@ -1038,14 +1357,25 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx || canvas.width === 0 || canvas.height === 0) return null;
-    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    try {
+      return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch {
+      // 오염된 캔버스·메모리 부족 등에서는 히스토리를 건너뜁니다.
+      return null;
+    }
   };
 
   const applyCanvasState = (data: ImageData) => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx) return;
-    ctx.putImageData(data, 0, 0);
+    // 리사이즈 전 스냅샷은 크기가 다를 수 있어 맞을 때만 복원합니다.
+    if (data.width !== canvas.width || data.height !== canvas.height) return;
+    try {
+      ctx.putImageData(data, 0, 0);
+    } catch {
+      return;
+    }
     revealExpandedFilesOnCanvas();
   };
 
@@ -1105,9 +1435,24 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     syncHistoryUi();
   };
 
+  /** 첫 획 전에 빈 기준 스냅샷이 없으면 Ctrl+Z 가 한 번도 안 먹습니다. */
+  const ensureHistoryBaseline = () => {
+    if (historyRef.current.length === 0 || historyIndexRef.current < 0) {
+      initHistory();
+    }
+  };
+
   const commitHistory = () => {
     const snap = captureCanvasState();
     if (!snap) return;
+
+    // 기준 스냅샷이 없으면 지금(이미 변경된) 상태만 한 칸 두고, 다음 동작부터 취소 가능하게 합니다.
+    if (historyRef.current.length === 0 || historyIndexRef.current < 0) {
+      historyRef.current = [snap];
+      historyIndexRef.current = 0;
+      syncHistoryUi();
+      return;
+    }
 
     const idx = historyIndexRef.current;
     if (idx >= 0) {
@@ -1370,7 +1715,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     else void loadBoards();
   };
 
-  const applyStrokeSegment = (p1: Point, p2: Point, strokeTool: StrokeTool, strokeColor: string, strokeSize: number) => {
+  const applyStrokeSegment = (
+    p1: Point,
+    p2: Point,
+    strokeTool: StrokeTool,
+    strokeColor: string,
+    strokeSize: number,
+    opacity = 1,
+    dash: 'solid' | 'dashed' = 'solid',
+  ) => {
     const ctx = ctxRef.current ?? ensureContext();
     if (!ctx) return;
     ctx.save();
@@ -1378,8 +1731,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     ctx.lineJoin = 'round';
     // 지우개는 흰 칠 대신 픽셀을 지워, 펼친 파일이 다시 보이게 합니다.
     ctx.globalCompositeOperation = strokeTool === 'eraser' ? 'destination-out' : 'source-over';
-    ctx.strokeStyle = strokeTool === 'eraser' ? '#000000' : strokeColor;
+    ctx.strokeStyle = strokePaintColor(strokeColor, opacity, strokeTool);
     ctx.lineWidth = strokeSize;
+    ctx.setLineDash(strokeTool === 'eraser' ? [] : strokeDashArray(dash, strokeSize));
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y);
     ctx.lineTo(p2.x, p2.y);
@@ -1387,16 +1741,67 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     ctx.restore();
   };
 
-  const applyStrokeDot = (p: Point, strokeTool: StrokeTool, strokeColor: string, strokeSize: number) => {
+  const applyStrokeDot = (
+    p: Point,
+    strokeTool: StrokeTool,
+    strokeColor: string,
+    strokeSize: number,
+    opacity = 1,
+  ) => {
     const ctx = ctxRef.current ?? ensureContext();
     if (!ctx) return;
     ctx.save();
     ctx.globalCompositeOperation = strokeTool === 'eraser' ? 'destination-out' : 'source-over';
-    ctx.fillStyle = strokeTool === 'eraser' ? '#000000' : strokeColor;
+    ctx.fillStyle = strokePaintColor(strokeColor, opacity, strokeTool);
     ctx.beginPath();
     ctx.arc(p.x, p.y, Math.max(strokeSize / 2, 1), 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+  };
+
+  /**
+   * 점을 하나의 path로 그려 반투명 획의 round-cap 겹침(동그란 진한 점)을 없앱니다.
+   * 점이 하나면 점으로 찍습니다.
+   */
+  const applyStrokePath = (
+    points: Point[],
+    strokeTool: StrokeTool,
+    strokeColor: string,
+    strokeSize: number,
+    opacity = 1,
+    dash: 'solid' | 'dashed' = 'solid',
+  ) => {
+    if (points.length === 0) return;
+    if (points.length === 1) {
+      applyStrokeDot(points[0], strokeTool, strokeColor, strokeSize, opacity);
+      return;
+    }
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx) return;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalCompositeOperation = strokeTool === 'eraser' ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = strokePaintColor(strokeColor, opacity, strokeTool);
+    ctx.lineWidth = strokeSize;
+    ctx.setLineDash(strokeTool === 'eraser' ? [] : strokeDashArray(dash, strokeSize));
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  /** 버퍼에 모인 반투명 획을 한 번에 캔버스에 올립니다. */
+  const finalizeTranslucentStroke = (strokeId: string) => {
+    const style = strokeStyleByIdRef.current.get(strokeId);
+    const points = translucentStrokePointsRef.current.get(strokeId);
+    translucentStrokePointsRef.current.delete(strokeId);
+    if (!style || !points || points.length === 0) return;
+    if (!isTranslucentPen(style.opacity, style.tool)) return;
+    applyStrokePath(points, style.tool, style.color, style.size, style.opacity, style.dash);
   };
 
   const applyStrokeAppendPoints = (strokeId: string, points: Point[]) => {
@@ -1404,11 +1809,24 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (!last) return false;
     const style = strokeStyleByIdRef.current.get(strokeId);
     if (!style) return false;
+
+    // 반투명: 선분마다 그리지 않고 점만 모읍니다. (stroke.end 때 한 경로로 그림)
+    if (isTranslucentPen(style.opacity, style.tool)) {
+      const buf = translucentStrokePointsRef.current.get(strokeId) ?? [{ x: last.x, y: last.y }];
+      for (const next of points) {
+        buf.push({ x: next.x, y: next.y });
+        last.x = next.x;
+        last.y = next.y;
+      }
+      translucentStrokePointsRef.current.set(strokeId, buf);
+      return true;
+    }
+
     for (const next of points) {
       if (last.x === next.x && last.y === next.y) {
-        applyStrokeDot(next, style.tool, style.color, style.size);
+        applyStrokeDot(next, style.tool, style.color, style.size, style.opacity);
       } else {
-        applyStrokeSegment(last, next, style.tool, style.color, style.size);
+        applyStrokeSegment(last, next, style.tool, style.color, style.size, style.opacity, style.dash);
       }
       last.x = next.x;
       last.y = next.y;
@@ -1426,6 +1844,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
     if (remotePendingEndsRef.current.has(strokeId)) {
       remotePendingEndsRef.current.delete(strokeId);
+      finalizeTranslucentStroke(strokeId);
       remoteLastPointByStrokeRef.current.delete(strokeId);
       strokeStyleByIdRef.current.delete(strokeId);
     }
@@ -1445,6 +1864,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     replacePlacedTexts([]);
     selectPlacedText(null);
     placedTextDragRef.current = null;
+    replacePlacedShapes([]);
+    selectPlacedShape(null);
+    placedShapeDragRef.current = null;
     replacePlacedFiles([]);
     selectPlacedFile(null);
     placedFileDragRef.current = null;
@@ -1455,6 +1877,96 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       window.clearTimeout(stickyTextTimerRef.current);
       stickyTextTimerRef.current = null;
     }
+  };
+
+  /** 캔버스 픽셀만 네모 영역으로 지웁니다 (획·도형·텍스트 래스터). */
+  const applyRegionEraseLocal = (rect: Rect) => {
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx || rect.width <= 0 || rect.height <= 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = '#000';
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    ctx.restore();
+  };
+
+  /**
+   * 드래그한 네모와 겹치는 텍스트·도형·이미지·파일·메모를 제거하고,
+   * 그 안의 그리기 픽셀도 destination-out 으로 지운 뒤 region.erase 이벤트로 동기화합니다.
+   */
+  const eraseArea = (rect: Rect) => {
+    if (rect.width < 3 || rect.height < 3) return;
+
+    const hitTexts = placedTextsRef.current.filter((t) =>
+      rectsOverlap(rect, { x: t.x, y: t.y, width: t.width, height: t.height }),
+    );
+    const hitShapes = placedShapesRef.current.filter((s) => rectsOverlap(rect, shapeBounds(s.from, s.to)));
+    const hitImages = placedImagesRef.current.filter((im) =>
+      rectsOverlap(rect, { x: im.x, y: im.y, width: im.width, height: im.height }),
+    );
+    const hitFiles = placedFilesRef.current.filter((f) =>
+      rectsOverlap(rect, { x: f.x, y: f.y, width: f.width, height: f.height }),
+    );
+    const hitStickies = placedStickiesRef.current.filter((n) =>
+      rectsOverlap(rect, { x: n.x, y: n.y, width: n.width, height: n.height }),
+    );
+
+    // 객체 오버레이를 먼저 걷고, 픽셀 구멍을 뚫은 뒤 이벤트만 쌓습니다 (중간 reload 없음).
+    if (hitTexts.length) {
+      const removeIds = new Set(hitTexts.map((t) => t.id));
+      replacePlacedTexts(placedTextsRef.current.filter((t) => !removeIds.has(t.id)));
+      if (selectedTextIdRef.current && removeIds.has(selectedTextIdRef.current)) selectPlacedText(null);
+    }
+    if (hitShapes.length) {
+      const removeIds = new Set(hitShapes.map((s) => s.id));
+      replacePlacedShapes(placedShapesRef.current.filter((s) => !removeIds.has(s.id)));
+      if (selectedShapeIdRef.current && removeIds.has(selectedShapeIdRef.current)) selectPlacedShape(null);
+    }
+    if (hitImages.length) {
+      const removeIds = new Set(hitImages.map((im) => im.id));
+      replacePlacedImages(placedImagesRef.current.filter((im) => !removeIds.has(im.id)));
+      if (selectedImageIdRef.current && removeIds.has(selectedImageIdRef.current)) selectPlacedImage(null);
+    }
+    if (hitFiles.length) {
+      const removeIds = new Set(hitFiles.map((f) => f.id));
+      replacePlacedFiles(placedFilesRef.current.filter((f) => !removeIds.has(f.id)));
+      if (selectedFileIdRef.current && removeIds.has(selectedFileIdRef.current)) selectPlacedFile(null);
+    }
+    if (hitStickies.length) {
+      const removeIds = new Set(hitStickies.map((n) => n.id));
+      replacePlacedStickies(placedStickiesRef.current.filter((n) => !removeIds.has(n.id)));
+      if (selectedStickyIdRef.current && removeIds.has(selectedStickyIdRef.current)) selectPlacedSticky(null);
+    }
+
+    applyRegionEraseLocal(rect);
+
+    void (async () => {
+      for (const t of hitTexts) {
+        await insertEvent('text.remove', { id: t.id } satisfies TextRemovePayload);
+      }
+      for (const s of hitShapes) {
+        await insertEvent('shape.remove', { id: s.id } satisfies ShapeRemovePayload);
+      }
+      for (const im of hitImages) {
+        if (!im.committed) continue;
+        await insertEvent('image.remove', { id: im.id } satisfies ImageRemovePayload);
+      }
+      for (const f of hitFiles) {
+        await insertEvent('file.remove', { id: f.id } satisfies FileRemovePayload);
+      }
+      for (const n of hitStickies) {
+        await insertEvent('sticky.remove', { id: n.id } satisfies StickyRemovePayload);
+      }
+      await insertEvent('region.erase', {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      } satisfies RegionErasePayload);
+      commitHistory();
+      // 객체 제거·영역 구멍을 이벤트 순서로 다시 맞춰 다른 참가자와 동일하게 보이게 합니다.
+      if (boardId) await loadAndRenderBoard(boardId);
+    })();
   };
 
   const loadCachedImage = (dataUrl: string): Promise<HTMLImageElement> => {
@@ -1557,6 +2069,23 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     } satisfies ImageTransformPayload);
   };
 
+  /** Del 키 등으로 선택한 이미지를 지웁니다. */
+  const removePlacedImage = (id: string) => {
+    const img = placedImagesRef.current.find((x) => x.id === id);
+    if (!img) return;
+    replacePlacedImages(placedImagesRef.current.filter((x) => x.id !== id));
+    if (selectedImageIdRef.current === id) selectPlacedImage(null);
+    // 아직 보드에 안 올린 미리보기는 로컬만 지웁니다.
+    if (!img.committed) {
+      commitHistory();
+      return;
+    }
+    void insertEvent('image.remove', { id } satisfies ImageRemovePayload).then(() => {
+      if (boardId) return loadAndRenderBoard(boardId);
+    });
+  };
+  removePlacedImageRef.current = removePlacedImage;
+
   const selectPlacedFile = (id: string | null) => {
     selectedFileIdRef.current = id;
     setSelectedFileId(id);
@@ -1625,12 +2154,87 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   removePlacedFileRef.current = removePlacedFile;
 
   const selectPlacedText = (id: string | null) => {
+    const prev = selectedTextIdRef.current;
     selectedTextIdRef.current = id;
     setSelectedTextId(id);
     if (id && selectedStickyIdRef.current) {
       selectedStickyIdRef.current = null;
       setSelectedStickyId(null);
     }
+    // 도형 선택은 직접 해제 (상호 호출 순환 방지)
+    if (id && selectedShapeIdRef.current) {
+      selectedShapeIdRef.current = null;
+      setSelectedShapeId(null);
+    }
+    // 선택/해제가 바뀔 때만 하단에 서식 메뉴를 보여 줍니다.
+    if (Boolean(prev) !== Boolean(id)) {
+      onTextSelectedChangeRef.current?.(Boolean(id));
+    }
+  };
+
+  const selectPlacedShape = (id: string | null) => {
+    selectedShapeIdRef.current = id;
+    setSelectedShapeId(id);
+    if (id) {
+      // 텍스트 선택은 직접 해제 (상호 호출 순환 방지)
+      if (selectedTextIdRef.current) {
+        selectedTextIdRef.current = null;
+        setSelectedTextId(null);
+        onTextSelectedChangeRef.current?.(false);
+      }
+      selectPlacedImage(null);
+      selectPlacedFile(null);
+    }
+  };
+
+  const replacePlacedShapes = (next: PlacedShape[]) => {
+    placedShapesRef.current = next;
+    setPlacedShapes(next);
+  };
+
+  const upsertPlacedShape = (item: PlacedShape) => {
+    const next = placedShapesRef.current.filter((x) => x.id !== item.id);
+    next.push(item);
+    replacePlacedShapes(next);
+  };
+
+  const persistShapeTransform = (item: PlacedShape) => {
+    return insertEvent('shape.transform', {
+      id: item.id,
+      from: item.from,
+      to: item.to,
+    } satisfies ShapeTransformPayload);
+  };
+
+  /** 도형 이동 후 보드를 다시 그려 캔버스 픽셀과 맞춥니다. */
+  const persistAndReloadShape = (item: PlacedShape) => {
+    void persistShapeTransform(item).then(() => {
+      if (boardId) return loadAndRenderBoard(boardId);
+    }).then(() => selectPlacedShape(item.id));
+  };
+
+  /** Del 키 등으로 선택한 도형을 지웁니다. */
+  const removePlacedShape = (id: string) => {
+    const exists = placedShapesRef.current.some((x) => x.id === id);
+    if (!exists) return;
+    replacePlacedShapes(placedShapesRef.current.filter((x) => x.id !== id));
+    if (selectedShapeIdRef.current === id) selectPlacedShape(null);
+    void insertEvent('shape.remove', { id } satisfies ShapeRemovePayload).then(() => {
+      if (boardId) return loadAndRenderBoard(boardId);
+    });
+  };
+  removePlacedShapeRef.current = removePlacedShape;
+
+  /** 배치된 텍스트를 고를 때 툴바(크기·정렬·서식) 상태를 맞춥니다. */
+  const syncToolbarFromPlacedText = (item: PlacedText) => {
+    setTextSize(item.fontSize);
+    textAlignRef.current = item.align;
+    textBoldRef.current = item.bold;
+    textStrikeRef.current = item.strike;
+    textUnderlineRef.current = item.underline;
+    onTextFontSizeChangeRef.current?.(item.fontSize);
+    onTextAlignChangeRef.current?.(item.align);
+    onTextDecorChangeRef.current?.({ bold: item.bold, strike: item.strike, underline: item.underline });
   };
 
   const replacePlacedTexts = (next: PlacedText[]) => {
@@ -1652,6 +2256,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       width: item.width,
       height: item.height,
       fontSize: item.fontSize,
+      align: item.align,
+      bold: item.bold,
+      strike: item.strike,
+      underline: item.underline,
     } satisfies TextTransformPayload);
   };
 
@@ -1660,6 +2268,18 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (boardId) return loadAndRenderBoard(boardId);
     }).then(() => selectPlacedText(item.id));
   };
+
+  /** Del 키 등으로 선택한 텍스트를 지웁니다. */
+  const removePlacedText = (id: string) => {
+    const exists = placedTextsRef.current.some((x) => x.id === id);
+    if (!exists) return;
+    replacePlacedTexts(placedTextsRef.current.filter((x) => x.id !== id));
+    if (selectedTextIdRef.current === id) selectPlacedText(null);
+    void insertEvent('text.remove', { id } satisfies TextRemovePayload).then(() => {
+      if (boardId) return loadAndRenderBoard(boardId);
+    });
+  };
+  removePlacedTextRef.current = removePlacedText;
 
   const selectPlacedSticky = (id: string | null) => {
     selectedStickyIdRef.current = id;
@@ -1692,7 +2312,44 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       id: item.id,
       text: item.text,
       drawing: item.drawing,
+      color: item.color,
     } satisfies StickyUpdatePayload);
+  };
+
+  /** 펜 색·굵기·불투명도·점선을 하단 서브메뉴에서 바꿀 때 호출합니다. */
+  const setStrokeStyle = (style: {
+    color?: string;
+    size?: number;
+    opacity?: number;
+    dash?: 'solid' | 'dashed';
+  }) => {
+    if (typeof style.color === 'string' && style.color.trim()) setColor(style.color);
+    if (typeof style.size === 'number' && Number.isFinite(style.size)) {
+      setSize(Math.min(100, Math.max(1, Math.round(style.size))));
+    }
+    if (typeof style.opacity === 'number' && Number.isFinite(style.opacity)) {
+      setPenOpacity(Math.min(1, Math.max(0, style.opacity)));
+    }
+    if (style.dash === 'solid' || style.dash === 'dashed') setPenDash(style.dash);
+  };
+
+  /** 캔버스 픽셀 색을 한 번 찍어 콜백으로 넘깁니다. */
+  const startEyedropper = (onPick: (color: string) => void) => {
+    eyedropperCallbackRef.current = onPick;
+    setEyedropperActive(true);
+  };
+
+  /** 메모장 종이색 — 선택 중이면 즉시 바꾸고, 이후 addStickyNote에도 씁니다. */
+  const setStickyPaperColor = (nextColor: string) => {
+    const colorValue = nextColor.trim() || STICKY_PAPER;
+    stickyPaperColorRef.current = colorValue;
+    const selectedId = selectedStickyIdRef.current;
+    if (!selectedId) return;
+    const prev = placedStickiesRef.current.find((x) => x.id === selectedId);
+    if (!prev || prev.color === colorValue) return;
+    const next = { ...prev, color: colorValue };
+    upsertPlacedSticky(next);
+    void persistStickyUpdate(next);
   };
 
   // 타이핑마다 이벤트를 넣지 않고, 잠깐 멈춘 뒤에만 저장합니다.
@@ -1713,35 +2370,51 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   };
   removePlacedStickyRef.current = removePlacedSticky;
 
-  /** 지금 보이는 화면 가운데에 메모장을 붙입니다. */
+  /** 메모장 클릭 배치 모드를 끕니다. */
+  const cancelStickyPlace = () => {
+    stickyPlaceModeRef.current = false;
+    setStickyPlaceModeState(false);
+  };
+
+  /**
+   * 메모장 도구: 바로 붙이지 않고, 화면을 한 번 더 클릭하면 그 위치에 붙입니다.
+   * 이미지/파일 도구가 남아 있으면 다음 클릭에 파일창이 뜨므로 hand로 되돌립니다.
+   * (하단 UI의 stamp 선택은 부모가 유지 — onToolChange 알림은 건너뜁니다.)
+   */
   const addStickyNote = () => {
+    if (tool === 'image' || tool === 'file') {
+      skipToolChangeNotifyRef.current = true;
+      setTool('hand');
+    }
+    stickyPlaceModeRef.current = true;
+    setStickyPlaceModeState(true);
+  };
+
+  /** 클릭한 보드 좌표에 메모장을 붙입니다. 도구가 바뀌기 전까지 연속 배치를 위해 모드는 유지합니다. */
+  const placeStickyAt = (p: Point) => {
     setShowLibrary(false);
     setPendingStampKind(null);
     pendingStampRef.current = null;
     selectPlacedImage(null);
     selectPlacedText(null);
     selectPlacedFile(null);
-    const area = canvasAreaRef.current;
-    const offset = placedStickiesRef.current.length % 6;
-    let x = 48 + offset * 20;
-    let y = 48 + offset * 20;
-    if (area) {
-      x = Math.max(24, (area.clientWidth / 2 - panOffset.x) / zoomScale - DEFAULT_STICKY_W / 2) + offset * 20;
-      y = Math.max(24, (area.clientHeight / 2 - panOffset.y) / zoomScale - DEFAULT_STICKY_H / 2) + offset * 20;
-    }
     const note: PlacedSticky = {
       id: crypto.randomUUID(),
-      x,
-      y,
+      x: Math.max(0, p.x - DEFAULT_STICKY_W / 2),
+      y: Math.max(0, p.y - DEFAULT_STICKY_H / 2),
       width: DEFAULT_STICKY_W,
       height: DEFAULT_STICKY_H,
-      color: STICKY_PAPER,
+      color: stickyPaperColorRef.current || STICKY_PAPER,
       text: '',
       drawing: '',
     };
     upsertPlacedSticky(note);
     selectPlacedSticky(note.id);
     setStickyEditMode('text');
+    // 메모 도구가 선택된 동안은 배치 모드를 유지해, 색을 바꾼 뒤에도 빈 화면 클릭으로 계속 붙입니다.
+    // (다른 도구를 고르면 cancelStickyPlace / pickTool 에서 꺼집니다.)
+    stickyPlaceModeRef.current = true;
+    setStickyPlaceModeState(true);
     void insertEvent('sticky.add', {
       id: note.id,
       x: note.x,
@@ -1838,7 +2511,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const primeEventStyle = (ev: BoardEventRow) => {
     if (ev.type !== 'stroke.begin') return;
     const p = ev.payload as StrokeBeginPayload;
-    strokeStyleByIdRef.current.set(p.strokeId, { tool: p.tool, color: p.color, size: p.size });
+    strokeStyleByIdRef.current.set(p.strokeId, {
+      tool: p.tool,
+      color: p.color,
+      size: p.size,
+      opacity: typeof p.opacity === 'number' ? p.opacity : 1,
+      dash: p.dash === 'dashed' ? 'dashed' : 'solid',
+    });
   };
 
   const clearReplaySession = () => {
@@ -1891,6 +2570,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     clearAllLocal();
     remoteLastPointByStrokeRef.current = new Map();
     strokeStyleByIdRef.current = new Map();
+    translucentStrokePointsRef.current = new Map();
     return true;
   };
 
@@ -1904,6 +2584,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     clearAllLocal();
     remoteLastPointByStrokeRef.current = new Map();
     strokeStyleByIdRef.current = new Map();
+    translucentStrokePointsRef.current = new Map();
+    liveStrokePointsRef.current = null;
 
     for (let k = 0; k < clamped; k += 1) {
       primeEventStyle(events[k]);
@@ -1999,6 +2681,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     remoteLastPointByStrokeRef.current = new Map();
     remotePendingAppendsRef.current = new Map();
     remotePendingEndsRef.current = new Set();
+    strokeStyleByIdRef.current = new Map();
+    translucentStrokePointsRef.current = new Map();
+    liveStrokePointsRef.current = null;
 
     const { data, error } = await supabase
       .from('board_events')
@@ -2014,19 +2699,39 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const events = (data ?? []) as BoardEventRow[];
     const transforms = new Map<string, ImageTransformPayload>();
     const textTransforms = new Map<string, TextTransformPayload>();
+    const shapeTransforms = new Map<string, ShapeTransformPayload>();
     const fileTransforms = new Map<string, FileTransformPayload>();
     const stickyTransforms = new Map<string, StickyTransformPayload>();
     const stickyUpdates = new Map<string, StickyUpdatePayload>();
     const removedFiles = new Set<string>();
     const removedStickies = new Set<string>();
+    const removedTexts = new Set<string>();
+    const removedShapes = new Set<string>();
+    const removedImages = new Set<string>();
     for (const ev of events) {
       if (ev.type === 'image.transform') {
         const p = ev.payload as ImageTransformPayload;
         if (p?.id) transforms.set(p.id, p);
       }
+      if (ev.type === 'image.remove') {
+        const p = ev.payload as ImageRemovePayload;
+        if (p?.id) removedImages.add(p.id);
+      }
       if (ev.type === 'text.transform') {
         const p = ev.payload as TextTransformPayload;
         if (p?.id) textTransforms.set(p.id, p);
+      }
+      if (ev.type === 'text.remove') {
+        const p = ev.payload as TextRemovePayload;
+        if (p?.id) removedTexts.add(p.id);
+      }
+      if (ev.type === 'shape.transform') {
+        const p = ev.payload as ShapeTransformPayload;
+        if (p?.id) shapeTransforms.set(p.id, p);
+      }
+      if (ev.type === 'shape.remove') {
+        const p = ev.payload as ShapeRemovePayload;
+        if (p?.id) removedShapes.add(p.id);
       }
       if (ev.type === 'file.transform') {
         const p = ev.payload as FileTransformPayload;
@@ -2054,7 +2759,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     for (const ev of events) {
       if (
         ev.type === 'image.transform' ||
+        ev.type === 'image.remove' ||
         ev.type === 'text.transform' ||
+        ev.type === 'text.remove' ||
+        ev.type === 'shape.transform' ||
+        ev.type === 'shape.remove' ||
         ev.type === 'file.transform' ||
         ev.type === 'file.remove' ||
         ev.type === 'sticky.transform' ||
@@ -2066,6 +2775,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (ev.type === 'image.add') {
         const p = ev.payload as ImageAddPayload;
         const id = p.id || ev.id;
+        if (removedImages.has(id)) continue;
         const t = transforms.get(id);
         const folded: ImageAddPayload = t
           ? { ...p, id, x: t.x, y: t.y, width: t.width, height: t.height }
@@ -2077,9 +2787,34 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (ev.type === 'text.add') {
         const p = ev.payload as TextAddPayload;
         const id = p.id || ev.id;
+        if (removedTexts.has(id)) continue;
         const t = textTransforms.get(id);
         const folded: TextAddPayload = t
-          ? { ...p, id, x: t.x, y: t.y, width: t.width, height: t.height, fontSize: t.fontSize }
+          ? {
+              ...p,
+              id,
+              x: t.x,
+              y: t.y,
+              width: t.width,
+              height: t.height,
+              fontSize: t.fontSize,
+              align: t.align ?? p.align,
+              bold: t.bold ?? p.bold,
+              strike: t.strike ?? p.strike,
+              underline: t.underline ?? p.underline,
+            }
+          : { ...p, id };
+        await applyEvent({ ...ev, payload: folded });
+        if (isHistoryCommitEvent(ev.type)) commitHistory();
+        continue;
+      }
+      if (ev.type === 'shape.add') {
+        const p = ev.payload as ShapeAddPayload;
+        const id = p.id || ev.id;
+        if (removedShapes.has(id)) continue;
+        const t = shapeTransforms.get(id);
+        const folded: ShapeAddPayload = t
+          ? { ...p, id, from: t.from, to: t.to }
           : { ...p, id };
         await applyEvent({ ...ev, payload: folded });
         if (isHistoryCommitEvent(ev.type)) commitHistory();
@@ -2197,13 +2932,33 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       remotePendingAppendsRef.current = new Map();
       remotePendingEndsRef.current = new Set();
       strokeStyleByIdRef.current = new Map();
+      translucentStrokePointsRef.current = new Map();
+      return;
+    }
+
+    if (ev.type === 'region.erase') {
+      const p = ev.payload as RegionErasePayload;
+      if (typeof p?.x === 'number' && typeof p?.y === 'number' && typeof p?.width === 'number' && typeof p?.height === 'number') {
+        applyRegionEraseLocal({ x: p.x, y: p.y, width: p.width, height: p.height });
+      }
       return;
     }
 
     if (ev.type === 'stroke.begin') {
       const p = ev.payload as StrokeBeginPayload;
       remoteLastPointByStrokeRef.current.set(p.strokeId, { x: p.point.x, y: p.point.y });
-      strokeStyleByIdRef.current.set(p.strokeId, { tool: p.tool, color: p.color, size: p.size });
+      const opacity = typeof p.opacity === 'number' ? p.opacity : 1;
+      strokeStyleByIdRef.current.set(p.strokeId, {
+        tool: p.tool,
+        color: p.color,
+        size: p.size,
+        opacity,
+        dash: p.dash === 'dashed' ? 'dashed' : 'solid',
+      });
+      // 반투명 획은 시작할 점부터 버퍼에 넣고, end 때 한 경로로 그립니다.
+      if (isTranslucentPen(opacity, p.tool)) {
+        translucentStrokePointsRef.current.set(p.strokeId, [{ x: p.point.x, y: p.point.y }]);
+      }
       flushRemotePendingStroke(p.strokeId);
       return;
     }
@@ -2226,6 +2981,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         remotePendingEndsRef.current.add(p.strokeId);
         return;
       }
+      finalizeTranslucentStroke(p.strokeId);
       remoteLastPointByStrokeRef.current.delete(p.strokeId);
       strokeStyleByIdRef.current.delete(p.strokeId);
       return;
@@ -2235,7 +2991,47 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const p = ev.payload as ShapeAddPayload;
       const ctx = ctxRef.current ?? ensureContext();
       if (!ctx) return;
-      drawShapeTool(ctx, p.tool, p.from, p.to, { strokeStyle: p.color, lineWidth: p.size }, false);
+      drawShapeTool(ctx, p.tool, p.from, p.to, {
+        strokeStyle: colorWithOpacity(p.color, typeof p.strokeOpacity === 'number' ? p.strokeOpacity : 1),
+        lineWidth: p.size,
+        fillStyle: p.fill ? colorWithOpacity(p.fill, typeof p.fillOpacity === 'number' ? p.fillOpacity : 1) : undefined,
+        dash: p.dash === 'dashed' ? shapeDashArray(p.size) : [],
+      }, false);
+      const id = p.id || ev.id;
+      upsertPlacedShape({
+        id,
+        tool: p.tool,
+        from: { ...p.from },
+        to: { ...p.to },
+        color: p.color,
+        size: p.size,
+        fill: p.fill,
+        dash: p.dash === 'dashed' ? 'dashed' : 'solid',
+        strokeOpacity: typeof p.strokeOpacity === 'number' ? p.strokeOpacity : 1,
+        fillOpacity: typeof p.fillOpacity === 'number' ? p.fillOpacity : undefined,
+      });
+      return;
+    }
+
+    if (ev.type === 'shape.transform') {
+      const p = ev.payload as ShapeTransformPayload;
+      if (!p?.id) return;
+      const prev = placedShapesRef.current.find((x) => x.id === p.id);
+      if (prev) {
+        upsertPlacedShape({ ...prev, from: { ...p.from }, to: { ...p.to } });
+      }
+      if (ev.actor_id === actorIdRef.current) return;
+      if (boardId) void loadAndRenderBoard(boardId);
+      return;
+    }
+
+    if (ev.type === 'shape.remove') {
+      const p = ev.payload as ShapeRemovePayload;
+      if (!p?.id) return;
+      replacePlacedShapes(placedShapesRef.current.filter((x) => x.id !== p.id));
+      if (selectedShapeIdRef.current === p.id) selectPlacedShape(null);
+      if (ev.actor_id === actorIdRef.current) return;
+      if (boardId) void loadAndRenderBoard(boardId);
       return;
     }
 
@@ -2277,16 +3073,35 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       return;
     }
 
+    if (ev.type === 'image.remove') {
+      const p = ev.payload as ImageRemovePayload;
+      if (!p?.id) return;
+      replacePlacedImages(placedImagesRef.current.filter((x) => x.id !== p.id));
+      if (selectedImageIdRef.current === p.id) selectPlacedImage(null);
+      if (ev.actor_id === actorIdRef.current) return;
+      if (boardId) void loadAndRenderBoard(boardId);
+      return;
+    }
+
     if (ev.type === 'text.add') {
       const p = ev.payload as TextAddPayload;
       const ctx = ctxRef.current ?? ensureContext();
       if (!ctx) return;
       const fontSize = resolveTextFontSize(p);
       const box = measurePlacedText(p.text, fontSize, p.width, p.height);
+      const align = normalizeTextAlign(p.align);
+      const bold = Boolean(p.bold);
+      const strike = Boolean(p.strike);
+      const underline = Boolean(p.underline);
       drawText(ctx, { x: p.x, y: p.y }, p.text, {
         strokeStyle: p.color,
         lineWidth: p.size,
         fontSize,
+        textWidth: box.width,
+        textAlign: align,
+        bold,
+        strike,
+        underline,
       });
       upsertPlacedText({
         id: p.id || ev.id,
@@ -2297,6 +3112,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         fontSize,
         width: box.width,
         height: box.height,
+        align,
+        bold,
+        strike,
+        underline,
       });
       return;
     }
@@ -2313,8 +3132,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           width: p.width,
           height: p.height,
           fontSize: p.fontSize,
+          align: p.align != null ? normalizeTextAlign(p.align) : prev.align,
+          bold: typeof p.bold === 'boolean' ? p.bold : prev.bold,
+          strike: typeof p.strike === 'boolean' ? p.strike : prev.strike,
+          underline: typeof p.underline === 'boolean' ? p.underline : prev.underline,
         });
       }
+      if (ev.actor_id === actorIdRef.current) return;
+      if (boardId) void loadAndRenderBoard(boardId);
+      return;
+    }
+
+    if (ev.type === 'text.remove') {
+      const p = ev.payload as TextRemovePayload;
+      if (!p?.id) return;
+      replacePlacedTexts(placedTextsRef.current.filter((x) => x.id !== p.id));
+      if (selectedTextIdRef.current === p.id) selectPlacedText(null);
       if (ev.actor_id === actorIdRef.current) return;
       if (boardId) void loadAndRenderBoard(boardId);
       return;
@@ -2401,6 +3234,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           ...prev,
           text: p.text,
           drawing: p.drawing,
+          color: p.color || prev.color,
         });
       }
       return;
@@ -2443,13 +3277,36 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const getDrawStyle = () => ({ strokeStyle: color, lineWidth: size });
 
+  /** 도형 드래그/확정 시 테두리·채우기 옵션을 반영합니다. */
+  const getShapeDrawStyle = () => ({
+    strokeStyle: colorWithOpacity(color, shapeStrokeOpacity),
+    lineWidth: size,
+    fillStyle: shapeFillEnabled ? colorWithOpacity(shapeFillColor, shapeFillOpacity) : undefined,
+    dash: shapeDash === 'dashed' ? shapeDashArray(size) : [],
+  });
+
+  const setShapeStyle = (style: Partial<{
+    dash: 'solid' | 'dashed';
+    strokeOpacity: number;
+    fillEnabled: boolean;
+    fillColor: string;
+    fillOpacity: number;
+  }>) => {
+    if (style.dash) setShapeDash(style.dash);
+    if (typeof style.strokeOpacity === 'number') setShapeStrokeOpacity(Math.min(1, Math.max(0, style.strokeOpacity)));
+    if (typeof style.fillEnabled === 'boolean') setShapeFillEnabled(style.fillEnabled);
+    if (typeof style.fillColor === 'string' && style.fillColor.trim()) setShapeFillColor(style.fillColor);
+    if (typeof style.fillOpacity === 'number') setShapeFillOpacity(Math.min(1, Math.max(0, style.fillOpacity)));
+  };
+
   const syncTextDraft = (next: TextDraft | null) => {
     textDraftRef.current = next;
     setTextDraft(next);
   };
 
   // 입력칸 내용을 캔버스에 그리고 보드 이벤트로 저장합니다. 빈 값이면 그냥 닫습니다.
-  const commitTextDraft = (opts?: { keepTool?: boolean }) => {
+  // 확정 후에도 현재 도구(텍스트)를 유지해 연속 입력이 가능하게 합니다.
+  const commitTextDraft = () => {
     const draft = textDraftRef.current;
     if (!draft) return;
     const text = draft.value.replace(/\s+$/u, '');
@@ -2465,11 +3322,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         fontSize: draft.size,
         width: draft.width,
         height: draft.height,
+        align: draft.align,
+        bold: draft.bold,
+        strike: draft.strike,
+        underline: draft.underline,
       };
       drawText(ctxRef.current ?? ensureContext()!, { x: placed.x, y: placed.y }, placed.text, {
         strokeStyle: placed.color,
         lineWidth: size,
         fontSize: placed.fontSize,
+        textWidth: placed.width,
+        textAlign: placed.align,
+        bold: placed.bold,
+        strike: placed.strike,
+        underline: placed.underline,
       });
       upsertPlacedText(placed);
       void insertEvent('text.add', {
@@ -2482,10 +3348,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         fontSize: placed.fontSize,
         width: placed.width,
         height: placed.height,
+        align: placed.align,
+        bold: placed.bold,
+        strike: placed.strike,
+        underline: placed.underline,
       } satisfies TextAddPayload);
       commitHistory();
     }
-    if (!opts?.keepTool) resetToIdleTool();
   };
   commitTextDraftRef.current = commitTextDraft;
 
@@ -2500,6 +3369,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       size: textSize,
       width: box.width,
       height: box.height,
+      align: textAlignRef.current,
+      bold: textBoldRef.current,
+      strike: textStrikeRef.current,
+      underline: textUnderlineRef.current,
     });
   };
 
@@ -2552,6 +3425,51 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     });
   };
 
+  /** 텍스트 정렬 — 입력 중이면 초안, 선택 중이면 배치된 글자에 반영합니다. */
+  const applyTextAlign = (align: 'left' | 'center' | 'right') => {
+    textAlignRef.current = align;
+    const draft = textDraftRef.current;
+    if (draft) {
+      writeTextDraft({ ...draft, align });
+      return;
+    }
+    const selected = placedTextsRef.current.find((t) => t.id === selectedTextIdRef.current);
+    if (selected && selected.align !== align) {
+      const updated = { ...selected, align };
+      upsertPlacedText(updated);
+      persistAndReloadText(updated);
+    }
+  };
+
+  /** 굵게·취소선·밑줄 토글 */
+  const applyTextDecor = (patch: Partial<{ bold: boolean; strike: boolean; underline: boolean }>) => {
+    if (typeof patch.bold === 'boolean') textBoldRef.current = patch.bold;
+    if (typeof patch.strike === 'boolean') textStrikeRef.current = patch.strike;
+    if (typeof patch.underline === 'boolean') textUnderlineRef.current = patch.underline;
+
+    const draft = textDraftRef.current;
+    if (draft) {
+      writeTextDraft({
+        ...draft,
+        bold: typeof patch.bold === 'boolean' ? patch.bold : draft.bold,
+        strike: typeof patch.strike === 'boolean' ? patch.strike : draft.strike,
+        underline: typeof patch.underline === 'boolean' ? patch.underline : draft.underline,
+      });
+      return;
+    }
+    const selected = placedTextsRef.current.find((t) => t.id === selectedTextIdRef.current);
+    if (selected) {
+      const updated = {
+        ...selected,
+        bold: typeof patch.bold === 'boolean' ? patch.bold : selected.bold,
+        strike: typeof patch.strike === 'boolean' ? patch.strike : selected.strike,
+        underline: typeof patch.underline === 'boolean' ? patch.underline : selected.underline,
+      };
+      upsertPlacedText(updated);
+      persistAndReloadText(updated);
+    }
+  };
+
   // A 버튼을 누르면 지금 보이는 캔버스 가운데에 입력칸을 띄웁니다.
   const startTextInView = () => {
     if (textDraftRef.current) {
@@ -2582,14 +3500,28 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx) return;
-    snapshotRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    try {
+      snapshotRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch {
+      snapshotRef.current = null;
+    }
   };
 
   const restoreSnapshot = () => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx || !snapshotRef.current) return;
-    ctx.putImageData(snapshotRef.current, 0, 0);
+    if (
+      snapshotRef.current.width !== canvas.width ||
+      snapshotRef.current.height !== canvas.height
+    ) {
+      return;
+    }
+    try {
+      ctx.putImageData(snapshotRef.current, 0, 0);
+    } catch {
+      /* ignore */
+    }
   };
 
   const placeRasterOnBoard = (point: Point, dataUrl: string, srcW: number, srcH: number) => {
@@ -2651,24 +3583,86 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const p = getPoint(e.nativeEvent);
     if (!p) return;
 
+    // 메모장 배치: 도구 선택 후 화면을 한 번 더 클릭한 위치에 붙입니다.
+    if (stickyPlaceModeRef.current) {
+      placeStickyAt(p);
+      return;
+    }
+
+    // 영역 지우기: 네모 드래그 시작 (자유 지우개 획 대신)
+    if (areaEraseModeRef.current && activeTool === 'eraser') {
+      areaEraseDragRef.current = { start: p };
+      const zero = { x: p.x, y: p.y, width: 0, height: 0 };
+      areaErasePreviewRef.current = zero;
+      setAreaErasePreview(zero);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // 스포이트: 클릭한 픽셀 색을 고르고 모드를 종료합니다.
+    if (eyedropperActive || eyedropperCallbackRef.current) {
+      const canvas = canvasRef.current;
+      const ctx = ctxRef.current ?? ensureContext();
+      const cb = eyedropperCallbackRef.current;
+      eyedropperCallbackRef.current = null;
+      setEyedropperActive(false);
+      if (canvas && ctx && cb) {
+        const dpr = window.devicePixelRatio || 1;
+        const x = Math.min(canvas.width - 1, Math.max(0, Math.floor(p.x * dpr)));
+        const y = Math.min(canvas.height - 1, Math.max(0, Math.floor(p.y * dpr)));
+        try {
+          const [r, g, b] = ctx.getImageData(x, y, 1, 1).data;
+          const hex = `#${[r, g, b].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+          setColor(hex);
+          cb(hex);
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+
+    // 획/도형을 남기기 전에 실행취소 기준 스냅샷을 확보합니다.
+    ensureHistoryBaseline();
+
     if (activeTool !== 'image') {
       void commitUncommittedImage();
     }
 
     if (activeTool === 'hand') {
+      // 선택 도구: 도형을 먼저 고르고, 빈 곳이면 선택 해제 후 화면 이동
+      const hitShape = hitTestShape(placedShapesRef.current, p);
+      if (hitShape) {
+        const alreadySelected = selectedShapeIdRef.current === hitShape.id;
+        selectPlacedShape(hitShape.id);
+        if (alreadySelected) {
+          placedShapeDragRef.current = {
+            id: hitShape.id,
+            startPoint: p,
+            start: { ...hitShape, from: { ...hitShape.from }, to: { ...hitShape.to } },
+          };
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
+        return;
+      }
+      if (selectedTextIdRef.current) selectPlacedText(null);
+      if (selectedShapeIdRef.current) selectPlacedShape(null);
+      if (selectedImageIdRef.current) selectPlacedImage(null);
+      if (selectedFileIdRef.current) selectPlacedFile(null);
       panningRef.current = true;
       panAnchorRef.current = { x: e.clientX, y: e.clientY };
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
 
+    // 선택·텍스트 도구에서는 기존 글을 골라 서식(밑줄 등)을 나중에 고칠 수 있습니다.
     const hitText = hitTestText(placedTextsRef.current, p);
-    if (hitText && !pendingStampRef.current) {
-      if (textDraftRef.current) commitTextDraft({ keepTool: true });
+    if (hitText && !pendingStampRef.current && !drawThroughText) {
+      if (textDraftRef.current) commitTextDraft();
       const alreadySelected = selectedTextIdRef.current === hitText.id;
       selectPlacedImage(null);
       selectPlacedText(hitText.id);
-      setTextSize(hitText.fontSize);
+      syncToolbarFromPlacedText(hitText);
       // 한 번 클릭해서 고른 뒤에만 드래그/모서리 조절을 시작합니다.
       if (alreadySelected) {
         placedTextDragRef.current = { id: hitText.id, mode: 'move', startPoint: p, start: { ...hitText } };
@@ -2714,7 +3708,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
     if (activeTool === 'text') {
       // 이미 입력 중이면 먼저 확정한 뒤, 새로 클릭한 자리에 입력칸을 다시 엽니다.
-      if (textDraftRef.current) commitTextDraft({ keepTool: true });
+      if (textDraftRef.current) commitTextDraft();
       startTextDraft(p);
       return;
     }
@@ -2743,6 +3737,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     if (isShapeTool(activeTool)) {
+      selectPlacedShape(null);
       shapeStartRef.current = p;
       takeSnapshot();
       drawingRef.current = true;
@@ -2762,8 +3757,23 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     pendingChunkRef.current = [];
 
     const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
-    strokeStyleByIdRef.current.set(localStrokeIdRef.current, { tool: strokeTool, color, size });
+    const strokeOpacity = strokeTool === 'eraser' ? 1 : penOpacity;
+    const strokeDash = strokeTool === 'eraser' ? 'solid' : penDash;
+    strokeStyleByIdRef.current.set(localStrokeIdRef.current, {
+      tool: strokeTool,
+      color,
+      size,
+      opacity: strokeOpacity,
+      dash: strokeDash,
+    });
     remoteLastPointByStrokeRef.current.set(localStrokeIdRef.current, { ...p });
+    // 반투명 마커: 시작 스냅샷 + 점 버퍼로 미리보기 시 겹침 점을 없앱니다.
+    if (isTranslucentPen(strokeOpacity, strokeTool)) {
+      takeSnapshot();
+      liveStrokePointsRef.current = [{ x: p.x, y: p.y }];
+    } else {
+      liveStrokePointsRef.current = null;
+    }
     if (boardId) {
       void enqueueStrokeWrite('stroke.begin', {
         strokeId: localStrokeIdRef.current,
@@ -2771,6 +3781,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         color,
         size,
         point: p,
+        opacity: strokeOpacity,
+        dash: strokeDash,
       } satisfies StrokeBeginPayload);
     }
 
@@ -2778,6 +3790,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   };
 
   const handlePointerMove = (e: ReactPointerEvent<HTMLElement>) => {
+    if (areaEraseDragRef.current) {
+      const p = getPoint(e.nativeEvent);
+      if (!p) return;
+      const next = normalizeRect(areaEraseDragRef.current.start, p);
+      areaErasePreviewRef.current = next;
+      setAreaErasePreview(next);
+      return;
+    }
+
     if (panningRef.current && panAnchorRef.current) {
       const dx = e.clientX - panAnchorRef.current.x;
       const dy = e.clientY - panAnchorRef.current.y;
@@ -2807,6 +3828,21 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       } else {
         upsertPlacedText(resizePlacedText(drag.start, drag.mode, p));
       }
+      return;
+    }
+
+    // 선택 도구로 도형 드래그 이동
+    if (placedShapeDragRef.current) {
+      const p = getPoint(e.nativeEvent);
+      if (!p) return;
+      const drag = placedShapeDragRef.current;
+      const dx = p.x - drag.startPoint.x;
+      const dy = p.y - drag.startPoint.y;
+      upsertPlacedShape({
+        ...drag.start,
+        from: { x: drag.start.from.x + dx, y: drag.start.from.y + dy },
+        to: { x: drag.start.to.x + dx, y: drag.start.to.y + dy },
+      });
       return;
     }
 
@@ -2864,7 +3900,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (!ctx || !p) return;
       lastPointRef.current = p;
       restoreSnapshot();
-      drawShapeTool(ctx, activeTool, shapeStartRef.current, p, getDrawStyle(), true);
+      drawShapeTool(ctx, activeTool, shapeStartRef.current, p, getShapeDrawStyle(), true);
       return;
     }
 
@@ -2876,13 +3912,48 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const last = lastPointRef.current;
     if (!p || !last) return;
 
-    applyStrokeSegment(last, p, activeTool === 'eraser' ? 'eraser' : 'pen', effectiveStrokeStyle, size);
+    const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
+    const strokeOpacity = strokeTool === 'eraser' ? 1 : penOpacity;
+    const strokeDash = strokeTool === 'eraser' ? 'solid' : penDash;
+
+    // 반투명: 스냅샷 복구 후 전체 경로를 다시 그려 동그란 겹침을 제거합니다.
+    if (liveStrokePointsRef.current) {
+      liveStrokePointsRef.current.push({ x: p.x, y: p.y });
+      restoreSnapshot();
+      applyStrokePath(liveStrokePointsRef.current, strokeTool, color, size, strokeOpacity, strokeDash);
+      pendingChunkRef.current.push(p);
+      scheduleChunkFlush();
+      lastPointRef.current = p;
+      return;
+    }
+
+    applyStrokeSegment(
+      last,
+      p,
+      strokeTool,
+      color,
+      size,
+      strokeOpacity,
+      strokeDash,
+    );
     pendingChunkRef.current.push(p);
     scheduleChunkFlush();
     lastPointRef.current = p;
   };
 
   const handlePointerUp = () => {
+    if (areaEraseDragRef.current) {
+      areaEraseDragRef.current = null;
+      const preview = areaErasePreviewRef.current;
+      areaErasePreviewRef.current = null;
+      setAreaErasePreview(null);
+      // 너무 작은 드래그는 무시하고, 유효한 네모만 지웁니다.
+      if (preview && preview.width >= 3 && preview.height >= 3) {
+        eraseArea(preview);
+      }
+      return;
+    }
+
     if (textResizeRef.current) {
       textResizeRef.current = null;
       ignoreTextBlurRef.current = false;
@@ -2895,6 +3966,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       placedTextDragRef.current = null;
       const item = placedTextsRef.current.find((x) => x.id === id);
       if (item) persistAndReloadText(item);
+      return;
+    }
+
+    if (placedShapeDragRef.current) {
+      const id = placedShapeDragRef.current.id;
+      placedShapeDragRef.current = null;
+      const item = placedShapesRef.current.find((x) => x.id === id);
+      if (item) persistAndReloadShape(item);
       return;
     }
 
@@ -2937,22 +4016,44 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const end = lastPointRef.current ?? from;
       if (ctx) {
         restoreSnapshot();
-        drawShapeTool(ctx, activeTool, from, end, getDrawStyle(), false);
+        drawShapeTool(ctx, activeTool, from, end, getShapeDrawStyle(), false);
       }
+      const id = crypto.randomUUID();
+      const placed: PlacedShape = {
+        id,
+        tool: activeTool,
+        from: { ...from },
+        to: { ...end },
+        color,
+        size,
+        fill: shapeFillEnabled ? shapeFillColor : undefined,
+        dash: shapeDash,
+        strokeOpacity: shapeStrokeOpacity,
+        fillOpacity: shapeFillEnabled ? shapeFillOpacity : undefined,
+      };
+      upsertPlacedShape(placed);
+      // 그린 직후 선택해 두면, 선택 도구로 바꿔 바로 옮길 수 있습니다.
+      selectPlacedShape(id);
       if (boardId) {
         void insertEvent('shape.add', {
+          id,
           tool: activeTool,
           from,
           to: end,
           color,
           size,
+          fill: shapeFillEnabled ? shapeFillColor : undefined,
+          dash: shapeDash,
+          strokeOpacity: shapeStrokeOpacity,
+          fillOpacity: shapeFillEnabled ? shapeFillOpacity : undefined,
         } satisfies ShapeAddPayload);
       }
       shapeStartRef.current = null;
       snapshotRef.current = null;
       drawingRef.current = false;
       lastPointRef.current = null;
-      resetToIdleTool();
+      // hand 로 돌리면 하단 도형 서브메뉴가 닫히며 보드 높이가 바뀌고,
+      // resize → initHistory 로 방금 쌓은 실행취소 스택이 날아갑니다. 도구는 유지합니다.
       commitHistory();
       return;
     }
@@ -2965,6 +4066,26 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     strokeStartPointRef.current = null;
     localStrokeIdRef.current = null;
 
+    // 반투명 미리보기 버퍼 정리 (이미 캔버스에 최종 경로가 올라가 있음)
+    const livePts = liveStrokePointsRef.current;
+    liveStrokePointsRef.current = null;
+    if (livePts) {
+      // 클릭만 하고 안 움직인 경우: 스냅샷 위에 점 하나 확정
+      if (livePts.length === 1) {
+        restoreSnapshot();
+        const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
+        applyStrokePath(
+          livePts,
+          strokeTool,
+          color,
+          size,
+          strokeTool === 'eraser' ? 1 : penOpacity,
+          strokeTool === 'eraser' ? 'solid' : penDash,
+        );
+      }
+      snapshotRef.current = null;
+    }
+
     if (chunkTimerRef.current != null) {
       window.clearTimeout(chunkTimerRef.current);
       chunkTimerRef.current = null;
@@ -2972,7 +4093,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     void (async () => {
       if (pendingChunkRef.current.length === 0 && startPoint) {
         const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
-        applyStrokeDot(startPoint, strokeTool, effectiveStrokeStyle, size);
+        // 반투명은 위에서 path로 이미 찍었으므로, 불투명 점만 여기서 보정합니다.
+        if (!livePts) {
+          applyStrokeDot(
+            startPoint,
+            strokeTool,
+            color,
+            size,
+            strokeTool === 'eraser' ? 1 : penOpacity,
+          );
+        }
         pendingChunkRef.current.push(startPoint);
       }
       await flushChunk();
@@ -2997,7 +4127,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     pickTool,
     toggleLibrary: () => setShowLibrary((v) => !v),
     addStickyNote,
-  }), [pickTool, addStickyNote]);
+    cancelStickyPlace,
+    setStrokeStyle,
+    startEyedropper,
+    setShapeStyle,
+    setStickyPaperColor,
+    setTextFontSize: (size: number) => applyTextSize(size),
+    setTextAlign: (align: 'left' | 'center' | 'right') => applyTextAlign(align),
+    setTextDecor: (style) => applyTextDecor(style),
+    setAreaEraseMode,
+  }), [pickTool, addStickyNote, cancelStickyPlace, setStrokeStyle, startEyedropper, setShapeStyle, setStickyPaperColor, applyTextSize, applyTextAlign, applyTextDecor]);
 
   /* const downloadPng = () => {
     const canvas = canvasRef.current;
@@ -3214,15 +4353,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               placeholder="보드 이름"
             />
             <button type="button" className="primary" onClick={createBoard}>새 보드</button>
-            <label>
-              색
-              <input type="color" value={color} onChange={(e) => setColor(e.target.value)} disabled={tool === 'eraser'} />
-            </label>
-            {tool === 'text' || textDraft || selectedTextId ? (
-              <span>가 {textSize}</span>
-            ) : (
-              <span>굵기 {size}</span>
-            )}
           </div>
         ) : null}
         <div
@@ -3257,6 +4387,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           ))}
           <canvas
             ref={canvasRef}
+            tabIndex={0}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
@@ -3268,10 +4399,39 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               background: 'transparent',
               touchAction: 'none',
               outline: 'none',
-              tabIndex: 0,
-              cursor: activeTool === 'hand' ? 'grab' : activeTool === 'text' ? 'text' : activeTool === 'file' ? 'copy' : 'crosshair',
+              cursor: eyedropperActive
+                ? 'crosshair'
+                : stickyPlaceMode
+                  ? 'copy'
+                  : areaEraseMode
+                    ? 'crosshair'
+                    : activeTool === 'hand'
+                      ? 'grab'
+                      : activeTool === 'text'
+                        ? 'text'
+                        : activeTool === 'file'
+                          ? 'copy'
+                          : 'crosshair',
             }}
           />
+          {/* 영역 지우기 드래그 중 선택 네모 미리보기 */}
+          {areaErasePreview && areaErasePreview.width > 0 && areaErasePreview.height > 0 ? (
+            <div
+              aria-hidden
+              style={{
+                position: 'absolute',
+                left: areaErasePreview.x,
+                top: areaErasePreview.y,
+                width: areaErasePreview.width,
+                height: areaErasePreview.height,
+                border: '1.5px dashed #ef4444',
+                background: 'rgba(239, 68, 68, 0.12)',
+                pointerEvents: 'none',
+                zIndex: 40,
+                boxSizing: 'border-box',
+              }}
+            />
+          ) : null}
           {textDraft ? (
             <div
               className={cb.textBox}
@@ -3287,6 +4447,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             <textarea
               ref={textInputRef}
               className={cb.textEditor}
+              data-board-text-editor="true"
               value={textDraft.value}
               rows={1}
               spellCheck={false}
@@ -3310,12 +4471,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
+                  // 확정 후에도 텍스트 도구를 유지해 연속 입력이 가능하게 합니다.
                   commitTextDraft();
                 }
                 if (e.key === 'Escape') {
                   e.preventDefault();
+                  // 입력만 취소하고, 선택 도구로 바꾸지 않습니다.
                   syncTextDraft(null);
-                  resetToIdleTool();
                 }
               }}
               placeholder="텍스트 입력"
@@ -3323,6 +4485,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 // 모서리 핸들을 잡는 순간에도 blur가 나서, 그때는 확정하지 않습니다.
                 if (ignoreTextBlurRef.current || textResizeRef.current) return;
                 if (!textDraftRef.current?.value.trim()) return;
+                // 확정 후에도 텍스트 도구 유지
                 commitTextDraft();
               }}
               style={{
@@ -3330,6 +4493,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 caretColor: textDraft.color,
                 fontSize: textDraft.size,
                 lineHeight: 1.25,
+                textAlign: textDraft.align,
+                fontWeight: textDraft.bold ? 700 : 400,
+                textDecoration: [
+                  textDraft.underline ? 'underline' : '',
+                  textDraft.strike ? 'line-through' : '',
+                ].filter(Boolean).join(' ') || 'none',
               }}
             />
             </div>
@@ -3353,6 +4522,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                   width: item.width,
                   height: item.height,
                   zIndex: selected ? 19 : 18,
+                  // 펜/도형/지우개일 때만 클릭을 통과시킵니다. 텍스트·선택 도구에서는 골라 서식을 고칩니다.
+                  pointerEvents: drawThroughText ? 'none' : 'auto',
                 }}
                 onPointerDown={(e) => {
                   e.stopPropagation();
@@ -3360,7 +4531,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                   selectPlacedImage(null);
                   selectPlacedFile(null);
                   selectPlacedText(item.id);
-                  setTextSize(item.fontSize);
+                  syncToolbarFromPlacedText(item);
                   if (!alreadySelected) return;
                   const p = getPoint(e.nativeEvent);
                   if (!p) return;
@@ -3396,6 +4567,43 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                     ))
                   : null}
               </div>
+            );
+          })}
+          {/* 선택 도구에서 도형을 고르고 드래그로 옮깁니다. */}
+          {placedShapes.map((item) => {
+            const selected = item.id === selectedShapeId;
+            const b = shapeBounds(item.from, item.to);
+            return (
+              <div
+                key={item.id}
+                className={`${cb.shapeBox}${selected ? ` ${cb.shapeBoxSelected}` : ''}`}
+                title={selected ? '드래그해서 위치를 옮기세요' : '클릭해서 선택'}
+                style={{
+                  left: b.x,
+                  top: b.y,
+                  width: b.width,
+                  height: b.height,
+                  zIndex: selected ? 17 : 16,
+                  pointerEvents: drawThroughShape ? 'none' : 'auto',
+                  cursor: selected ? 'move' : 'pointer',
+                }}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  const alreadySelected = selectedShapeIdRef.current === item.id;
+                  selectPlacedShape(item.id);
+                  if (!alreadySelected) return;
+                  const p = getPoint(e.nativeEvent);
+                  if (!p) return;
+                  placedShapeDragRef.current = {
+                    id: item.id,
+                    startPoint: p,
+                    start: { ...item, from: { ...item.from }, to: { ...item.to } },
+                  };
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+              />
             );
           })}
           {placedFiles.map((item) => {
@@ -3618,6 +4826,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               selected={item.id === selectedStickyId}
               editMode={item.id === selectedStickyId ? stickyEditMode : 'text'}
               penColor={stickyPenColor}
+              // 지우개·영역 지우기일 때 메모 위를 통과해 네모 드래그
+              passThrough={drawThroughMedia}
               onSelect={() => {
                 selectPlacedImage(null);
                 selectPlacedText(null);

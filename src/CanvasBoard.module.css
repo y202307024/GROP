@@ -47,6 +47,19 @@
   z-index: 21;
 }
 
+/* 선택 도구용 도형 히트 영역 */
+.shapeBox {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.shapeBoxSelected {
+  border: 1.5px dashed #8b5cf6;
+  background: rgba(139, 92, 246, 0.06);
+}
+
 .textEditor::placeholder {
   color: #9ca3af;
 }

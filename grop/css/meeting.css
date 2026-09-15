@@ -1,6 +1,6 @@
 /* =========================
-   전체 회의 페이지
-   (너비/높이는 common.css의 .stage가 담당)
+   ??? ??? ????
+   (???/?????common.css??.stage? ???)
 ========================= */
 
 .meeting-page {
@@ -14,7 +14,7 @@
 
 
 /* =========================
-   상단
+   ???
 ========================= */
 
 .meeting-header {
@@ -22,6 +22,7 @@
 
     display: flex;
     align-items: center;
+    justify-content: space-between;
 
     position: relative;
 }
@@ -40,29 +41,43 @@
 }
 
 
-/* 회의 이름 */
+/* ??? ??? (?????????????????? */
 
 .meeting-title {
-    margin-left: 155px;
+    margin-left: 24px;
 
     font-size: 20px;
     font-weight: 700;
 }
 
 
-/* 경과 시간 (제목 옆에 작게) */
+/* ?? ??? ????? ?????(??? ??+ ?????) */
 
 .meeting-title-time {
-    margin-left: 8px;
+    margin-left: auto;
 
-    font-size: 13px;
-    font-weight: 500;
-    color: #999999;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+
+    font-size: 14px;
+    font-weight: 600;
+    color: #666666;
+    font-variant-numeric: tabular-nums;
+}
+
+.meeting-title-time.is-recording::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #e24b4b;
+    box-shadow: 0 0 0 3px rgba(226, 75, 75, 0.2);
 }
 
 
 /* =========================
-   회의 메인
+   ??? ??
 ========================= */
 
 .meeting-main {
@@ -71,6 +86,22 @@
     min-height: 0;
 
     display: flex;
+    gap: 12px;
+
+    overflow: hidden;
+}
+
+
+/* =========================
+   ????????
+========================= */
+
+.whiteboard {
+    flex: 1;
+
+    min-width: 0;
+
+    background: #ffffff;
 
     border: 1px solid #cccccc;
     border-radius: 15px;
@@ -80,24 +111,11 @@
 
 
 /* =========================
-   화이트보드
-========================= */
-
-.whiteboard {
-    flex: 1;
-
-    min-width: 0;
-
-    background: #ffffff;
-}
-
-
-/* =========================
-   채팅
+   ??????????? (?????+ ??)
 ========================= */
 
 .chat-panel {
-    width: 296px;
+    width: 300px;
 
     flex-shrink: 0;
 
@@ -106,95 +124,307 @@
     display: flex;
     flex-direction: column;
 
+    background: transparent;
+
+    color: white;
+}
+
+
+/* 참가자 / 채팅 스택 */
+
+.side-stack {
+    flex: 1;
+    min-height: 0;
+
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+
+    padding: 10px 10px 10px 0;
+}
+
+
+.participant-card,
+.chat-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+
+    border-radius: 14px;
+
     background: var(--color-primary-soft);
 
     color: white;
 
-    transition: width 0.2s ease;
+    overflow: hidden;
 }
 
 
-/* 채팅 접힘 상태 - 탭만 남기고 나머지는 감춤 */
+/* ???????? ?? (????) */
+.draw-color-card {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px 14px;
+    border-radius: 14px;
+    background: var(--color-primary-soft);
+    color: white;
+}
 
-.chat-panel.is-collapsed {
-    width: 0;
+.draw-color-swatches {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
 
+.draw-color-card .color-swatch,
+.canvas-color-sidebar .color-swatch {
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+}
+
+.draw-color-picker {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    cursor: pointer;
+}
+
+.draw-color-picker input[type='color'] {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+}
+
+.draw-eyedropper-btn {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.12);
+    color: inherit;
+    cursor: pointer;
+}
+
+.draw-eyedropper-btn:hover {
+    background: rgba(255, 255, 255, 0.22);
+}
+
+.canvas-color-sidebar {
+    width: 140px;
+    flex-shrink: 0;
+    align-self: stretch;
+    margin: 12px 12px 12px 0;
+    padding: 12px;
+    border-radius: 14px;
+    background: var(--color-primary-soft, #e8eee4);
+    color: #333;
+}
+
+.canvas-color-sidebar .chat-section-title {
+    margin: 0 0 10px;
+    font-size: 13px;
+}
+
+/* 캔버스 왼쪽 지우개 사이드바 (미사용 시에도 스타일 유지) */
+.eraser-sidebar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.eraser-sidebar-btn {
+    border: 1px solid #c5cfbe;
+    border-radius: 8px;
+    background: #fff;
+    color: #333;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 10px 10px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.eraser-sidebar-btn:hover {
+    border-color: var(--color-primary, #667c55);
+    background: rgba(102, 124, 85, 0.1);
+}
+
+.eraser-sidebar-btn.active {
+    border-color: var(--color-primary, #667c55);
+    background: rgba(102, 124, 85, 0.18);
+    color: var(--color-primary-deep, #47603c);
+}
+
+/* 펜 서브메뉴: 지우개 선택 시 오른쪽 빈칸 옵션 */
+.eraser-submenu-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+.eraser-submenu-actions .submenu-slider {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+}
+
+.eraser-action-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+    white-space: nowrap;
+}
+
+.eraser-action-btn {
+    border: 1px solid #cfcfcf;
+    border-radius: 8px;
+    background: #fff;
+    color: #333;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    cursor: pointer;
+    white-space: nowrap;
     flex-shrink: 0;
 }
 
-.chat-panel.is-collapsed > *:not(.chat-collapse-tab) {
-    display: none;
+.eraser-action-btn:hover {
+    border-color: var(--color-primary, #667c55);
+    background: rgba(102, 124, 85, 0.1);
+}
+
+.eraser-action-btn.active {
+    border-color: var(--color-primary, #667c55);
+    background: rgba(102, 124, 85, 0.18);
+    color: var(--color-primary-deep, #47603c);
 }
 
 
-/* 접기/펼치기 탭 (패널 왼쪽 가장자리에 고정) */
+/* ??? ???????? ???????? ??? ?????*/
 
-.chat-collapse-tab {
-    position: absolute;
+.participant-card {
+    flex: 0 1 auto;
+    max-height: 42%;
+}
 
-    left: -16px;
-    top: 50%;
 
-    transform: translateY(-50%);
+.group-name-row {
+    padding: 14px 14px 8px;
+}
 
-    width: 16px;
-    height: 44px;
 
-    border: none;
-    border-radius: 8px 0 0 8px;
-
-    background: var(--color-primary-soft);
-    color: white;
-
-    font-size: 11px;
+.group-name-button {
+    width: 100%;
 
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
+    gap: 8px;
+
+    border: none;
+    background: transparent;
+    color: inherit;
 
     padding: 0;
 
     cursor: pointer;
-
-    z-index: 5;
+    text-align: left;
 }
 
 
-/* 채팅 상단 - 참가자 아바타 */
+.group-name-text {
+    font-size: 15px;
+    font-weight: 700;
 
-.chat-title {
-    height: 60px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
-    padding: 0 20px;
 
+.group-name-edit {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    opacity: 0.85;
+}
+
+
+.group-name-input {
+    width: 100%;
+
+    height: 32px;
+    padding: 0 8px;
+
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    border-radius: 6px;
+
+    background: rgba(255, 255, 255, 0.12);
+    color: white;
+
+    font-size: 14px;
+    font-weight: 700;
+
+    outline: none;
+}
+
+
+.participant-list {
+    list-style: none;
+    margin: 0;
+    padding: 4px 10px 12px;
+
+    overflow-y: auto;
+    min-height: 0;
+}
+
+
+.participant-row {
     display: flex;
     align-items: center;
-
+    justify-content: space-between;
     gap: 8px;
+
+    padding: 6px 4px;
 }
 
 
-.chat-participant-count {
-    font-size: 11px;
-    font-weight: 600;
-
-    color: rgba(255, 255, 255, 0.85);
-}
-
-
-.chat-participants {
+.participant-identity {
     display: flex;
+    align-items: center;
+    gap: 8px;
+
+    min-width: 0;
 }
+
 
 .participant-avatar {
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
 
     border-radius: 50%;
 
-    background: rgba(255, 255, 255, 0.25);
-
-    border: 2px solid var(--color-primary-soft);
+    background: rgba(255, 255, 255, 0.28);
 
     color: white;
 
@@ -205,32 +435,139 @@
     font-size: 12px;
     font-weight: 700;
 
+    flex-shrink: 0;
+    overflow: hidden;
+}
+
+.participant-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+
+.participant-name {
+    font-size: 13px;
+    font-weight: 600;
+
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+
+.participant-controls {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+
+.participant-ctrl {
+    width: 28px;
+    height: 28px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    border: none;
+    border-radius: 6px;
+
+    background: transparent;
+    color: rgba(255, 255, 255, 0.95);
+
+    cursor: pointer;
+    padding: 0;
+}
+
+.participant-ctrl svg {
+    width: 16px;
+    height: 16px;
+}
+
+.participant-ctrl.is-off {
+    opacity: 0.55;
+}
+
+.participant-ctrl:disabled {
     cursor: default;
 }
 
-.participant-avatar:not(:first-child) {
-    margin-left: -10px;
+.participant-ctrl:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.14);
 }
 
 
-/* 채팅 기록 */
+/* ??? ?? ????? ????????? ??????????*/
+
+.chat-card {
+    flex: 1 1 0;
+}
+
+
+.chat-section-title {
+    margin: 0;
+    padding: 14px 16px 6px;
+
+    font-size: 15px;
+    font-weight: 700;
+}
+
+
+/* ?? ?? (?? ??? ?????? ????? */
 
 .chat-messages {
     flex: 1;
 
     min-height: 0;
 
-    padding: 15px;
+    padding: 8px 14px 10px;
 
     overflow-y: auto;
+    overflow-x: hidden;
 
     display: flex;
     flex-direction: column;
     gap: 8px;
+
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.55) transparent;
+}
+
+.chat-messages::-webkit-scrollbar {
+    width: 8px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.45);
+    border-radius: 8px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+    background: transparent;
 }
 
 
-/* 개별 메시지 (기본 = 상대방 메시지, 왼쪽 정렬) */
+.chat-row {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.chat-row.is-own {
+    align-items: flex-end;
+}
+
+.chat-sender {
+    font-size: 11px;
+    opacity: 0.85;
+}
+
+
+/* ?? ??? (?? = ?????????, ??? ???) */
 
 .chat-message {
     align-self: flex-start;
@@ -249,10 +586,7 @@
 }
 
 
-/* 내가 보낸 메시지 - 오른쪽 정렬
-   (지금은 모든 전송 메시지가 이 클래스를 사용,
-   나중에 서버 연동 시 다른 참가자 메시지는
-   .chat-message 기본 스타일만 붙여서 왼쪽에 표시) */
+/* ???? ?? ??? - ???????? */
 
 .chat-message.own-message {
     align-self: flex-end;
@@ -263,26 +597,28 @@
 }
 
 
-/* 입력 영역 */
+/* ??? ??? */
 
 .chat-input-area {
     display: flex;
     align-items: center;
 
-    gap: 14px;
+    gap: 8px;
 
-    padding: 20px 18px 20px;
+    padding: 10px 12px 14px;
+
+    flex-shrink: 0;
 }
 
 
-/* 입력창 */
+/* ?????*/
 
-.chat-input-area input {
+.chat-input-area input[type='text'] {
     flex: 1;
 
     min-width: 0;
 
-    height: 38px;
+    height: 36px;
 
     padding: 0 10px;
 
@@ -298,12 +634,12 @@
     font-size: 13px;
 }
 
-.chat-input-area input::placeholder {
+.chat-input-area input[type='text']::placeholder {
     color: rgba(255, 255, 255, 0.85);
 }
 
 
-/* 전송 */
+/* ??? / ??? */
 
 .chat-input-area button {
     height: 30px;
@@ -320,37 +656,519 @@
     font-weight: 600;
 
     cursor: pointer;
+    flex-shrink: 0;
+}
+
+.chat-input-area button:disabled {
+    opacity: 0.6;
+    cursor: default;
 }
 
 
 /* =========================
-   하단
+   ???
 ========================= */
 
 .bottom-bar {
-    height: 55px;
+    height: auto;
+    min-height: 55px;
+    padding: 8px 0;
 
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
 }
 
 
 /* =========================
-   왼쪽 도구
+   ??? ??? + ??????????
 ========================= */
 
 .drawing-tools {
     display: flex;
     align-items: center;
 
-    gap: 10px;
+    gap: 0;
 
     padding-left: 10px;
+    min-width: 0;
+    flex: 1;
+    max-width: none;
+}
+
+.drawing-tools-primary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.drawing-tools.has-submenu .drawing-tools-primary {
+    padding-right: 10px;
+    border-right: 1px solid #cfcfcf;
+}
+
+.drawing-tools-submenu {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+
+    min-width: 0;
+    flex: 1;
+    padding-left: 12px;
+
+    /* 스포이트 원형 팝업이 위로 잘리지 않도록 */
+    overflow: visible;
+}
+
+/* 펜·텍스트·도형 색상은 서브메뉴 오른쪽에 고정합니다. */
+.submenu-colors-end {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    flex-shrink: 0;
+    z-index: 30;
+}
+
+.color-swatch-main {
+    width: 20px;
+    height: 20px;
+}
+
+.submenu-color-plus {
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    background: #fff;
+    color: #444;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.submenu-color-plus:hover,
+.submenu-color-plus.active {
+    border-color: var(--color-primary, #667c55);
+    background: rgba(102, 124, 85, 0.14);
+    color: var(--color-primary-deep, #47603c);
+}
+
+/* + 왼쪽으로 인라인 펼침 (위가 아니라 가로로) */
+.submenu-color-popover {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    margin-right: 2px;
+    padding: 4px 8px;
+    border: 1px solid #d0d0d0;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    flex-shrink: 0;
+}
+
+.submenu-color-picker {
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 5px;
+    border: 1px solid #bbb;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.submenu-color-picker input[type='color'] {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+}
+
+/* 스포이트 버튼이 여는 숨김 색상 input */
+.submenu-native-color-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
 }
 
 
-/* 각각의 도구 버튼 */
+.submenu-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+
+.submenu-shapes {
+    gap: 2px;
+}
+
+.submenu-shape-opts {
+    gap: 6px;
+}
+
+.submenu-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #666;
+    white-space: nowrap;
+    margin-right: 2px;
+}
+
+.submenu-chip {
+    height: 26px;
+    padding: 0 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    color: #444;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.submenu-chip:hover,
+.submenu-chip.active {
+    border-color: var(--color-primary, #667c55);
+    background: rgba(102, 124, 85, 0.14);
+    color: var(--color-primary-deep, #47603c);
+}
+
+.submenu-opacity {
+    width: 64px;
+}
+
+.submenu-pen-width {
+    width: 120px;
+    gap: 6px;
+}
+
+.submenu-pen-sizes {
+    gap: 4px;
+}
+
+.submenu-pen-color {
+    gap: 6px;
+}
+
+.pen-color-panel-wrap {
+    position: relative;
+}
+
+.pen-color-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.pen-color-preview {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    border: 1px solid #bbb;
+}
+
+.pen-color-panel {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 8px);
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 220px;
+    padding: 10px;
+    border: 1px solid #d0d0d0;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+}
+
+.pen-color-modes {
+    display: flex;
+    gap: 4px;
+}
+
+.pen-color-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: #555;
+}
+
+.pen-color-field span {
+    width: 28px;
+    flex-shrink: 0;
+}
+
+.pen-color-field input[type='text'],
+.pen-color-field input[type='number'] {
+    flex: 1;
+    min-width: 0;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.pen-color-field input[type='color'] {
+    width: 42px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+}
+
+.pen-color-rgb {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.submenu-swatches.is-disabled,
+.submenu-slider.is-disabled {
+    opacity: 0.4;
+    pointer-events: none;
+}
+
+
+.submenu-icon-btn {
+    width: 30px;
+    height: 30px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: #333;
+
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.submenu-icon-btn:hover,
+.submenu-icon-btn.active {
+    background: rgba(102, 124, 85, 0.18);
+    color: var(--color-primary-deep, #47603c);
+}
+
+
+.submenu-divider {
+    width: 1px;
+    height: 22px;
+    background: #d0d0d0;
+    flex-shrink: 0;
+}
+
+
+.submenu-slider {
+    display: flex;
+    align-items: center;
+    width: 88px;
+    flex-shrink: 0;
+}
+
+.submenu-slider input[type='range'] {
+    width: 100%;
+    accent-color: var(--color-primary, #667c55);
+}
+
+
+.submenu-swatches {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+
+.color-swatch {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+
+    border: 1px solid transparent;
+    border-radius: 5px;
+
+    cursor: pointer;
+}
+
+.color-swatch.is-rounded {
+    border-radius: 5px;
+    width: 20px;
+    height: 20px;
+}
+
+.color-swatch.is-light {
+    border-color: #bbb;
+}
+
+.color-swatch.active {
+    outline: 2px solid var(--color-primary, #667c55);
+    outline-offset: 1px;
+}
+
+
+.submenu-font {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #555;
+    flex-shrink: 0;
+}
+
+/* 글꼴 크기 버튼 + 오른쪽 px 입력창 */
+.submenu-font-size-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    position: relative;
+}
+
+.submenu-font select {
+    height: 28px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    font-size: 12px;
+}
+
+.submenu-font-px input[type='number'] {
+    width: 56px;
+    height: 28px;
+    padding: 0 6px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    font-size: 12px;
+    text-align: right;
+}
+
+.submenu-font-unit {
+    font-size: 12px;
+    color: #666;
+    margin-right: 2px;
+}
+
+
+.submenu-attachments {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 2px 0;
+}
+
+
+.submenu-empty {
+    font-size: 12px;
+    color: #888;
+    white-space: nowrap;
+}
+
+
+.attachment-add-btn {
+    height: 28px;
+    padding: 0 12px;
+    border: 1px dashed var(--color-primary, #667c55);
+    border-radius: 999px;
+    background: #f3f7f0;
+    color: var(--color-primary-deep, #47603c);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.attachment-add-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+
+    max-width: 200px;
+    height: 34px;
+    padding: 0 14px 0 12px;
+
+    border-radius: 999px;
+    border: none;
+    background: #ffffff;
+
+    color: #1a1a1a;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.attachment-chip-icon {
+    flex-shrink: 0;
+    color: #7f8d72;
+}
+
+.attachment-chip span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.attachment-chip:hover {
+    background: #ffffff;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
+}
+
+.attachment-chip:hover .attachment-chip-icon {
+    color: #667c55;
+}
+
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+}
+
+
+/* ??????? ?? */
 
 .tool-button {
     position: relative;
@@ -366,29 +1184,33 @@
     border-radius: 5px;
 
     background: transparent;
+    color: #222222;
 
     cursor: pointer;
 }
 
 
-/* 아이콘 */
+/* ?????*/
 
-.tool-button svg {
-    width: 20px;
-    height: 20px;
-
-    stroke-width: 2;
+.tool-button svg,
+.tool-button-img {
+    width: 24px;
+    height: 24px;
+    display: block;
+    object-fit: contain;
+    pointer-events: none;
+    user-select: none;
 }
 
 
-/* 마우스를 올렸을 때 */
+/* ?????? ???????*/
 
 .tool-button:hover {
     background: #f0f0f0;
 }
 
 
-/* 현재 선택된 도구 */
+/* ??? ???????? */
 
 .tool-button.active {
     background: var(--color-primary-tint);
@@ -396,7 +1218,7 @@
 
 
 /* =========================
-   툴팁
+   ???
 ========================= */
 
 .tool-button::after {
@@ -434,7 +1256,7 @@
 }
 
 
-/* 툴팁 작은 화살표 */
+/* ??? ???? ?????*/
 
 .tool-button::before {
     content: "";
@@ -469,7 +1291,7 @@
 
 
 /* =========================
-   하단 통화 컨트롤 (마이크 / 녹화 / 나가기)
+   ??? ??? ????(????/ ??? / ??????
 ========================= */
 
 .call-controls {
@@ -480,7 +1302,7 @@
 }
 
 
-/* 마이크 / 녹화 - 원형 버튼 */
+/* ????/ ??? - ??? ?? */
 
 .call-icon-button {
     width: 36px;
@@ -512,7 +1334,7 @@
 }
 
 
-/* 켜짐/녹화중 등 활성 상태 */
+/* ??/?????????? ??? */
 
 .call-icon-button.active {
     background: var(--color-primary-soft);
@@ -527,7 +1349,7 @@
 }
 
 
-/* 나가기 - 빨간 사각 버튼 */
+/* ??????- ?? ??? ?? */
 
 .leave-button {
     height: 36px;

@@ -490,6 +490,11 @@ alter table public.meetings
 alter table public.meetings
   add column if not exists speakers jsonb;
 
+-- 회의 중 올린 첨부 파일 목록
+--   [{ "id", "name", "path", "size", "mime", "ts" }, ...]
+alter table public.meetings
+  add column if not exists attachments jsonb not null default '[]'::jsonb;
+
 -- ── 권한 / RLS ──────────────────────────────────────────────
 grant select, insert, update, delete on public.meetings to authenticated;
 

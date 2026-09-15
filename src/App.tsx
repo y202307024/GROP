@@ -37,6 +37,7 @@ export default function App() {
         <Route path="/group/:id" element={<GroupPage />} />
         <Route path="/group/:id/settings" element={<GroupSettings />} />
         <Route path="/documents" element={<DocumentList />} />
+        <Route path="/meetings" element={<MeetingList />} />
         <Route path="/group/:id/meetings" element={<MeetingList />} />
         <Route path="/group/:id/meeting/:meetingId" element={<MeetingDetail />} />
         <Route path="/group/:id/members" element={<MemberList />} />

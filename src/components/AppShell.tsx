@@ -13,7 +13,7 @@ type Props = {
 
 const navItems = [
   { id: 'main', label: '메인', icon: 'home' as const, path: '/main' },
-  { id: 'meeting', label: '회의', icon: 'clipboard-list' as const, path: '/canvas' },
+  { id: 'meeting', label: '회의', icon: 'clipboard-list' as const, path: '/meetings' },
   { id: 'document', label: '문서', icon: 'file-text' as const, path: '/documents' },
   { id: 'ai', label: 'AI 요약', icon: 'sparkles' as const, path: '/ai' },
   { id: 'calendar', label: '캘린더', icon: 'calendar' as const, path: '/calendar' },

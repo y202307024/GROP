@@ -10,13 +10,19 @@ type Meeting = {
   date: string;
   summary: string | null;
   video_url: string | null;
+  group_id: string;
+  group_name?: string | null;
 };
 
 type GroupedMeetings = {
   [date: string]: Meeting[];
 };
 
-/** 회의록 목록 — 날짜 폴더 UI에 grop 패널 스타일을 입힙니다. */
+/**
+ * 회의록 목록
+ * - /meetings : 내가 속한 모든 그룹 회의
+ * - /group/:id/meetings : 해당 그룹만
+ */
 export default function MeetingList() {
   const { id: groupId } = useParams();
   const navigate = useNavigate();
@@ -25,21 +31,67 @@ export default function MeetingList() {
   const [openDates, setOpenDates] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    fetchMeetings();
-  }, [groupId]);
+    let mounted = true;
 
-  const fetchMeetings = async () => {
-    const { data } = await supabase
-      .from('meetings')
-      .select('*')
-      .eq('group_id', groupId)
-      .order('date', { ascending: false });
-    setMeetings(data || []);
-    setLoading(false);
-  };
+    const fetchMeetings = async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        navigate('/');
+        return;
+      }
 
-  const groupByDate = (meetings: Meeting[]): GroupedMeetings => {
-    return meetings.reduce((acc, meeting) => {
+      let targetGroupIds: string[] = [];
+      if (groupId) {
+        targetGroupIds = [groupId];
+      } else {
+        const { data: memberRows } = await supabase
+          .from('group_members')
+          .select('group_id')
+          .eq('user_id', sessionData.session.user.id);
+        targetGroupIds = [...new Set((memberRows ?? []).map((r) => r.group_id).filter(Boolean))];
+      }
+
+      if (!mounted) return;
+      if (targetGroupIds.length === 0) {
+        setMeetings([]);
+        setLoading(false);
+        return;
+      }
+
+      // 그룹 이름 (목록에 표시)
+      const { data: groupRows } = await supabase
+        .from('groups')
+        .select('id, name')
+        .in('id', targetGroupIds);
+      const nameById = new Map<string, string>();
+      for (const g of groupRows ?? []) {
+        if (g?.id && typeof g.name === 'string') nameById.set(g.id, g.name);
+      }
+
+      const { data } = await supabase
+        .from('meetings')
+        .select('id, title, date, summary, video_url, group_id')
+        .in('group_id', targetGroupIds)
+        .order('date', { ascending: false });
+
+      if (!mounted) return;
+      setMeetings(
+        (data ?? []).map((m) => ({
+          ...m,
+          group_name: nameById.get(m.group_id) ?? null,
+        })),
+      );
+      setLoading(false);
+    };
+
+    void fetchMeetings();
+    return () => {
+      mounted = false;
+    };
+  }, [groupId, navigate]);
+
+  const groupByDate = (rows: Meeting[]): GroupedMeetings => {
+    return rows.reduce((acc, meeting) => {
       const d = new Date(meeting.date);
       const dateKey = `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일`;
       if (!acc[dateKey]) acc[dateKey] = [];
@@ -54,7 +106,7 @@ export default function MeetingList() {
   };
 
   const toggleDate = (date: string) => {
-    setOpenDates(prev => {
+    setOpenDates((prev) => {
       const next = new Set(prev);
       if (next.has(date)) next.delete(date);
       else next.add(date);
@@ -83,7 +135,7 @@ export default function MeetingList() {
               </div>
             ) : (
               <div className={s.list}>
-                {dates.map(date => {
+                {dates.map((date) => {
                   const isOpen = openDates.has(date);
                   const dayMeetings = grouped[date];
 
@@ -104,11 +156,22 @@ export default function MeetingList() {
                             <div
                               key={m.id}
                               className={s.meeting}
-                              onClick={() => navigate(`/group/${groupId}/meeting/${m.id}`)}
+                              onClick={() =>
+                                navigate(`/group/${m.group_id}/meeting/${m.id}`, {
+                                  state: { from: groupId ? 'group-meetings' : 'meetings' },
+                                })
+                              }
                             >
                               <span>{m.video_url ? '🎬' : '📄'}</span>
                               <div>
-                                <div className={s.meetingTitle}>{formatTime(m.date)} 회의</div>
+                                <div className={s.meetingTitle}>
+                                  {formatTime(m.date)} 회의
+                                  {!groupId && m.group_name ? (
+                                    <span style={{ marginLeft: 8, color: '#888', fontWeight: 400, fontSize: 13 }}>
+                                      · {m.group_name}
+                                    </span>
+                                  ) : null}
+                                </div>
                                 {m.summary && <div className={s.meetingSummary}>{m.summary}</div>}
                               </div>
                               <div className={s.pills}>

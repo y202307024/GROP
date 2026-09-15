@@ -56,6 +56,10 @@ const CHAT_FILES_INCOMING_DIR = path.join(CHAT_FILES_DIR, '_incoming')
 fs.mkdirSync(CHAT_FILES_INCOMING_DIR, { recursive: true })
 const MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024
 
+/** 회의 문서(첨부 목록) — DB attachments 컬럼 없이도 문서 탭에서 파일을 보게 합니다. */
+const MEETING_DOCS_DIR = path.resolve(__dirname, 'uploads', 'meeting-docs')
+fs.mkdirSync(MEETING_DOCS_DIR, { recursive: true })
+
 /** 폴더명에 .. 나 슬래시가 들어오면 디스크 밖으로 나가지 못하게 막습니다. */
 function isSafePathSegment(value) {
   return typeof value === 'string' && value.length > 0 && !value.includes('..') && !/[\\/]/.test(value)
@@ -384,6 +388,54 @@ app.post('/api/chat-files/upload', checkUploadToken, uploadChatFile.single('file
   })
 })
 
+/**
+ * 그룹에 올라간 채팅/회의 첨부 파일 목록.
+ * meeting-docs 가 비어 있을 때 문서 탭 「열기」 폴백으로 씁니다.
+ */
+app.get('/api/chat-files', (req, res) => {
+  const groupId = req.query.groupId
+  if (!isSafePathSegment(groupId)) {
+    return res.status(400).json({ error: 'groupId 가 필요합니다' })
+  }
+  const dir = path.join(CHAT_FILES_DIR, groupId)
+  if (!fs.existsSync(dir)) return res.json([])
+
+  let names = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch (err) {
+    console.error('채팅 파일 목록 읽기 실패:', err)
+    return res.status(500).json({ error: '파일 목록을 읽지 못했습니다' })
+  }
+
+  const files = []
+  for (const name of names) {
+    if (name.startsWith('.')) continue
+    const full = path.join(dir, name)
+    let st
+    try {
+      st = fs.statSync(full)
+    } catch {
+      continue
+    }
+    if (!st.isFile()) continue
+    // 저장 파일명 앞의 타임스탬프(ms)를 업로드 시각으로 씁니다.
+    const tsMatch = /^(\d{13})-/.exec(name)
+    const ts = tsMatch ? Number(tsMatch[1]) : st.mtimeMs
+    files.push({
+      id: name,
+      name,
+      path: `${groupId}/${name}`,
+      size: st.size,
+      mime: guessChatFileMime(name, ''),
+      ts,
+    })
+  }
+
+  files.sort((a, b) => b.ts - a.ts)
+  res.json(files)
+})
+
 app.use('/files', (req, res, next) => {
   const relPath = decodeURIComponent(String(req.path || '').replace(/^\//, ''))
   if (!relPath) return next()
@@ -401,6 +453,122 @@ app.use('/files', (req, res, next) => {
     return res.sendFile(direct)
   }
   return res.status(404).json({ error: '파일을 찾지 못했습니다', path: relPath })
+})
+
+/** 회의 문서 첨부 목록을 디스크에 저장합니다. (문서 탭 「열기」용) */
+app.put('/api/meeting-docs/:meetingId', checkUploadToken, (req, res) => {
+  const meetingId = String(req.params.meetingId || '')
+  const groupId = req.body?.groupId
+  if (!isSafePathSegment(meetingId) || !isSafePathSegment(groupId)) {
+    return res.status(400).json({ error: '잘못된 회의/그룹 id 입니다' })
+  }
+
+  const files = Array.isArray(req.body?.files) ? req.body.files : []
+  const normalized = files
+    .filter((f) => f && typeof f.path === 'string' && typeof f.name === 'string')
+    .map((f) => ({
+      id: typeof f.id === 'string' ? f.id : undefined,
+      name: String(f.name),
+      path: String(f.path),
+      size: typeof f.size === 'number' ? f.size : 0,
+      mime: typeof f.mime === 'string' ? f.mime : 'application/octet-stream',
+      ts: typeof f.ts === 'number' ? f.ts : Date.now(),
+    }))
+
+  const dir = path.join(MEETING_DOCS_DIR, groupId)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch (err) {
+    console.error('meeting-docs 폴더 생성 실패:', err)
+    return res.status(500).json({ error: '문서 폴더를 만들지 못했습니다' })
+  }
+
+  const payload = {
+    id: meetingId,
+    groupId,
+    title: typeof req.body?.title === 'string' ? req.body.title : '',
+    date: typeof req.body?.date === 'string' ? req.body.date : new Date().toISOString(),
+    files: normalized,
+    updatedAt: new Date().toISOString(),
+  }
+
+  try {
+    fs.writeFileSync(path.join(dir, `${meetingId}.json`), JSON.stringify(payload, null, 2), 'utf8')
+  } catch (err) {
+    console.error('meeting-docs 저장 실패:', err)
+    return res.status(500).json({ error: '첨부 목록을 저장하지 못했습니다' })
+  }
+
+  console.log('회의 문서 첨부 저장:', groupId, meetingId, normalized.length)
+  res.json(payload)
+})
+
+/** 한 회의의 첨부 목록 */
+app.get('/api/meeting-docs/:meetingId', (req, res) => {
+  const meetingId = String(req.params.meetingId || '')
+  const groupId = req.query.groupId
+  if (!isSafePathSegment(meetingId)) {
+    return res.status(400).json({ error: '잘못된 회의 id 입니다' })
+  }
+
+  const tryRead = (gid) => {
+    const filePath = path.join(MEETING_DOCS_DIR, gid, `${meetingId}.json`)
+    if (!filePath.startsWith(MEETING_DOCS_DIR)) return null
+    if (!fs.existsSync(filePath)) return null
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    } catch {
+      return null
+    }
+  }
+
+  if (isSafePathSegment(groupId)) {
+    const doc = tryRead(groupId)
+    if (doc) return res.json(doc)
+    return res.status(404).json({ error: '문서 첨부를 찾지 못했습니다' })
+  }
+
+  // groupId 없이 요청하면 모든 그룹 폴더에서 찾습니다.
+  try {
+    const groups = fs.readdirSync(MEETING_DOCS_DIR, { withFileTypes: true })
+    for (const ent of groups) {
+      if (!ent.isDirectory() || ent.name.startsWith('_')) continue
+      const doc = tryRead(ent.name)
+      if (doc) return res.json(doc)
+    }
+  } catch {
+    /* ignore */
+  }
+  return res.status(404).json({ error: '문서 첨부를 찾지 못했습니다' })
+})
+
+/** 그룹의 회의 문서 목록(첨부 포함) — 문서 탭 보강용 */
+app.get('/api/meeting-docs', (req, res) => {
+  const groupId = req.query.groupId
+  if (!isSafePathSegment(groupId)) {
+    return res.status(400).json({ error: 'groupId 가 필요합니다' })
+  }
+  const dir = path.join(MEETING_DOCS_DIR, groupId)
+  if (!fs.existsSync(dir)) return res.json([])
+
+  let entries = []
+  try {
+    entries = fs.readdirSync(dir).filter((name) => name.endsWith('.json'))
+  } catch {
+    return res.json([])
+  }
+
+  const docs = []
+  for (const name of entries) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+      if (raw && raw.id) docs.push(raw)
+    } catch {
+      /* skip broken */
+    }
+  }
+  docs.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+  res.json(docs)
 })
 
 /**
@@ -642,5 +810,6 @@ app.listen(PORT, () => {
   console.log(`  음성 모델: ${TRANSCRIBE_MODEL}`)
   console.log(`  녹화본 저장 경로: ${MEETING_VIDEOS_DIR}`)
   console.log(`  채팅 첨부 경로: ${CHAT_FILES_DIR}`)
+  console.log(`  회의 문서(첨부목록) 경로: ${MEETING_DOCS_DIR}`)
   startOauthFallback()
 })

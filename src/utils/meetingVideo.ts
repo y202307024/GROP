@@ -27,9 +27,12 @@ export async function resolveMeetingVideoUrl(videoUrl: string): Promise<string> 
   return `${getApiBase()}/videos/${path}`;
 }
 
-export function pickMeetingRecorderMimeType(hasVideo: boolean): string {
+export function pickMeetingRecorderMimeType(hasVideo: boolean, hasAudio = true): string {
+  // 마이크가 없을 때는 opus(오디오) 코덱을 빼야 MediaRecorder 가 안정적으로 돕니다.
   const candidates = hasVideo
-    ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+    ? hasAudio
+      ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+      : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
     : ['audio/webm;codecs=opus', 'audio/webm'];
   return candidates.find((t) => MediaRecorder.isTypeSupported(t)) ?? (hasVideo ? 'video/webm' : 'audio/webm');
 }
