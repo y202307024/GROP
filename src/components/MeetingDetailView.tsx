@@ -20,23 +20,10 @@ type Meeting = {
   group_id: string;
   created_at?: string | null;
   chapters?: unknown;
-  transcript?: string | null; // 상세요약: [MM:SS] 붙은 전체 녹취록
-  topics?: unknown; // 주제별요약: [{ topic, detail }]
+  transcript?: string | null; // [MM:SS] 붙은 전체 녹취록 (현재 UI에서는 표시 안 함, DB엔 계속 저장)
+  topics?: unknown; // 주제별 요약 [{ topic, detail }] (현재 UI에서는 표시 안 함, DB엔 계속 저장)
   speakers?: unknown; // 발언자별요약: [{ speaker, summary }] (AI 추정)
 };
-
-/** meetings.topics(신뢰 못 할 형태) → { topic, detail }[] 로 정규화 */
-function normalizeTopics(raw: unknown): { topic: string; detail: string }[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map((t) => {
-      const rec = t as Record<string, unknown>;
-      const topic = typeof rec?.topic === 'string' ? rec.topic.trim() : '';
-      const detail = typeof rec?.detail === 'string' ? rec.detail.trim() : '';
-      return { topic, detail };
-    })
-    .filter((t) => t.topic);
-}
 
 /** meetings.speakers → { speaker, summary }[] 로 정규화 */
 function normalizeSpeakers(raw: unknown): { speaker: string; summary: string }[] {
@@ -173,7 +160,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   const [playbackError, setPlaybackError] = useState('');
   // ai 목업 레이아웃 전용 상태 (탭 하이라이트 / 대화록 더보기)
   const [videoTab, setVideoTab] = useState<'all' | 'speaker'>('all');
-  const [summaryTab, setSummaryTab] = useState<'core' | 'detail' | 'topic'>('core');
+  const [summaryTab, setSummaryTab] = useState<'core' | 'timeline'>('core');
 
   // 챕터 타임라인 관련
   const [chapters, setChapters] = useState<MeetingChapter[]>([]);
@@ -315,7 +302,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         error = (await upd({ summary: data.summary, chapters: nextChapters })).error;
         if (!error) {
           alert(
-            '요약·타임라인은 저장했어요. 상세·주제별·발언자별 요약까지 저장하려면\n' +
+            '요약·타임라인은 저장했어요. 발언자별 요약까지 저장하려면\n' +
             'supabase/05_회의록_및_영상.sql 의 transcript·topics·speakers 컬럼을 적용하세요.'
           );
         }
@@ -327,7 +314,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
           setChapters(nextChapters);
           alert(
             '요약만 저장했어요. supabase/05_회의록_및_영상.sql 을 적용하면\n' +
-            '타임라인·상세요약·주제별요약도 저장됩니다.'
+            '타임라인·발언자별 요약도 저장됩니다.'
           );
         }
       }
@@ -429,10 +416,6 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     const hasSummary = !!meeting.summary;
     // 왼쪽엔 핵심 요약만, 오른쪽(영상 옆)엔 타임라인만 보여줍니다.
     const { core: coreSummary, timeline } = splitSummary(meeting.summary, chapters);
-    // 상세요약 = 전체 녹취록(영상 풀내용), 없으면 요약 전문으로 대체
-    const detailText = meeting.transcript?.trim() || meeting.summary || '';
-    // 주제별요약 = { topic, detail }[], 없으면 타임라인 구간을 대신 사용
-    const topics = normalizeTopics(meeting.topics);
     // 발언자별요약 = { speaker, summary }[] (녹취록에 화자 표시가 없어 AI 추정치)
     const speakers = normalizeSpeakers(meeting.speakers);
 
@@ -562,17 +545,10 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
             </button>
             <button
               type="button"
-              className={`ai-summary-tab${summaryTab === 'detail' ? ' active' : ''}`}
-              onClick={() => setSummaryTab('detail')}
+              className={`ai-summary-tab${summaryTab === 'timeline' ? ' active' : ''}`}
+              onClick={() => setSummaryTab('timeline')}
             >
-              <span>상세요약</span>
-            </button>
-            <button
-              type="button"
-              className={`ai-summary-tab${summaryTab === 'topic' ? ' active' : ''}`}
-              onClick={() => setSummaryTab('topic')}
-            >
-              <span>주제별요약</span>
+              <span>시간대별요약</span>
             </button>
           </div>
 
@@ -589,59 +565,34 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                   placeholder="회의 내용을 입력하세요"
                 />
               ) : hasSummary ? (
-                summaryTab === 'topic' ? (
-                  // 주제별요약: "무슨 주제로 무슨 얘기가 나왔는지"
-                  topics.length > 0 ? (
+                summaryTab === 'timeline' ? (
+                  // 시간대별요약: 구간을 [시작~다음 구간 시작] 범위로 보여줍니다.
+                  timeline.length > 0 ? (
                     <div>
-                      {topics.map((t, i) => (
-                        <div key={i} style={{ marginBottom: 18 }}>
-                          <div className="ai-checklist-title" style={{ fontSize: 15, marginBottom: 6 }}>
-                            {t.topic}
-                          </div>
-                          {t.detail && (
-                            <p className="ai-summary-paragraph" style={{ margin: 0 }}>{t.detail}</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : timeline.length > 0 ? (
-                    // topics 컬럼이 아직 없으면 타임라인 구간 요약으로 대체
-                    <div>
-                      {timeline.map((c, i) => (
-                        <div key={`${c.time}-${i}`} style={{ marginBottom: 16 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                            <button
-                              type="button"
-                              onClick={() => void seekTo(c.time)}
-                              style={{
-                                background: '#E1F5EE', color: '#085041', border: 'none', borderRadius: 4,
-                                padding: '1px 6px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                                fontVariantNumeric: 'tabular-nums',
-                              }}
-                            >
-                              {formatTimestamp(c.time)}
-                            </button>
-                            <strong style={{ fontSize: 15 }}>{c.title}</strong>
-                          </div>
-                          {c.summary && (
-                            <p className="ai-summary-paragraph" style={{ margin: 0 }}>{c.summary}</p>
-                          )}
-                        </div>
-                      ))}
+                      {timeline.map((c, i) => {
+                        const end = timeline[i + 1]?.time ?? (duration > 0 ? duration : null);
+                        return (
+                          <button
+                            type="button"
+                            key={`${c.time}-${i}`}
+                            onClick={() => void seekTo(c.time)}
+                            style={{ display: 'block', width: '100%', border: 'none', background: 'transparent', textAlign: 'left', padding: 0, marginBottom: 16, cursor: 'pointer' }}
+                          >
+                            <div style={{ fontSize: 12, fontWeight: 700, color: '#1D9E75', fontVariantNumeric: 'tabular-nums', marginBottom: 4 }}>
+                              {formatTimestamp(c.time)} {end !== null ? `~ ${formatTimestamp(end)}` : '~'}
+                            </div>
+                            <p className="ai-summary-paragraph" style={{ margin: 0 }}>
+                              <strong>{c.title}</strong>{c.summary ? ` - ${c.summary}` : ''}
+                            </p>
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="ai-summary-paragraph" style={{ color: '#999' }}>
-                      주제별 요약이 아직 없어요. “AI 요약 생성”을 다시 실행해 주세요.
+                      아직 시간대별 요약이 없어요. “AI 요약 생성”을 다시 실행해 주세요.
                     </p>
                   )
-                ) : summaryTab === 'detail' ? (
-                  // 상세요약: 전체 녹취록(영상 풀내용) — 길면 안에서 스크롤
-                  <div
-                    className="ai-summary-paragraph"
-                    style={{ whiteSpace: 'pre-wrap', maxHeight: 420, overflowY: 'auto', paddingRight: 6 }}
-                  >
-                    <SummaryWithTimestamps text={detailText} onSeek={(s) => void seekTo(s)} />
-                  </div>
                 ) : (
                   // 핵심요약: 개요만
                   <p className="ai-summary-paragraph" style={{ whiteSpace: 'pre-wrap' }}>
