@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { RoomEvent, type RemoteParticipant } from 'livekit-client';
-import { useLocalParticipant, useParticipants, useRoomContext } from '@livekit/components-react';
+import {
+  useLocalParticipant,
+  useParticipants,
+  useRoomContext,
+  useSpeakingParticipants,
+} from '@livekit/components-react';
 import { supabase } from '../services/supabaseClient';
 import {
   MEETING_CHAT_TOPIC,
@@ -103,6 +108,12 @@ export default function MeetingChatPanel({
   const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
   const participants = useParticipants();
+  // 마이크 입력으로 말하는 중인 참가자(로컬·원격) — 아바타 초록 테두리용
+  const speakingParticipants = useSpeakingParticipants();
+  const speakingIds = useMemo(
+    () => new Set(speakingParticipants.map((p) => p.identity)),
+    [speakingParticipants],
+  );
   const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   // 원격 참가자만 로컬에서 안 들리게 한 identity 목록
@@ -309,10 +320,15 @@ export default function MeetingChatPanel({
               const name = readableName(p.name) || (isLocal ? '나' : '참여자');
               const micOn = p.isMicrophoneEnabled;
               const headsetMuted = isLocal ? speakerMuted : Boolean(remoteDeafened[p.identity]);
+              // 발화 중이면 프로필 아바타에 초록 테두리 표시
+              const isSpeaking = speakingIds.has(p.identity);
               return (
                 <li key={p.identity} className="participant-row">
                   <div className="participant-identity">
-                    <div className="participant-avatar" title={name}>
+                    <div
+                      className={`participant-avatar${isSpeaking ? ' is-speaking' : ''}`}
+                      title={isSpeaking ? `${name} (말하는 중)` : name}
+                    >
                       {avatarByUserId[p.identity] ? (
                         <img src={getAvatarSrc(avatarByUserId[p.identity])} alt="" />
                       ) : (

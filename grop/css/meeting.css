@@ -437,6 +437,14 @@
 
     flex-shrink: 0;
     overflow: hidden;
+    /* outline은 overflow에 잘리지 않아 발화 링 표시에 적합 */
+    transition: outline-color 0.15s ease, outline-width 0.15s ease;
+}
+
+/* 마이크 발화 중 — 로컬/원격 공통 초록 테두리 */
+.participant-avatar.is-speaking {
+    outline: 2px solid var(--color-speaking, #57f287);
+    outline-offset: 1px;
 }
 
 .participant-avatar img {
