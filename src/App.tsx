@@ -6,7 +6,6 @@ import CreateRoom from './pages/CreateRoom'
 import Room from './pages/Room'
 import GroupProfile from './pages/GroupProfile'
 import DefaultProfile from './pages/DefaultProfile'
-import SetupProfile from './pages/SetupProfile';
 import GroupPage from './pages/GroupPage'
 import GroupSettings from './pages/GroupSettings'
 import MeetingList from './pages/MeetingList'
@@ -33,7 +32,6 @@ export default function App() {
         <Route path="/room/:id" element={<Room />} />
         <Route path="/profile" element={<DefaultProfile />} />
         <Route path="/group/:groupId/profile" element={<GroupProfile />} />
-        <Route path="/setup-profile" element={<SetupProfile />} />
         <Route path="/group/:id" element={<GroupPage />} />
         <Route path="/group/:id/settings" element={<GroupSettings />} />
         <Route path="/documents" element={<DocumentList />} />

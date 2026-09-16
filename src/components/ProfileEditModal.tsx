@@ -10,14 +10,20 @@ type Props = {
   onClose: () => void;
   /** 저장 성공 시 최신 아바타(프리셋 key 또는 업로드 사진 URL)를 상위(AppShell 상단바)에 알려줍니다. */
   onSaved: (avatar: string) => void;
+  /**
+   * 최초 가입 직후처럼 프로필을 꼭 만들어야 할 때 true.
+   * 닫기(X)·취소·바깥 클릭을 막아서 저장해야만 닫힙니다.
+   */
+  required?: boolean;
 };
 
 /**
  * 상단바 프로필 아이콘을 누르면 뜨는 "프로필 수정" 팝업.
  * /profile 페이지(DefaultProfile)와 같은 "기본 프로필" 데이터를 다루지만,
  * 페이지 이동 없이 현재 화면 위에 모달로 띄우기 위해 별도 컴포넌트로 뺐습니다.
+ * required=true 면 가입 직후 최초 설정용으로 쓰여 닫을 수 없습니다.
  */
-export default function ProfileEditModal({ open, onClose, onSaved }: Props) {
+export default function ProfileEditModal({ open, onClose, onSaved, required = false }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [userId, setUserId] = useState<string | null>(null);
@@ -117,14 +123,20 @@ export default function ProfileEditModal({ open, onClose, onSaved }: Props) {
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={required ? undefined : onClose}>
       <div className="profile-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <div className="profile-modal-header">
           <h2>프로필 수정</h2>
-          <button className="modal-close-button" type="button" aria-label="닫기" onClick={onClose}>
-            <Icon name="x" />
-          </button>
+          {!required && (
+            <button className="modal-close-button" type="button" aria-label="닫기" onClick={onClose}>
+              <Icon name="x" />
+            </button>
+          )}
         </div>
+
+        {required && (
+          <p className="settings-desc">처음 오셨네요! 닉네임과 아바타를 먼저 설정해주세요.</p>
+        )}
 
         {loading ? (
           <p className="settings-desc">불러오는 중...</p>
@@ -177,7 +189,9 @@ export default function ProfileEditModal({ open, onClose, onSaved }: Props) {
             </div>
 
             <div className="profile-modal-actions">
-              <button type="button" className="secondary-button" onClick={onClose}>취소</button>
+              {!required && (
+                <button type="button" className="secondary-button" onClick={onClose}>취소</button>
+              )}
               <button type="button" className="primary-button" onClick={handleSave} disabled={saving || uploading}>
                 {saving ? '저장 중...' : '저장하기'}
               </button>

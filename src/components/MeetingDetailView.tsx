@@ -23,7 +23,13 @@ type Meeting = {
   transcript?: string | null; // [MM:SS] 붙은 전체 녹취록 (현재 UI에서는 표시 안 함, DB엔 계속 저장)
   topics?: unknown; // 주제별 요약 [{ topic, detail }] (현재 UI에서는 표시 안 함, DB엔 계속 저장)
   speakers?: unknown; // 발언자별요약: [{ speaker, summary }] (AI 추정)
+  chat_log?: unknown; // 회의 중 채팅 [{ from, name, text, ts }] — 마이크 없이 진행한 회의의 요약 재료
 };
+
+/** meetings.chat_log에 실제 메시지가 있는지(요약 재료로 쓸 수 있는지)만 가볍게 확인 */
+function hasUsableChatLog(raw: unknown): boolean {
+  return Array.isArray(raw) && raw.some((m) => m && typeof (m as { text?: unknown }).text === 'string' && (m as { text: string }).text.trim());
+}
 
 /** meetings.speakers → { speaker, summary }[] 로 정규화 */
 function normalizeSpeakers(raw: unknown): { speaker: string; summary: string }[] {
@@ -255,24 +261,28 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     video.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
-  // AI 요약 생성 (챕터 포함)
+  // AI 요약 생성 (챕터 포함). 마이크 음성이 없으면(또는 녹화 자체가 없으면) 회의 중 채팅으로 대체합니다.
   const generateAiSummary = async () => {
-    if (!meeting?.video_url) {
-      alert('녹화 파일이 없어요!');
+    if (!meeting) return;
+    const chatAvailable = hasUsableChatLog(meeting.chat_log);
+    if (!meeting.video_url && !chatAvailable) {
+      alert('녹화 파일도, 채팅 기록도 없어요!');
       return;
     }
 
     setAiLoading(true);
 
     try {
-      setAiStep('🎙️ 음성 변환 중...');
+      setAiStep(meeting.video_url ? '🎙️ 음성 변환 중...' : '💬 채팅 기록 정리 중...');
       // 브라우저는 https://localhost:5173/videos/... 로 재생하지만,
       // 서버는 mkcert 인증서를 못 믿어서 그 주소로 다시 받으면 실패합니다.
       // DB에 저장된 경로(또는 /videos/ 상대경로)를 그대로 넘기면 서버가 디스크에서 읽습니다.
+      // 마이크 음성이 없는 회의(no-mic)에 대비해 채팅 기록도 함께 보내면,
+      // 서버가 음성에서 텍스트를 못 뽑았을 때 채팅으로 대신 요약합니다.
       const res = await fetch(`${getApiBase()}/api/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl: meeting.video_url })
+        body: JSON.stringify({ videoUrl: meeting.video_url, chatLog: meeting.chat_log ?? null })
       });
 
       if (!res.ok) {
@@ -321,10 +331,11 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       if (error) throw new Error(error.message);
 
       await fetchMeeting();
+      const sourceNote = data.source === 'chat' ? ' (마이크 음성이 없어 채팅 기록으로 요약했어요)' : '';
       alert(
-        nextChapters.length > 0
+        (nextChapters.length > 0
           ? `AI 요약 완성! 타임라인 ${nextChapters.length}개가 만들어졌어요 🎉`
-          : 'AI 요약이 완성됐어요! 🎉'
+          : 'AI 요약이 완성됐어요! 🎉') + sourceNote
       );
 
     } catch (err) {
@@ -414,6 +425,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       alert('회의록 링크를 복사했어요.');
     };
     const hasSummary = !!meeting.summary;
+    // 녹화(마이크 유무 무관) 또는 채팅 기록 중 하나라도 있으면 요약을 만들 수 있습니다.
+    const canSummarize = !!meeting.video_url || hasUsableChatLog(meeting.chat_log);
     // 왼쪽엔 핵심 요약만, 오른쪽(영상 옆)엔 타임라인만 보여줍니다.
     const { core: coreSummary, timeline } = splitSummary(meeting.summary, chapters);
     // 발언자별요약 = { speaker, summary }[] (녹취록에 화자 표시가 없어 AI 추정치)
@@ -521,7 +534,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
             <span>AI 요약 결과</span>
             {!aiLoading && !editingSummary && (
               <div className="ai-summary-title-actions">
-                {meeting.video_url && (
+                {canSummarize && (
                   <button type="button" className="primary" onClick={generateAiSummary}>
                     ✨ AI 요약 생성
                   </button>
@@ -602,7 +615,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
               ) : (
                 <p className="ai-summary-paragraph" style={{ color: '#999' }}>
                   아무 내용이 없습니다.
-                  {meeting.video_url ? ' 오른쪽 위 “AI 요약 생성”을 누르면 요약이 만들어집니다.' : ''}
+                  {canSummarize ? ' 오른쪽 위 “AI 요약 생성”을 누르면 요약이 만들어집니다.' : ''}
                 </p>
               )}
 
@@ -696,6 +709,9 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       </>
     );
   }
+
+  // 녹화(마이크 유무 무관) 또는 채팅 기록 중 하나라도 있으면 요약을 만들 수 있습니다.
+  const canSummarize = !!meeting.video_url || hasUsableChatLog(meeting.chat_log);
 
   return (
     <div style={{ maxWidth: 720, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 20px' }}>
@@ -815,7 +831,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <div style={{ fontSize: 15, fontWeight: 600 }}>🤖 AI 회의록</div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {meeting.video_url && !aiLoading && (
+            {canSummarize && !aiLoading && (
               <button onClick={generateAiSummary}
                 style={{ fontSize: 12, padding: '5px 12px', background: '#1D9E75', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
                 ✨ AI 요약 생성
@@ -876,9 +892,9 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
             <div style={{ fontSize: 28, marginBottom: 8 }}>🤖</div>
             <div style={{ fontSize: 14 }}>아무 내용이 없습니다</div>
             <div style={{ fontSize: 12, marginTop: 4 }}>
-              {meeting.video_url
+              {canSummarize
                 ? '✨ AI 요약 생성 버튼을 누르면 요약이 만들어집니다.'
-                : '파일만 올린 문서이거나, 아직 녹화가 없어요.'}
+                : '파일만 올린 문서이거나, 아직 녹화·채팅 기록이 없어요.'}
             </div>
           </div>
         )}

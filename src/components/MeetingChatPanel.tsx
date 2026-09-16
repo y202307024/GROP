@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { RoomEvent, type RemoteParticipant } from 'livekit-client';
 import { useLocalParticipant, useParticipants, useRoomContext } from '@livekit/components-react';
 import { supabase } from '../services/supabaseClient';
@@ -20,6 +20,12 @@ type Props = {
   /** 로컬 헤드셋(스피커) 음소거 — RoomAudioRenderer volume과 연동 */
   speakerMuted?: boolean;
   onSpeakerMutedChange?: (muted: boolean) => void;
+  /**
+   * 최신 채팅 목록을 부모(Room)와 공유하는 ref.
+   * 녹화 저장 시 meetings.chat_log 로 함께 저장해, 마이크 없는 회의도
+   * 채팅 기록으로 AI 요약을 만들 수 있게 합니다.
+   */
+  chatLogRef?: RefObject<MeetingChatMessage[]>;
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -92,6 +98,7 @@ export default function MeetingChatPanel({
   onGroupNameChange,
   speakerMuted = false,
   onSpeakerMutedChange,
+  chatLogRef,
 }: Props) {
   const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
@@ -184,6 +191,11 @@ export default function MeetingChatPanel({
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
+
+  // 부모(Room)가 녹화 저장 시 최신 채팅을 읽어갈 수 있도록 ref에 계속 반영합니다.
+  useEffect(() => {
+    if (chatLogRef) chatLogRef.current = messages;
+  }, [messages, chatLogRef]);
 
   const publishChat = (msg: MeetingChatMessage) => {
     setMessages((prev) => [...prev, msg].slice(-300));

@@ -51,6 +51,11 @@ alter table public.meetings
 alter table public.meetings
   add column if not exists attachments jsonb not null default '[]'::jsonb;
 
+-- 회의 중 채팅 전체 — 마이크 없이 진행한 회의도 이걸로 AI 요약을 만듭니다.
+--   [{ "id", "from", "name", "text", "ts" }, ...]
+alter table public.meetings
+  add column if not exists chat_log jsonb not null default '[]'::jsonb;
+
 -- ── 권한 / RLS ──────────────────────────────────────────────
 grant select, insert, update, delete on public.meetings to authenticated;
 

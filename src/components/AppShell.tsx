@@ -11,6 +11,11 @@ type Props = {
   activePage?: 'main' | 'meeting' | 'document' | 'ai' | 'calendar' | 'member' | 'setting';
 };
 
+// 페이지마다 AppShell이 새로 mount되는데, 매번 기본 아바타(고양이)로 시작한 뒤
+// 조회가 끝나야 실제 아바타로 바뀌면 탭 전환할 때마다 고양이가 깜빡여 보입니다.
+// 모듈 스코프에 마지막으로 불러온 아바타를 캐싱해 다음 mount는 여기서 바로 시작합니다.
+let cachedAvatar: string | null = null;
+
 const navItems = [
   { id: 'main', label: '메인', icon: 'home' as const, path: '/main' },
   { id: 'meeting', label: '회의', icon: 'clipboard-list' as const, path: '/meetings' },
@@ -30,10 +35,12 @@ const navItems = [
 export default function AppShell({ children, activePage = 'main' }: Props) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const [avatar, setAvatar] = useState(DEFAULT_AVATAR_KEY);
+  const [avatar, setAvatar] = useState(cachedAvatar ?? DEFAULT_AVATAR_KEY);
   const [notifyOpen, setNotifyOpen] = useState(false);
   // 상단바 프로필 아이콘을 누르면 페이지 이동 없이 이 모달을 띄웁니다.
   const [profileModalOpen, setProfileModalOpen] = useState(false);
+  // 가입 후 profiles 행이 아직 없는 "최초 진입" 여부. true면 팝업을 강제로 띄우고 닫기를 막습니다.
+  const [needsProfileSetup, setNeedsProfileSetup] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -44,8 +51,17 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
         .select('nickname, avatar, avatar_url')
         .eq('id', data.user.id)
         .maybeSingle();
-      if (!mounted || !profile) return;
-      setAvatar(profile.avatar_url || profile.avatar || DEFAULT_AVATAR_KEY);
+      if (!mounted) return;
+
+      if (!profile) {
+        // 프로필 행이 없다 = 가입 직후 최초 진입. 팝업을 강제로 띄웁니다.
+        setNeedsProfileSetup(true);
+        setProfileModalOpen(true);
+        return;
+      }
+      const next = profile.avatar_url || profile.avatar || DEFAULT_AVATAR_KEY;
+      cachedAvatar = next;
+      setAvatar(next);
     });
     return () => {
       mounted = false;
@@ -123,8 +139,15 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
 
       <ProfileEditModal
         open={profileModalOpen}
-        onClose={() => setProfileModalOpen(false)}
-        onSaved={setAvatar}
+        required={needsProfileSetup}
+        onClose={() => {
+          setProfileModalOpen(false);
+          setNeedsProfileSetup(false);
+        }}
+        onSaved={(next) => {
+          cachedAvatar = next;
+          setAvatar(next);
+        }}
       />
     </div>
   );

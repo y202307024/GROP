@@ -20,6 +20,7 @@ import {
   decodeMeetingSharedFile,
   encodeMeetingSharedFile,
   uploadMeetingAttachment,
+  type MeetingChatMessage,
   type MeetingSharedFile,
 } from '../utils/meetingChat';
 import { syncMeetingAttachmentsDoc, toMeetingAttachments } from '../utils/meetingDocs';
@@ -249,6 +250,7 @@ function RoomContent({
   recordingBridgeRef,
   recordingSyncRef,
   sharedFilesRef,
+  chatLogRef,
   sessionMeetingIdRef,
   onLeave,
   onToggleRecord,
@@ -266,6 +268,8 @@ function RoomContent({
   recordingSyncRef: RefObject<RecordingSyncHandle | null>;
   /** 부모(녹화 저장)와 공유하는 첨부 목록 ref */
   sharedFilesRef: RefObject<MeetingSharedFile[]>;
+  /** 부모(녹화 저장)와 공유하는 채팅 로그 ref — 마이크 없는 회의의 AI 요약 재료 */
+  chatLogRef: RefObject<MeetingChatMessage[]>;
   /** 이 세션 문서(회의록) id — 파일만 올려도 생기고, 이후 녹화 시 같은 행에 붙입니다 */
   sessionMeetingIdRef: RefObject<string | null>;
   onLeave: () => void;
@@ -515,6 +519,7 @@ function RoomContent({
           onGroupNameChange={onGroupNameChange}
           speakerMuted={speakerMuted}
           onSpeakerMutedChange={setSpeakerMuted}
+          chatLogRef={chatLogRef}
         />
       </main>
       <footer className="bottom-bar">
@@ -632,6 +637,9 @@ export default function Room() {
   const startingRecordingRef = useRef(false);
   /** 회의 중 첨부 — RoomContent 와 공유 (파일만 올려도 문서 탭에 반영) */
   const sharedFilesRef = useRef<MeetingSharedFile[]>([]);
+  // 회의 중 채팅 전체 — 녹화 저장 시 meetings.chat_log 로 같이 저장해
+  // 마이크 없는 회의도 채팅 기록으로 AI 요약을 만들 수 있게 합니다.
+  const chatLogRef = useRef<MeetingChatMessage[]>([]);
   const sessionMeetingIdRef = useRef<string | null>(null);
 
   // 스트림을 먼저 끄면 MediaRecorder가 마지막 청크를 못 남기고 끝납니다.
@@ -737,10 +745,12 @@ export default function Room() {
       };
     }
 
-    // 파일은 서버에만 두고, DB에는 재생 URL + 회의 중 첨부를 저장합니다.
+    // 파일은 서버에만 두고, DB에는 재생 URL + 회의 중 첨부 + 채팅 기록을 저장합니다.
+    // 채팅 기록은 마이크 없이 진행한 회의도 나중에 AI 요약을 만들 수 있게 해줍니다.
     // 이미 파일만으로 만든 문서가 있으면 그 행에 녹화를 이어 붙입니다.
     const videoUrl = `${getApiBase()}/videos/${relativePath}`;
     const attachments = toMeetingAttachments(sharedFilesRef.current);
+    const chatLog = chatLogRef.current;
     const existingId = sessionMeetingIdRef.current;
 
     if (existingId) {
@@ -750,10 +760,11 @@ export default function Room() {
           video_url: videoUrl,
           title: titleStr,
           attachments,
+          chat_log: chatLog,
         })
         .eq('id', existingId);
 
-      if (updateError && /attachments/i.test(updateError.message)) {
+      if (updateError && /attachments|chat_log/i.test(updateError.message)) {
         const { error: fallbackError } = await supabase
           .from('meetings')
           .update({ video_url: videoUrl, title: titleStr })
@@ -774,11 +785,12 @@ export default function Room() {
       video_url: videoUrl,
       created_by: userData.user?.id,
       attachments,
+      chat_log: chatLog,
     });
 
     if (insertError) {
-      // attachments 컬럼이 아직 없으면(마이그레이션 전) 첨부 없이라도 회의록은 저장합니다.
-      if (/attachments/i.test(insertError.message)) {
+      // attachments/chat_log 컬럼이 아직 없으면(마이그레이션 전) 그것들 없이라도 회의록은 저장합니다.
+      if (/attachments|chat_log/i.test(insertError.message)) {
         const { error: fallbackError } = await supabase.from('meetings').insert({
           group_id: groupIdRef.current,
           title: titleStr,
@@ -1103,6 +1115,7 @@ export default function Room() {
             recordingBridgeRef={recordingBridgeRef}
             recordingSyncRef={recordingSyncRef}
             sharedFilesRef={sharedFilesRef}
+            chatLogRef={chatLogRef}
             sessionMeetingIdRef={sessionMeetingIdRef}
             onLeave={handleLeave}
             onToggleRecord={toggleRecording}

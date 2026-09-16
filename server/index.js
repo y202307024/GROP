@@ -201,6 +201,33 @@ function buildTimestampedTranscript(segments) {
     .join('\n')
 }
 
+/**
+ * 마이크 없이 진행한 회의(채팅만 있는 경우) 대비: 채팅 로그를
+ * "[MM:SS] 이름: 내용" 형태로 만들어 오디오 녹취록 대신 씁니다.
+ * 첫 메시지를 0초로 두고 상대 시간을 계산합니다.
+ */
+function buildTimestampedChatLog(chatLog) {
+  if (!Array.isArray(chatLog)) return { text: '', durationSec: 0 }
+
+  const sorted = chatLog
+    .filter((m) => m && typeof m.text === 'string' && m.text.trim())
+    .sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0))
+  if (sorted.length === 0) return { text: '', durationSec: 0 }
+
+  const startMs = Number(sorted[0].ts) || 0
+  const endMs = Number(sorted[sorted.length - 1].ts) || startMs
+
+  const text = sorted
+    .map((m) => {
+      const elapsedSec = Math.max(0, Math.round(((Number(m.ts) || startMs) - startMs) / 1000))
+      const name = String(m.name || '').trim() || '참여자'
+      return `[${formatTimestamp(elapsedSec)}] ${name}: ${m.text.trim()}`
+    })
+    .join('\n')
+
+  return { text, durationSec: Math.max(0, Math.round((endMs - startMs) / 1000)) }
+}
+
 /** LLM이 뱉은 chapters를 검증·정규화 (시간 범위 밖 / 제목 없음 제거) */
 function normalizeChapters(raw, durationSec) {
   if (!Array.isArray(raw)) return []
@@ -625,86 +652,121 @@ function extractAudio(inputPath, inputBuffer) {
 // AI 요약 엔드포인트 — 타임스탬프가 붙은 챕터까지 생성합니다.
 app.post('/api/summarize', async (req, res) => {
   try {
-    const { videoUrl } = req.body
-    if (!videoUrl || typeof videoUrl !== 'string') {
-      return res.status(400).json({ error: 'videoUrl이 필요합니다' })
+    const { videoUrl, chatLog } = req.body
+    const hasChatLog = Array.isArray(chatLog) && chatLog.length > 0
+    if ((!videoUrl || typeof videoUrl !== 'string') && !hasChatLog) {
+      return res.status(400).json({ error: 'videoUrl 또는 chatLog 중 하나는 필요합니다' })
     }
-    console.log('AI 요약 요청:', videoUrl)
 
-    // 1. 영상은 HTTPS로 다시 받지 않고, 이 컴퓨터에 저장된 파일을 읽습니다.
-    // (Vite mkcert 인증서를 Node가 검증하지 못해 unable to verify the first certificate 가 납니다.)
-    let buffer
-    const localFile = resolveMeetingVideoFile(videoUrl)
-    if (localFile) {
-      console.log('디스크에서 영상 읽음:', localFile)
-      buffer = fs.readFileSync(localFile)
-    } else {
-      // 디스크에 없으면 같은 Node 서버의 HTTP /videos 로만 받습니다.
-      // Vite(https://localhost:5173) 주소는 mkcert 때문에 Node fetch가 실패합니다.
-      const rel = extractVideosRelativePath(videoUrl)
-      const fetchUrl = rel
-        ? `http://127.0.0.1:${process.env.PORT || 3001}/videos/${rel}`
-        : videoUrl
-      console.log('로컬 파일이 없어 URL로 받습니다:', fetchUrl)
-      const response = await fetch(fetchUrl)
-      if (!response.ok) {
-        throw new Error(`영상을 내려받지 못했습니다 (HTTP ${response.status})`)
+    let transcriptForLlm = ''
+    let durationSec = 0
+    let usedChatFallback = false
+
+    // 1. 영상이 있으면 먼저 오디오 → 텍스트를 시도합니다.
+    //    (마이크 없이 진행했거나 처리 중 문제가 생기면 던지지 않고 채팅 기록으로 넘어갑니다.)
+    if (videoUrl && typeof videoUrl === 'string') {
+      console.log('AI 요약 요청 (영상):', videoUrl)
+      try {
+        // 영상은 HTTPS로 다시 받지 않고, 이 컴퓨터에 저장된 파일을 읽습니다.
+        // (Vite mkcert 인증서를 Node가 검증하지 못해 unable to verify the first certificate 가 납니다.)
+        let buffer
+        const localFile = resolveMeetingVideoFile(videoUrl)
+        if (localFile) {
+          console.log('디스크에서 영상 읽음:', localFile)
+          buffer = fs.readFileSync(localFile)
+        } else {
+          // 디스크에 없으면 같은 Node 서버의 HTTP /videos 로만 받습니다.
+          // Vite(https://localhost:5173) 주소는 mkcert 때문에 Node fetch가 실패합니다.
+          const rel = extractVideosRelativePath(videoUrl)
+          const fetchUrl = rel
+            ? `http://127.0.0.1:${process.env.PORT || 3001}/videos/${rel}`
+            : videoUrl
+          console.log('로컬 파일이 없어 URL로 받습니다:', fetchUrl)
+          const response = await fetch(fetchUrl)
+          if (!response.ok) {
+            throw new Error(`영상을 내려받지 못했습니다 (HTTP ${response.status})`)
+          }
+          buffer = Buffer.from(await response.arrayBuffer())
+        }
+        console.log('영상 준비 완료! 크기:', buffer.length)
+
+        // 영상 전체를 그대로 올리면 Whisper 25MB 한도를 금방 넘습니다.
+        // 오디오만 16kHz mono 32kbps mp3로 뽑아 용량을 10~20배 줄입니다.
+        let audioBuffer
+        try {
+          audioBuffer = await extractAudio(localFile, buffer)
+          console.log('오디오 추출 완료! 크기:', audioBuffer.length)
+        } catch (audioErr) {
+          console.warn('오디오 추출 실패, 원본 파일로 시도합니다:', audioErr.message)
+          audioBuffer = buffer
+        }
+
+        if (audioBuffer.length > MAX_AUDIO_BYTES) {
+          throw new Error(
+            `오디오가 여전히 너무 큽니다 (${(audioBuffer.length / 1024 / 1024).toFixed(1)}MB). ` +
+            `현재 한도는 ${MAX_AUDIO_BYTES / 1024 / 1024}MB 입니다. 회의를 나눠서 녹화해 주세요.`
+          )
+        }
+
+        // 2. Groq Whisper로 음성 → 텍스트 (구간별 타임스탬프 포함)
+        console.log('음성 변환 중...')
+        const groq = getGroq()
+        // 추출 성공 시 mp3, 실패해 원본을 그대로 쓰면 webm 으로 올립니다.
+        const isMp3 = audioBuffer !== buffer
+        const transcription = await groq.audio.transcriptions.create({
+          file: await toFile(
+            audioBuffer,
+            isMp3 ? 'audio.mp3' : 'audio.webm',
+            { type: isMp3 ? 'audio/mpeg' : 'audio/webm' }
+          ),
+          model: TRANSCRIBE_MODEL,
+          language: 'ko',
+          response_format: 'verbose_json',
+          timestamp_granularities: ['segment'],
+        })
+
+        const transcript = transcription.text || ''
+        const segments = Array.isArray(transcription.segments) ? transcription.segments : []
+        console.log(`변환 완료: ${segments.length}개 구간, ${(Number(transcription.duration) || 0).toFixed(0)}초`)
+
+        if (transcript.trim()) {
+          durationSec = Number(transcription.duration) || 0
+          // 타임스탬프가 있으면 그걸 쓰고, 없으면 평문으로 대체
+          transcriptForLlm = segments.length > 0 ? buildTimestampedTranscript(segments) : transcript
+        } else {
+          console.log('오디오에서 텍스트를 뽑지 못했습니다 (마이크 없이 진행한 회의일 수 있음) — 채팅 기록으로 대체를 시도합니다.')
+        }
+      } catch (audioPathErr) {
+        // 영상/음성 처리 중 어떤 이유로든 실패해도 바로 에러를 내지 않고, 채팅 기록으로 대체를 시도합니다.
+        console.warn('영상/음성 처리 실패, 채팅 기록으로 대체를 시도합니다:', audioPathErr.message)
       }
-      buffer = Buffer.from(await response.arrayBuffer())
-    }
-    console.log('영상 준비 완료! 크기:', buffer.length)
-
-    // 영상 전체를 그대로 올리면 Whisper 25MB 한도를 금방 넘습니다.
-    // 오디오만 16kHz mono 32kbps mp3로 뽑아 용량을 10~20배 줄입니다.
-    let audioBuffer
-    try {
-      audioBuffer = await extractAudio(localFile, buffer)
-      console.log('오디오 추출 완료! 크기:', audioBuffer.length)
-    } catch (audioErr) {
-      console.warn('오디오 추출 실패, 원본 파일로 시도합니다:', audioErr.message)
-      audioBuffer = buffer
     }
 
-    if (audioBuffer.length > MAX_AUDIO_BYTES) {
-      throw new Error(
-        `오디오가 여전히 너무 큽니다 (${(audioBuffer.length / 1024 / 1024).toFixed(1)}MB). ` +
-        `현재 한도는 ${MAX_AUDIO_BYTES / 1024 / 1024}MB 입니다. 회의를 나눠서 녹화해 주세요.`
-      )
+    // 3. 오디오로 텍스트를 못 얻었으면(마이크 없음 등) 채팅 기록으로 대체합니다.
+    if (!transcriptForLlm.trim() && hasChatLog) {
+      const chatResult = buildTimestampedChatLog(chatLog)
+      if (chatResult.text.trim()) {
+        console.log(`채팅 기록으로 요약합니다: 메시지 ${chatLog.length}개`)
+        transcriptForLlm = chatResult.text
+        durationSec = chatResult.durationSec
+        usedChatFallback = true
+      }
     }
 
-    // 2. Groq Whisper로 음성 → 텍스트 (구간별 타임스탬프 포함)
-    console.log('음성 변환 중...')
-    const groq = getGroq()
-    // 추출 성공 시 mp3, 실패해 원본을 그대로 쓰면 webm 으로 올립니다.
-    const isMp3 = audioBuffer !== buffer
-    const transcription = await groq.audio.transcriptions.create({
-      file: await toFile(
-        audioBuffer,
-        isMp3 ? 'audio.mp3' : 'audio.webm',
-        { type: isMp3 ? 'audio/mpeg' : 'audio/webm' }
-      ),
-      model: TRANSCRIBE_MODEL,
-      language: 'ko',
-      response_format: 'verbose_json',
-      timestamp_granularities: ['segment'],
-    })
-
-    const transcript = transcription.text || ''
-    const segments = Array.isArray(transcription.segments) ? transcription.segments : []
-    const durationSec = Number(transcription.duration) || 0
-    console.log(`변환 완료: ${segments.length}개 구간, ${durationSec.toFixed(0)}초`)
-
-    if (!transcript.trim()) {
-      throw new Error('음성에서 텍스트를 추출하지 못했습니다. 녹화에 소리가 들어갔는지 확인해 주세요.')
+    if (!transcriptForLlm.trim()) {
+      throw new Error('요약할 내용이 없습니다. 마이크 음성도, 채팅 기록도 확인되지 않았어요.')
     }
 
-    // 타임스탬프가 있으면 그걸 쓰고, 없으면 평문으로 대체
-    const transcriptForLlm = segments.length > 0
-      ? buildTimestampedTranscript(segments)
-      : transcript
-
-    // 3. Groq LLaMA로 챕터 + 요약 생성 (JSON 모드)
+    // 4. Groq LLaMA로 챕터 + 요약 생성 (JSON 모드)
     console.log('요약/챕터 생성 중...')
+    const groq = getGroq()
+    // 채팅 기록에는 이미 실제 이름이 있어 화자를 추측할 필요가 없습니다.
+    const speakerRule = usedChatFallback
+      ? '입력에는 이미 각 줄에 실제 이름이 붙어 있습니다(예: "[00:10] 민수: ..."). speakers는 이름을 추측하지 말고 그 이름을 그대로 써서 각자가 한 말을 요약하세요.'
+      : '녹취록에는 화자 표시가 없습니다. speakers는 대화의 말투·호칭·문맥으로 화자 전환을 추정해 "화자 1", "화자 2" …로 구분하고 각자 한 말을 요약하세요. 이름이 대화 중 언급되면 그 이름을 써도 됩니다. 화자를 도저히 구분할 수 없으면 speakers는 빈 배열로 두세요(억지로 나누지 마세요).'
+    const inputKindLine = usedChatFallback
+      ? '입력은 [MM:SS] 이름: 내용 형식의 회의 채팅 기록입니다(마이크 없이 텍스트로 진행한 회의).'
+      : '입력은 [MM:SS] 형식의 타임스탬프가 붙은 회의 녹취록입니다.'
     const completion = await groq.chat.completions.create({
       model: CHAT_MODEL,
       response_format: { type: 'json_object' },
@@ -713,7 +775,7 @@ app.post('/api/summarize', async (req, res) => {
         {
           role: 'system',
           content: `당신은 한국어 회의록을 정리하는 전문가입니다.
-입력은 [MM:SS] 형식의 타임스탬프가 붙은 회의 녹취록입니다.
+${inputKindLine}
 화제가 바뀌는 지점을 찾아 챕터로 나누고, 반드시 아래 구조의 JSON만 출력하세요.
 
 {
@@ -733,17 +795,17 @@ app.post('/api/summarize', async (req, res) => {
 
 규칙:
 - time은 반드시 초 단위 정수입니다. [01:30] 이면 90 입니다.
-- 챕터는 녹취록에 실제로 등장한 타임스탬프만 사용하세요. 지어내지 마세요.
+- 챕터는 입력에 실제로 등장한 타임스탬프만 사용하세요. 지어내지 마세요.
 - 챕터는 3~8개가 적당하며, 시간 순으로 정렬하세요.
 - 첫 챕터는 time 0 으로 시작하세요.
 - topics는 '시간'이 아니라 '무엇에 대해 이야기했는지' 기준으로 묶으세요. 2~6개가 적당합니다.
-- topics의 detail은 녹취록에 실제로 나온 내용만 쓰고, 없는 내용을 지어내지 마세요.
-- 녹취록에는 화자 표시가 없습니다. speakers는 대화의 말투·호칭·문맥으로 화자 전환을 추정해 "화자 1", "화자 2" …로 구분하고 각자 한 말을 요약하세요. 이름이 대화 중 언급되면 그 이름을 써도 됩니다. 화자를 도저히 구분할 수 없으면 speakers는 빈 배열로 두세요(억지로 나누지 마세요).
+- topics의 detail은 입력에 실제로 나온 내용만 쓰고, 없는 내용을 지어내지 마세요.
+- ${speakerRule}
 - 내용이 없는 항목은 빈 배열로 두세요.`,
         },
         {
           role: 'user',
-          content: `다음 회의 녹취록을 JSON으로 정리해주세요:\n\n${transcriptForLlm}`,
+          content: `다음 ${usedChatFallback ? '채팅 기록' : '회의 녹취록'}을 JSON으로 정리해주세요:\n\n${transcriptForLlm}`,
         },
       ],
     })
@@ -771,17 +833,19 @@ app.post('/api/summarize', async (req, res) => {
           .filter((s) => s && typeof s.speaker === 'string' && s.speaker.trim() && String(s.summary || '').trim())
           .map((s) => ({ speaker: String(s.speaker).trim(), summary: String(s.summary).trim() }))
       : []
-    console.log(`요약 완료! 챕터 ${chapters.length}개, 주제 ${topics.length}개, 화자 ${speakers.length}명`)
+    console.log(`요약 완료! (${usedChatFallback ? '채팅 기록' : '음성'} 기반) 챕터 ${chapters.length}개, 주제 ${topics.length}개, 화자 ${speakers.length}명`)
 
     res.json({
       success: true,
-      // 상세요약 = 타임스탬프가 붙은 전체 녹취록(영상 풀내용)
+      // 상세요약 = 타임스탬프가 붙은 전체 녹취록(영상 풀내용, 채팅 대체 시 채팅 로그)
       transcript: transcriptForLlm,
       summary: summaryText,
       chapters,
       topics,
       speakers,
       duration: durationSec,
+      // 클라이언트가 "채팅 기록으로 요약했어요" 안내를 띄울 때 씁니다.
+      source: usedChatFallback ? 'chat' : 'audio',
     })
   } catch (err) {
     console.error('AI 요약 실패:', err.message)

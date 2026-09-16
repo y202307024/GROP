@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
 import { explainAuthError, isSupabaseEnvConfigured } from '../authErrors';
 import { startOAuth } from '../utils/oauthLogin';
+import ProfileEditModal from '../components/ProfileEditModal';
 
 /**
  * 회원가입 페이지
@@ -17,6 +18,8 @@ export default function SignUp() {
   const [agree, setAgree] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState('');
+  // 가입 직후 프로필(닉네임/아바타) 설정 팝업을 이 페이지에서 바로 띄웁니다.
+  const [showProfileSetup, setShowProfileSetup] = useState(false);
   const navigate = useNavigate();
 
   const envOk = isSupabaseEnvConfigured();
@@ -75,7 +78,9 @@ export default function SignUp() {
       }
 
       if (data.session) {
-        navigate('/setup-profile');
+        // 메인으로 넘어가기 전에, 이 화면 위에서 바로 프로필 설정 팝업을 띄웁니다.
+        // 저장을 마쳐야(ProfileEditModal onClose) 메인으로 이동합니다.
+        setShowProfileSetup(true);
         return;
       }
 
@@ -172,6 +177,13 @@ export default function SignUp() {
           <p className="fine-print">가입하면 GROP의 이용약관 및 개인정보 처리방침에 동의하게 됩니다.</p>
         </form>
       </section>
+
+      <ProfileEditModal
+        open={showProfileSetup}
+        required
+        onClose={() => navigate('/main')}
+        onSaved={() => {}}
+      />
     </div>
   );
 }
