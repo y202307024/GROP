@@ -97,6 +97,8 @@ export default function MainPage() {
   const [groupName, setGroupName] = useState('');
   const [groups, setGroups] = useState<Group[]>([]);
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
+  /** 소속 그룹 중 가장 가까운 예정 회의 (캘린더 패널용) */
+  const [nextMeeting, setNextMeeting] = useState<MeetingRow | null>(null);
   const [inviteInput, setInviteInput] = useState(searchParams.get('code')?.toUpperCase() ?? '');
   const [joinMsg, setJoinMsg] = useState('');
   const [joinSuccess, setJoinSuccess] = useState(false);
@@ -134,6 +136,7 @@ export default function MainPage() {
     const ids = list.map((g) => g.id);
     if (ids.length === 0) {
       setMeetings([]);
+      setNextMeeting(null);
       return;
     }
     const { data: meetingRows } = await supabase
@@ -143,6 +146,18 @@ export default function MainPage() {
       .order('date', { ascending: false })
       .limit(4);
     setMeetings(meetingRows || []);
+
+    // 캘린더: 지금 이후 일정 중 가장 가까운 1건
+    const nowIso = new Date().toISOString();
+    const { data: upcoming } = await supabase
+      .from('meetings')
+      .select('id, title, date, summary, group_id')
+      .in('group_id', ids)
+      .gte('date', nowIso)
+      .order('date', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    setNextMeeting(upcoming ?? null);
   };
 
   const createGroup = async () => {
@@ -187,6 +202,20 @@ export default function MainPage() {
 
   const firstGroup = groups[0];
   const calendarLabel = `${new Date().getMonth() + 1}월 ${new Date().getDate()}일`;
+
+  /** 다음 회의 한 줄 표시용 */
+  const nextMeetingLine = (() => {
+    if (!nextMeeting?.date) return null;
+    const d = new Date(nextMeeting.date);
+    const md = `${d.getMonth() + 1}월 ${d.getDate()}일`;
+    let h = d.getHours();
+    const m = String(d.getMinutes()).padStart(2, '0');
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    const time = `${h}:${m}${ampm}`;
+    const title = nextMeeting.title?.trim() || '회의';
+    return `${md} ${time} · ${title}`;
+  })();
 
   return (
     <AppShell activePage="main">
@@ -331,11 +360,10 @@ export default function MainPage() {
         <section>
           <div className="section-head">
             <h2>캘린더</h2>
-            {/* 캘린더 화면은 아직 없어 사이드바와 동일하게 안내만 합니다 */}
             <a
               className="see-all"
-              href="#"
-              onClick={(e) => { e.preventDefault(); alert('아직 준비 중인 기능입니다'); }}
+              href="/calendar"
+              onClick={(e) => { e.preventDefault(); navigate('/calendar'); }}
             >
               전체 보기 &gt;
             </a>
@@ -343,7 +371,26 @@ export default function MainPage() {
           <div className="calendar-panel">
             <div className="calendar-date">{calendarLabel}</div>
             <MiniWeek />
-            <p className="calendar-empty">예정 되어있는 회의가 없습니다.</p>
+            {nextMeetingLine && nextMeeting ? (
+              <button
+                type="button"
+                className="calendar-empty"
+                style={{
+                  cursor: 'pointer',
+                  border: 'none',
+                  background: 'transparent',
+                  width: '100%',
+                  color: 'inherit',
+                  font: 'inherit',
+                  padding: 0,
+                }}
+                onClick={() => navigate(`/group/${nextMeeting.group_id}/meeting/${nextMeeting.id}`)}
+              >
+                {nextMeetingLine}
+              </button>
+            ) : (
+              <p className="calendar-empty">예정 되어있는 회의가 없습니다.</p>
+            )}
           </div>
         </section>
       </div>

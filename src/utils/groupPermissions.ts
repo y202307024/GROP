@@ -4,6 +4,14 @@ import { supabase } from '../services/supabaseClient';
 export type GroupPermissionFlags = {
   membersCanRecord: boolean;
   membersCanDraw: boolean;
+  membersCanChangeBoard: boolean;
+};
+
+/** 멤버 한 명에 대한 개별 권한 (기본 true = 그룹 설정을 따름) */
+export type MemberPermissionFlags = {
+  canRecord: boolean;
+  canDraw: boolean;
+  canChangeBoard: boolean;
 };
 
 export type GroupMeta = {
@@ -18,6 +26,13 @@ export type GroupMeta = {
 const DEFAULT_SETTINGS: GroupPermissionFlags = {
   membersCanRecord: true,
   membersCanDraw: true,
+  membersCanChangeBoard: true,
+};
+
+const DEFAULT_MEMBER: MemberPermissionFlags = {
+  canRecord: true,
+  canDraw: true,
+  canChangeBoard: true,
 };
 
 /**
@@ -35,7 +50,7 @@ export async function fetchGroupMeta(groupId: string): Promise<GroupMeta | null>
 
   const { data: settings } = await supabase
     .from('group_settings')
-    .select('members_can_record, members_can_draw')
+    .select('members_can_record, members_can_draw, members_can_change_board')
     .eq('group_id', groupId)
     .maybeSingle();
 
@@ -48,8 +63,51 @@ export async function fetchGroupMeta(groupId: string): Promise<GroupMeta | null>
     settings: {
       membersCanRecord: settings?.members_can_record ?? DEFAULT_SETTINGS.membersCanRecord,
       membersCanDraw: settings?.members_can_draw ?? DEFAULT_SETTINGS.membersCanDraw,
+      membersCanChangeBoard:
+        settings?.members_can_change_board ?? DEFAULT_SETTINGS.membersCanChangeBoard,
     },
   };
+}
+
+/** 특정 멤버의 개별 권한. 행이 없으면 기본(허용). */
+export async function fetchMemberPermissions(
+  groupId: string,
+  userId: string,
+): Promise<MemberPermissionFlags> {
+  const { data } = await supabase
+    .from('group_member_permissions')
+    .select('can_record, can_draw, can_change_board')
+    .eq('group_id', groupId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (!data) return { ...DEFAULT_MEMBER };
+  return {
+    canRecord: data.can_record ?? true,
+    canDraw: data.can_draw ?? true,
+    canChangeBoard: data.can_change_board ?? true,
+  };
+}
+
+/** 방장이 멤버별 권한을 저장합니다. */
+export async function saveMemberPermissions(
+  groupId: string,
+  userId: string,
+  flags: MemberPermissionFlags,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await supabase.from('group_member_permissions').upsert(
+    {
+      group_id: groupId,
+      user_id: userId,
+      can_record: flags.canRecord,
+      can_draw: flags.canDraw,
+      can_change_board: flags.canChangeBoard,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'group_id,user_id' },
+  );
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
 }
 
 /** 현재 유저가 그룹 방장(created_by)인지 */
@@ -58,18 +116,47 @@ export function isGroupOwner(meta: GroupMeta | null | undefined, userId: string 
   return meta.createdBy === userId;
 }
 
-/** 녹화 가능: 방장이거나 멤버 녹화 허용 */
-export function canRecord(meta: GroupMeta | null | undefined, userId: string | null | undefined): boolean {
+/**
+ * 녹화 가능: 방장 OR (그룹 허용 AND 멤버 허용)
+ * memberFlags 없으면 멤버 허용으로 간주합니다.
+ */
+export function canRecord(
+  meta: GroupMeta | null | undefined,
+  userId: string | null | undefined,
+  memberFlags?: MemberPermissionFlags | null,
+): boolean {
   if (!meta || !userId) return false;
   if (isGroupOwner(meta, userId)) return true;
-  return meta.settings.membersCanRecord;
+  if (!meta.settings.membersCanRecord) return false;
+  return memberFlags?.canRecord ?? true;
 }
 
-/** 판서 가능: 방장이거나 멤버 판서 허용 */
-export function canDraw(meta: GroupMeta | null | undefined, userId: string | null | undefined): boolean {
+/**
+ * 판서 가능: 방장 OR (그룹 허용 AND 멤버 허용)
+ */
+export function canDraw(
+  meta: GroupMeta | null | undefined,
+  userId: string | null | undefined,
+  memberFlags?: MemberPermissionFlags | null,
+): boolean {
   if (!meta || !userId) return false;
   if (isGroupOwner(meta, userId)) return true;
-  return meta.settings.membersCanDraw;
+  if (!meta.settings.membersCanDraw) return false;
+  return memberFlags?.canDraw ?? true;
+}
+
+/**
+ * 보드 변경(선택·생성·이름) 가능: 방장 OR (그룹 허용 AND 멤버 허용)
+ */
+export function canChangeBoard(
+  meta: GroupMeta | null | undefined,
+  userId: string | null | undefined,
+  memberFlags?: MemberPermissionFlags | null,
+): boolean {
+  if (!meta || !userId) return false;
+  if (isGroupOwner(meta, userId)) return true;
+  if (!meta.settings.membersCanChangeBoard) return false;
+  return memberFlags?.canChangeBoard ?? true;
 }
 
 /** 초대코드 재발급용 랜덤 코드 (GRP-XXXXX) */

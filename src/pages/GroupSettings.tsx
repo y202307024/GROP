@@ -27,6 +27,7 @@ export default function GroupSettings() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [membersCanRecord, setMembersCanRecord] = useState(true);
   const [membersCanDraw, setMembersCanDraw] = useState(true);
+  const [membersCanChangeBoard, setMembersCanChangeBoard] = useState(true);
   const [copied, setCopied] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -57,6 +58,7 @@ export default function GroupSettings() {
       setAvatarUrl(loaded.avatarUrl);
       setMembersCanRecord(loaded.settings.membersCanRecord);
       setMembersCanDraw(loaded.settings.membersCanDraw);
+      setMembersCanChangeBoard(loaded.settings.membersCanChangeBoard);
       setLoading(false);
     };
     void load();
@@ -152,6 +154,7 @@ export default function GroupSettings() {
         group_id: id,
         members_can_record: membersCanRecord,
         members_can_draw: membersCanDraw,
+        members_can_change_board: membersCanChangeBoard,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'group_id' },
@@ -163,7 +166,7 @@ export default function GroupSettings() {
         prev
           ? {
               ...prev,
-              settings: { membersCanRecord, membersCanDraw },
+              settings: { membersCanRecord, membersCanDraw, membersCanChangeBoard },
             }
           : prev,
       );
@@ -274,7 +277,10 @@ export default function GroupSettings() {
           {owner ? (
             <div className="settings-section">
               <h3>멤버 권한</h3>
-              <p className="settings-desc">방장은 항상 가능합니다. 아래는 일반 멤버 허용 여부입니다.</p>
+              <p className="settings-desc">
+                방장은 항상 가능합니다. 아래는 일반 멤버 기본 허용입니다.
+                특정 멤버만 막으려면 팀원 목록에서 그 멤버를 클릭하세요.
+              </p>
               <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                 <input
                   type="checkbox"
@@ -283,13 +289,21 @@ export default function GroupSettings() {
                 />
                 회의록 녹화 / 저장 허용
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                 <input
                   type="checkbox"
                   checked={membersCanDraw}
                   onChange={(e) => setMembersCanDraw(e.target.checked)}
                 />
                 화이트보드 판서 허용
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={membersCanChangeBoard}
+                  onChange={(e) => setMembersCanChangeBoard(e.target.checked)}
+                />
+                보드 변경(선택·생성·이름) 허용
               </label>
               <button className="primary-button" type="button" disabled={saving} onClick={savePermissions}>
                 권한 저장

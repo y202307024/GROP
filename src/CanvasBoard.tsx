@@ -132,6 +132,8 @@ type Props = {
   onTextFontSizeChange?: (size: number) => void;
   /** false면 판서 불가(관전). 원격 획 수신은 그대로입니다. */
   canDraw?: boolean;
+  /** false면 보드 선택·생성·이름 변경 불가. 다른 사람이 바꾼 보드는 따라갑니다. */
+  canChangeBoard?: boolean;
 };
 
 export type CanvasBoardHandle = {
@@ -762,6 +764,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   onTextSelectedChange,
   onTextFontSizeChange,
   canDraw = true,
+  canChangeBoard = true,
 }, ref) {
   const isEmbedded = embedded || meetingMode;
   // 회의방·단독 캔버스 모두 원본 CSS 껍데기를 쓰면 내부 상단바를 숨깁니다.
@@ -1109,6 +1112,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   // 초기 선택창에서 '새 보드 생성'을 눌렀을 때 실행되는 함수입니다.
   // 새 보드를 데이터베이스에 만들고, 그 보드 ID를 현재 캔버스에 연결합니다.
   const handleCreateNewBoardChoice = async () => {
+    if (!canChangeBoard) {
+      alert('보드 변경 권한이 없습니다.');
+      return;
+    }
     setShowInitChoice(false);
     initChoiceHandledRef.current = true;
     try {
@@ -1146,6 +1153,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   // 초기 선택창에서 '기존 보드 불러오기'를 눌렀을 때 실행되는 함수입니다.
   // 이미 저장된 보드 중 가장 최근 보드를 찾아서 현재 캔버스에 연결합니다.
   const handleUseExistingBoardChoice = async () => {
+    if (!canChangeBoard) {
+      alert('보드 변경 권한이 없습니다.');
+      return;
+    }
     setShowInitChoice(false);
     initChoiceHandledRef.current = true;
     try {
@@ -1732,6 +1743,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   }, [groupId, groupName]);
 
   const createBoard = async () => {
+    if (!canChangeBoard) {
+      alert('보드 변경 권한이 없습니다.');
+      return;
+    }
     const { data: userData } = await supabase.auth.getUser();
     if (!userData.user) {
       alert('보드를 만들려면 로그인이 필요합니다.\n메인에서 로그인한 뒤 캔버스로 다시 들어와 주세요.');
@@ -1764,6 +1779,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   };
 
   const saveBoardTitle = async () => {
+    if (!canChangeBoard) return;
     if (!boardId) return;
     const title = boardTitle.trim() || '새 보드';
     if (lastSavedTitleRef.current[boardId] === title) return;
@@ -4381,8 +4397,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             <span style={{ color: meetingMode ? '#949ba4' : '#6b7280', fontSize: 12 }}>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
             <select
               value={boardId}
-              onChange={(e) => setBoardId(e.target.value)}
-              disabled={isLoadingBoards}
+              onChange={(e) => {
+                if (!canChangeBoard) {
+                  alert('보드 변경 권한이 없습니다.');
+                  return;
+                }
+                setBoardId(e.target.value);
+              }}
+              disabled={isLoadingBoards || !canChangeBoard}
               style={{
                 padding: meetingMode ? '6px 8px' : '8px 10px',
                 border: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
@@ -4390,6 +4412,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 color: meetingMode ? '#dbdee1' : 'inherit',
                 minWidth: 120,
                 fontSize: meetingMode ? 12 : undefined,
+                opacity: canChangeBoard ? 1 : 0.6,
               }}
             >
               <option value="">선택...</option>
@@ -4402,15 +4425,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             <input
               value={boardTitle}
               onChange={(e) => setBoardTitle(e.target.value)}
-              onBlur={() => void saveBoardTitle()}
+              onBlur={() => {
+                if (!canChangeBoard) return;
+                void saveBoardTitle();
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
+                  if (!canChangeBoard) return;
                   void saveBoardTitle();
                   (e.target as HTMLInputElement).blur();
                 }
               }}
               placeholder="보드 이름"
+              disabled={!canChangeBoard}
               style={{
                 padding: meetingMode ? '6px 8px' : '8px 10px',
                 border: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
@@ -4418,9 +4446,23 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 color: meetingMode ? '#dbdee1' : 'inherit',
                 width: meetingMode ? 120 : 160,
                 fontSize: meetingMode ? 12 : undefined,
+                opacity: canChangeBoard ? 1 : 0.6,
               }}
             />
-            <button type="button" onClick={createBoard} style={{ padding: meetingMode ? '6px 8px' : '8px 10px', border: 'none', background: meetingMode ? '#5865f2' : '#111827', color: 'white', cursor: 'pointer', fontSize: meetingMode ? 12 : undefined }}>
+            <button
+              type="button"
+              onClick={() => void createBoard()}
+              disabled={!canChangeBoard}
+              style={{
+                padding: meetingMode ? '6px 8px' : '8px 10px',
+                border: 'none',
+                background: meetingMode ? '#5865f2' : '#111827',
+                color: 'white',
+                cursor: canChangeBoard ? 'pointer' : 'not-allowed',
+                fontSize: meetingMode ? 12 : undefined,
+                opacity: canChangeBoard ? 1 : 0.6,
+              }}
+            >
               새 보드
             </button>
             {!meetingMode ? (
@@ -5171,19 +5213,38 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             }}
           >
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>새 보드 생성 또는 기존 보드 불러오기</div>
-            <div style={{ fontSize: 13, color: meetingMode ? '#c7c9cc' : '#374151' }}>원하는 작업을 선택하세요.</div>
+            <div style={{ fontSize: 13, color: meetingMode ? '#c7c9cc' : '#374151' }}>
+              {canChangeBoard
+                ? '원하는 작업을 선택하세요.'
+                : '보드 변경 권한이 없습니다. 다른 참가자가 고른 보드를 따릅니다.'}
+            </div>
             <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'flex-end' }}>
               <button
                 type="button"
                 onClick={handleUseExistingBoardChoice}
-                style={{ padding: '8px 12px', border: '1px solid #e5e7eb', background: meetingMode ? '#313338' : 'white', cursor: 'pointer' }}
+                disabled={!canChangeBoard}
+                style={{
+                  padding: '8px 12px',
+                  border: '1px solid #e5e7eb',
+                  background: meetingMode ? '#313338' : 'white',
+                  cursor: canChangeBoard ? 'pointer' : 'not-allowed',
+                  opacity: canChangeBoard ? 1 : 0.5,
+                }}
               >
                 기존 보드 불러오기
               </button>
               <button
                 type="button"
                 onClick={handleCreateNewBoardChoice}
-                style={{ padding: '8px 12px', border: 'none', background: '#111827', color: 'white', cursor: 'pointer' }}
+                disabled={!canChangeBoard}
+                style={{
+                  padding: '8px 12px',
+                  border: 'none',
+                  background: '#111827',
+                  color: 'white',
+                  cursor: canChangeBoard ? 'pointer' : 'not-allowed',
+                  opacity: canChangeBoard ? 1 : 0.5,
+                }}
               >
                 새 보드 생성
               </button>
