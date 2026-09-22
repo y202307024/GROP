@@ -7,12 +7,14 @@ import mkcert from 'vite-plugin-mkcert'
 export default defineConfig({
   plugins: [
     react(),
+    // LAN IP도 인증서에 넣어 같은 Wi-Fi 기기에서 https://IP:5173 접속이 되게 합니다.
     mkcert({
-      hosts: ['localhost', '127.0.0.1'],
+      hosts: ['localhost', '127.0.0.1', '10.105.3.122', '192.168.236.1', '192.168.233.1'],
     }),
   ],
   server: {
-    https: true,
+    // mkcert 플러그인이 인증서를 붙입니다. Vite 타입상 boolean 대신 객체를 씁니다.
+    https: {},
     // Cloudflare 터널 주소는 매번 바뀌므로 호스트 검사를 열어 둡니다.
     host: true,
     allowedHosts: true,

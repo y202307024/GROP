@@ -1,7 +1,7 @@
 const express = require('express')
 const cors = require('cors')
 const dotenv = require('dotenv')
-const { AccessToken } = require('livekit-server-sdk')
+const { AccessToken, RoomServiceClient } = require('livekit-server-sdk')
 const Groq = require('groq-sdk')
 const { toFile } = require('groq-sdk')
 const multer = require('multer')
@@ -318,12 +318,14 @@ app.post('/api/livekit-token', async (req, res) => {
       process.env.LIVEKIT_API_SECRET,
       { identity, name: userName || identity }
     )
+    // canUpdateOwnMetadata: 보드 선택 상태를 participant metadata로 공유할 때 필요합니다.
     token.addGrant({
       roomJoin: true,
       room: roomName,
       canPublish: true,
       canSubscribe: true,
       canPublishData: true,
+      canUpdateOwnMetadata: true,
     })
 
     const jwt = await token.toJwt()
@@ -332,6 +334,39 @@ app.post('/api/livekit-token', async (req, res) => {
   } catch (err) {
     console.error('토큰 발급 실패:', err.message)
     res.status(500).json({ error: err.message })
+  }
+})
+
+/**
+ * 방장이 멤버를 내보낼 때 LiveKit 방에서 강제 퇴장시킵니다.
+ * roomName = 그룹 id, identity = 대상 user id
+ */
+app.post('/api/livekit-remove-participant', async (req, res) => {
+  try {
+    const roomName = String(req.body?.roomName || '').trim()
+    const identity = String(req.body?.identity || '').trim()
+    if (!roomName || !identity) {
+      return res.status(400).json({ error: 'roomName과 identity가 필요합니다' })
+    }
+
+    const host = process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || ''
+    // wss:// → https:// (RoomService HTTP API)
+    const httpHost = host.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:')
+    if (!httpHost || !process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) {
+      return res.status(500).json({ error: 'LiveKit 서버 설정이 없습니다' })
+    }
+
+    const svc = new RoomServiceClient(
+      httpHost,
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET,
+    )
+    await svc.removeParticipant(roomName, identity)
+    res.json({ ok: true })
+  } catch (err) {
+    // 방이 비어 있거나 참가자가 없으면 실패할 수 있음 — 클라이언트는 DB 강퇴만으로도 OK
+    console.error('LiveKit 참가자 제거 실패:', err.message)
+    res.status(200).json({ ok: false, error: err.message })
   }
 })
 

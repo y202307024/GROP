@@ -22,6 +22,8 @@ type Props = {
   groupName?: string;
   /** 이름 저장 후 부모(헤더 등) 상태를 맞출 때 사용 */
   onGroupNameChange?: (name: string) => void;
+  /** false면 그룹 이름 인라인 편집 비활성 (방장만 true) */
+  canEditGroupName?: boolean;
   /** 로컬 헤드셋(스피커) 음소거 — RoomAudioRenderer volume과 연동 */
   speakerMuted?: boolean;
   onSpeakerMutedChange?: (muted: boolean) => void;
@@ -101,6 +103,7 @@ export default function MeetingChatPanel({
   groupId: _groupId,
   groupName = '',
   onGroupNameChange,
+  canEditGroupName = true,
   speakerMuted = false,
   onSpeakerMutedChange,
   chatLogRef,
@@ -298,7 +301,7 @@ export default function MeetingChatPanel({
                   }
                 }}
               />
-            ) : (
+            ) : canEditGroupName ? (
               <button
                 type="button"
                 className="group-name-button"
@@ -311,6 +314,8 @@ export default function MeetingChatPanel({
                   <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
                 </svg>
               </button>
+            ) : (
+              <span className="group-name-text">{groupName || '그룹'}</span>
             )}
           </div>
 

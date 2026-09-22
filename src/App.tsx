@@ -17,6 +17,7 @@ import AiSummaryPage from './pages/AiSummaryPage'
 import CalendarPage from './pages/CalendarPage'
 import JoinGroupPage from './pages/JoinGroupPage'
 import TimelapsePage from './pages/TimelapsePage'
+import GroupAnnouncements from './pages/GroupAnnouncements'
 import NotFound from './pages/NotFound'
 
 
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="/group/:groupId/profile" element={<GroupProfile />} />
         <Route path="/group/:id" element={<GroupPage />} />
         <Route path="/group/:id/settings" element={<GroupSettings />} />
+        <Route path="/group/:id/announcements" element={<GroupAnnouncements />} />
         <Route path="/documents" element={<DocumentList />} />
         <Route path="/meetings" element={<MeetingList />} />
         <Route path="/group/:id/meetings" element={<MeetingList />} />

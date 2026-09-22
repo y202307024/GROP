@@ -4,22 +4,39 @@ import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import { getAvatarSrc } from '../utils/avatarOptions';
+import { fetchGroupMeta, isGroupOwner, type GroupMeta } from '../utils/groupPermissions';
 
-type Group = { id: string; name: string; invite_code: string };
+type Group = {
+  id: string;
+  name: string;
+  invite_code: string;
+  created_by?: string | null;
+  avatar_url?: string | null;
+};
 type MyProfile = { nickname: string | null; avatar: string | null; avatar_url: string | null };
-type MemberPreview = { nickname: string; avatar: string };
+type MemberPreview = { nickname: string; avatar: string; is_owner?: boolean; user_id?: string };
 
 /**
- * 그룹 상세 — grop/pages/group-detail.html 마크업과 group-detail.css 를 그대로 사용합니다.
+ * 그룹 상세 — 그룹 프사·방장 기준·공지/예약 바로가기.
  */
 export default function GroupPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [group, setGroup] = useState<Group | null>(null);
+  const [meta, setMeta] = useState<GroupMeta | null>(null);
+  const [userId, setUserId] = useState('');
   const [myProfile, setMyProfile] = useState<MyProfile | null>(null);
   const [members, setMembers] = useState<MemberPreview[]>([]);
   const [meetingCount, setMeetingCount] = useState(0);
+  const [nextMeetingLabel, setNextMeetingLabel] = useState('미정');
+  const [latestNotice, setLatestNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleTitle, setScheduleTitle] = useState('');
+  const [scheduleWhen, setScheduleWhen] = useState('');
+  const [scheduling, setScheduling] = useState(false);
+
+  const owner = isGroupOwner(meta, userId);
 
   const copyInviteCode = async () => {
     if (!group) return;
@@ -33,22 +50,86 @@ export default function GroupPage() {
     }
   };
 
+  const refreshMeetings = async (groupId: string) => {
+    const { count } = await supabase
+      .from('meetings')
+      .select('id', { count: 'exact', head: true })
+      .eq('group_id', groupId);
+    setMeetingCount(count ?? 0);
+
+    const nowIso = new Date().toISOString();
+    const { data: upcoming } = await supabase
+      .from('meetings')
+      .select('title, date')
+      .eq('group_id', groupId)
+      .gte('date', nowIso)
+      .order('date', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (upcoming?.date) {
+      const d = new Date(upcoming.date);
+      const label = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      setNextMeetingLabel(upcoming.title ? `${label} · ${upcoming.title}` : label);
+    } else {
+      setNextMeetingLabel('미정');
+    }
+  };
+
   useEffect(() => {
-    supabase.from('groups').select('*').eq('id', id).single()
-      .then(({ data }) => { if (data) setGroup(data); });
+    let mounted = true;
+    const load = async () => {
+      if (!id) return;
+      const { data: userData } = await supabase.auth.getUser();
+      if (!mounted) return;
+      setUserId(userData.user?.id || '');
 
-    supabase.from('meetings').select('id', { count: 'exact', head: true }).eq('group_id', id)
-      .then(({ count }) => setMeetingCount(count ?? 0));
+      const loadedMeta = await fetchGroupMeta(id);
+      if (!mounted) return;
+      setMeta(loadedMeta);
+      if (loadedMeta) {
+        setGroup({
+          id: loadedMeta.id,
+          name: loadedMeta.name,
+          invite_code: loadedMeta.inviteCode,
+          created_by: loadedMeta.createdBy,
+          avatar_url: loadedMeta.avatarUrl,
+        });
+      } else {
+        const { data } = await supabase.from('groups').select('*').eq('id', id).single();
+        if (mounted && data) setGroup(data);
+      }
 
-    supabase.rpc('get_group_members_with_profiles', { p_group_id: id })
-      .then(({ data }) => {
-        if (data) {
-          setMembers(data.map((m: { nickname: string; avatar: string }) => ({
+      await refreshMeetings(id);
+
+      const { data: memberData } = await supabase.rpc('get_group_members_with_profiles', {
+        p_group_id: id,
+      });
+      if (mounted && memberData) {
+        setMembers(
+          memberData.map((m: MemberPreview & { nickname: string; avatar: string }) => ({
             nickname: m.nickname || '멤버',
             avatar: m.avatar || '🙂',
-          })));
-        }
-      });
+            is_owner: m.is_owner,
+            user_id: m.user_id,
+          })),
+        );
+      }
+
+      const { data: notice } = await supabase
+        .from('group_announcements')
+        .select('title')
+        .eq('group_id', id)
+        .not('published_at', 'is', null)
+        .order('published_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (mounted) setLatestNotice(notice?.title ?? null);
+    };
+    void load();
+    return () => {
+      mounted = false;
+    };
   }, [id]);
 
   useEffect(() => {
@@ -77,8 +158,33 @@ export default function GroupPage() {
 
       setMyProfile(defaultProfile ?? { nickname: null, avatar: '🐱', avatar_url: null });
     };
-    fetchMyProfile();
+    void fetchMyProfile();
   }, [id]);
+
+  /** 방장: 회의 예약 → meetings insert → 멤버 캘린더에 자동 표시 */
+  const submitSchedule = async () => {
+    if (!owner || !id) return;
+    if (!scheduleTitle.trim() || !scheduleWhen) {
+      alert('제목과 일시를 입력해 주세요.');
+      return;
+    }
+    setScheduling(true);
+    const { error } = await supabase.from('meetings').insert({
+      group_id: id,
+      title: scheduleTitle.trim(),
+      date: new Date(scheduleWhen).toISOString(),
+    });
+    setScheduling(false);
+    if (error) {
+      alert(`예약 실패: ${error.message}`);
+      return;
+    }
+    setScheduleOpen(false);
+    setScheduleTitle('');
+    setScheduleWhen('');
+    await refreshMeetings(id);
+    alert('회의가 예약되었습니다. 그룹원 캘린더에 표시됩니다.');
+  };
 
   if (!group) {
     return (
@@ -89,6 +195,7 @@ export default function GroupPage() {
   }
 
   const extra = Math.max(0, members.length - 3);
+  const groupAvatarLetter = (group.name.trim().charAt(0) || 'G').toUpperCase();
 
   return (
     <AppShell activePage="main">
@@ -99,10 +206,13 @@ export default function GroupPage() {
 
         <div className="group-detail-profile-row">
           <div className="group-detail-identity">
+            {/* 그룹 프사 — groups.avatar_url (개인 프로필과 분리) */}
             <div className="group-detail-avatar">
-              {myProfile?.avatar_url
-                ? <img src={myProfile.avatar_url} alt="" />
-                : (group.name.trim().charAt(0) || 'G')}
+              {group.avatar_url ? (
+                <img src={group.avatar_url} alt="" />
+              ) : (
+                groupAvatarLetter
+              )}
             </div>
             <div>
               <div className="group-detail-name">{group.name}</div>
@@ -141,9 +251,16 @@ export default function GroupPage() {
             </div>
             <span>멤버 {members.length}명</span>
           </div>
-          <button className="group-meeting-button" type="button" onClick={() => navigate(`/room/${id}`)}>
-            회의방으로 이동
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {owner ? (
+              <button className="secondary-button" type="button" onClick={() => setScheduleOpen(true)}>
+                회의 예약
+              </button>
+            ) : null}
+            <button className="group-meeting-button" type="button" onClick={() => navigate(`/room/${id}`)}>
+              회의방으로 이동
+            </button>
+          </div>
         </div>
 
         <div className="group-detail-memo">
@@ -154,7 +271,7 @@ export default function GroupPage() {
           <div className="group-stat-card">
             <div className="group-stat-emoji">📅</div>
             <div className="group-stat-label">다음 일정</div>
-            <div className="group-stat-value">미정</div>
+            <div className="group-stat-value" style={{ fontSize: 14 }}>{nextMeetingLabel}</div>
           </div>
           <div className="group-stat-card" onClick={() => navigate(`/group/${id}/members`)} style={{ cursor: 'pointer' }}>
             <div className="group-stat-emoji">👥</div>
@@ -179,8 +296,8 @@ export default function GroupPage() {
             <div className="group-preview-list">
               {members.slice(0, 3).map((m, i) => (
                 <div key={`${m.nickname}-${i}`}>
-                  {i === 0 ? `👑 ${m.nickname}` : m.nickname}
-                  {i === 0 && <span className="group-preview-muted"> · 방장</span>}
+                  {m.is_owner ? `👑 ${m.nickname}` : m.nickname}
+                  {m.is_owner && <span className="group-preview-muted"> · 방장</span>}
                 </div>
               ))}
             </div>
@@ -188,16 +305,75 @@ export default function GroupPage() {
 
           <div className="group-preview-card">
             <div className="group-preview-header">
-              <span>최근 회의록</span>
-              <span className="group-preview-link" onClick={() => navigate(`/group/${id}/meetings`)} style={{ cursor: 'pointer' }}>
+              <span>공지사항</span>
+              <span
+                className="group-preview-link"
+                onClick={() => navigate(`/group/${id}/announcements`)}
+                style={{ cursor: 'pointer' }}
+              >
                 전체보기 ›
               </span>
             </div>
             <div className="group-preview-list">
-              <div className="group-preview-muted">회의록에서 지난 기록을 확인하세요.</div>
+              {latestNotice ? (
+                <div>{latestNotice}</div>
+              ) : (
+                <div className="group-preview-muted">게시된 공지가 없습니다.</div>
+              )}
             </div>
           </div>
         </div>
+
+        {scheduleOpen ? (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.35)',
+              display: 'grid',
+              placeItems: 'center',
+              zIndex: 50,
+            }}
+            onClick={() => setScheduleOpen(false)}
+          >
+            <div
+              className="settings-card"
+              style={{ width: 'min(420px, 92vw)', margin: 0 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="settings-section">
+                <h3>회의 예약</h3>
+                <p className="settings-desc">예약하면 그룹원 캘린더에 자동으로 표시됩니다.</p>
+                <div className="settings-row">
+                  <label>제목</label>
+                  <input
+                    className="settings-field"
+                    value={scheduleTitle}
+                    onChange={(e) => setScheduleTitle(e.target.value)}
+                    placeholder="예: 주간 회의"
+                  />
+                </div>
+                <div className="settings-row">
+                  <label>일시</label>
+                  <input
+                    className="settings-field"
+                    type="datetime-local"
+                    value={scheduleWhen}
+                    onChange={(e) => setScheduleWhen(e.target.value)}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="primary-button" type="button" disabled={scheduling} onClick={submitSchedule}>
+                    {scheduling ? '저장 중...' : '예약하기'}
+                  </button>
+                  <button className="secondary-button" type="button" onClick={() => setScheduleOpen(false)}>
+                    취소
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </AppShell>
   );
