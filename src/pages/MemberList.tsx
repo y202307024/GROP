@@ -6,10 +6,14 @@ import Icon from '../components/Icon';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { getApiBase } from '../utils/apiBase';
 import {
+  canChangeBoard,
+  canDraw,
+  canRecord,
   fetchGroupMeta,
   fetchMemberPermissions,
   isGroupOwner,
   saveMemberPermissions,
+  type GroupMeta,
   type MemberPermissionFlags,
 } from '../utils/groupPermissions';
 
@@ -24,6 +28,7 @@ type Member = {
 
 /**
  * 팀원 목록 — 방장은 멤버를 클릭해 개별 권한을 토글하고, 내보낼 수 있습니다.
+ * 멤버는 본인·다른 멤버 권한을 열람만 할 수 있습니다.
  */
 export default function MemberList() {
   const { id: groupId } = useParams();
@@ -32,6 +37,7 @@ export default function MemberList() {
   const [loading, setLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useState('');
   const [owner, setOwner] = useState(false);
+  const [groupMeta, setGroupMeta] = useState<GroupMeta | null>(null);
   const [kickingId, setKickingId] = useState<string | null>(null);
 
   // 멤버 클릭 → 개별 권한 패널
@@ -51,6 +57,7 @@ export default function MemberList() {
     setCurrentUserId(uid);
 
     const meta = await fetchGroupMeta(groupId);
+    setGroupMeta(meta);
     setOwner(isGroupOwner(meta, uid));
 
     const { data, error } = await supabase.rpc('get_group_members_with_profiles', {
@@ -83,15 +90,37 @@ export default function MemberList() {
     return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
   };
 
-  /** 멤버 행 클릭 — 방장만 권한 패널 오픈 (본인·방장 행 제외) */
-  const openMemberPerms = async (member: Member) => {
-    if (!owner || !groupId) return;
-    if (member.user_id === currentUserId || member.is_owner) return;
+  /**
+   * 멤버 권한 패널 열기.
+   * - editing=true: 방장이 다른 멤버의 개별 토글을 수정
+   * - editing=false: 본인 포함 전원 열람 (실제 적용 권한 표시)
+   * 멤버도 본인 행을 클릭하면 여기로 들어옵니다.
+   */
+  const openMemberPerms = async (member: Member, editing = false) => {
+    if (!groupId) return;
 
     setSelected(member);
     setPermLoading(true);
+
+    // 방장 계정 행: 항상 전부 허용으로 표시
+    if (member.is_owner) {
+      setPermFlags({ canRecord: true, canDraw: true, canChangeBoard: true });
+      setPermLoading(false);
+      return;
+    }
+
     const flags = await fetchMemberPermissions(groupId, member.user_id);
-    setPermFlags(flags);
+    if (editing) {
+      setPermFlags(flags);
+    } else {
+      const meta = groupMeta ?? (await fetchGroupMeta(groupId));
+      if (meta && !groupMeta) setGroupMeta(meta);
+      setPermFlags({
+        canRecord: canRecord(meta, member.user_id, flags),
+        canDraw: canDraw(meta, member.user_id, flags),
+        canChangeBoard: canChangeBoard(meta, member.user_id, flags),
+      });
+    }
     setPermLoading(false);
   };
 
@@ -99,8 +128,12 @@ export default function MemberList() {
     setSelected(null);
   };
 
+  /** 방장이 다른 멤버 권한을 편집 중인지 */
+  const canEditSelected =
+    owner && selected && !selected.is_owner && selected.user_id !== currentUserId;
+
   const savePerms = async () => {
-    if (!owner || !groupId || !selected) return;
+    if (!canEditSelected || !groupId || !selected) return;
     setPermSaving(true);
     const result = await saveMemberPermissions(groupId, selected.user_id, permFlags);
     setPermSaving(false);
@@ -162,12 +195,6 @@ export default function MemberList() {
           </button>
         </div>
 
-        {owner ? (
-          <p style={{ color: '#6b7280', fontSize: 14, marginBottom: 12 }}>
-            멤버를 클릭하면 그 사람만 녹화·판서 권한을 켜고 끌 수 있습니다. (그룹 기본 권한과 함께 적용)
-          </p>
-        ) : null}
-
         {loading ? (
           <div>불러오는 중...</div>
         ) : (
@@ -179,25 +206,28 @@ export default function MemberList() {
               <span></span>
             </div>
             {members.map((m) => {
-              const isMe = m.user_id === currentUserId;
+              const isMe = Boolean(currentUserId) && m.user_id === currentUserId;
               const isOwnerRow = Boolean(m.is_owner);
-              const clickable = owner && !isMe && !isOwnerRow;
+              // 방장이 다른 일반 멤버를 편집할 때만 수정 모드, 그 외(본인 포함)는 열람
+              const openAsEdit = owner && !isMe && !isOwnerRow;
               return (
                 <div
-                  key={m.id}
+                  key={m.id || m.user_id}
                   className="list-row member-row"
-                  role={clickable ? 'button' : undefined}
-                  tabIndex={clickable ? 0 : undefined}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${m.nickname || '멤버'} 권한`}
                   onClick={() => {
-                    if (clickable) void openMemberPerms(m);
+                    // 본인 클릭 → 항상 열람 모드로 권한 확인
+                    void openMemberPerms(m, openAsEdit);
                   }}
                   onKeyDown={(e) => {
-                    if (clickable && (e.key === 'Enter' || e.key === ' ')) {
+                    if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      void openMemberPerms(m);
+                      void openMemberPerms(m, openAsEdit);
                     }
                   }}
-                  style={clickable ? { cursor: 'pointer' } : undefined}
+                  style={{ cursor: 'pointer' }}
                 >
                   <div className="person-cell">
                     <div className="avatar-circle">
@@ -205,7 +235,7 @@ export default function MemberList() {
                     </div>
                     <div>
                       <div className="person-name">{m.nickname || '알 수 없음'}</div>
-                      <div className="person-sub">{isMe ? '나' : clickable ? '클릭하여 권한' : ''}</div>
+                      {isMe ? <div className="person-sub">나</div> : null}
                     </div>
                   </div>
                   <span>
@@ -232,7 +262,7 @@ export default function MemberList() {
           </div>
         )}
 
-        {/* 멤버별 권한 토글 패널 */}
+        {/* 멤버별 권한 패널 — 전원 열람, 방장만 수정 */}
         {selected ? (
           <div
             style={{
@@ -241,7 +271,7 @@ export default function MemberList() {
               background: 'rgba(0,0,0,0.35)',
               display: 'grid',
               placeItems: 'center',
-              zIndex: 50,
+              zIndex: 200,
             }}
             onClick={closePermPanel}
           >
@@ -253,7 +283,11 @@ export default function MemberList() {
               <div className="settings-section">
                 <h3>{selected.nickname || '멤버'} · 권한</h3>
                 <p className="settings-desc">
-                  그룹 설정에서 막혀 있으면 여기서 켜도 적용되지 않습니다. 둘 다 켜져 있어야 가능합니다.
+                  {selected.is_owner
+                    ? '방장은 항상 모든 권한이 허용됩니다.'
+                    : canEditSelected
+                      ? '그룹 설정에서 막혀 있으면 여기서 켜도 적용되지 않습니다. 둘 다 켜져 있어야 가능합니다.'
+                      : '열람만 가능합니다. 권한 변경은 방장만 할 수 있습니다.'}
                 </p>
                 {permLoading ? (
                   <div>불러오는 중...</div>
@@ -263,6 +297,7 @@ export default function MemberList() {
                       <input
                         type="checkbox"
                         checked={permFlags.canRecord}
+                        disabled={!canEditSelected}
                         onChange={(e) =>
                           setPermFlags((prev) => ({ ...prev, canRecord: e.target.checked }))
                         }
@@ -273,6 +308,7 @@ export default function MemberList() {
                       <input
                         type="checkbox"
                         checked={permFlags.canDraw}
+                        disabled={!canEditSelected}
                         onChange={(e) =>
                           setPermFlags((prev) => ({ ...prev, canDraw: e.target.checked }))
                         }
@@ -283,6 +319,7 @@ export default function MemberList() {
                       <input
                         type="checkbox"
                         checked={permFlags.canChangeBoard}
+                        disabled={!canEditSelected}
                         onChange={(e) =>
                           setPermFlags((prev) => ({ ...prev, canChangeBoard: e.target.checked }))
                         }
@@ -290,24 +327,28 @@ export default function MemberList() {
                       보드 변경 (선택·생성·이름)
                     </label>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <button
-                        className="primary-button"
-                        type="button"
-                        disabled={permSaving}
-                        onClick={() => void savePerms()}
-                      >
-                        {permSaving ? '저장 중...' : '저장'}
-                      </button>
+                      {canEditSelected ? (
+                        <>
+                          <button
+                            className="primary-button"
+                            type="button"
+                            disabled={permSaving}
+                            onClick={() => void savePerms()}
+                          >
+                            {permSaving ? '저장 중...' : '저장'}
+                          </button>
+                          <button
+                            className="danger-button"
+                            type="button"
+                            disabled={kickingId === selected.user_id}
+                            onClick={() => void kickMember(selected)}
+                          >
+                            내보내기
+                          </button>
+                        </>
+                      ) : null}
                       <button className="secondary-button" type="button" onClick={closePermPanel}>
                         닫기
-                      </button>
-                      <button
-                        className="danger-button"
-                        type="button"
-                        disabled={kickingId === selected.user_id}
-                        onClick={() => void kickMember(selected)}
-                      >
-                        내보내기
                       </button>
                     </div>
                   </>
