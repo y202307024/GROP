@@ -1,9 +1,9 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { supabase } from './services/supabaseClient';
 import ExcalidrawToolbar, { toolShortcutMap, type ExcalidrawTool } from './components/ExcalidrawToolbar';
 // 타임랩스 사이드 패널 컴포넌트 import (현재 비활성화)
 import CanvasViewportControls from './components/CanvasViewportControls';
-import { CANVAS_FONT_FAMILY, colorWithOpacity, drawShapeTool, drawStamp, drawText, shapeDashArray, textFontSize, type ShapeTool } from './canvasShapeUtils';
+import { colorWithOpacity, drawShapeTool, drawStamp, drawText, shapeDashArray, textFontSize, type ShapeTool } from './canvasShapeUtils';
 import { explainBoardError } from './boardErrors';
 import { dedupeBoardsById, getBoardOptionLabel } from './timelapseApi';
 // 타임랩스 사이드 패널 CSS import (현재 비활성화)
@@ -154,8 +154,7 @@ type EventType =
   | 'sticky.remove'
   | 'region.erase';
 
-// 캔버스에 붙이는 이미지: 파일 용량 상한, 화면에 그릴 때 가로 최대 픽셀
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+// 캔버스에 붙이는 이미지: 화면에 그릴 때 가로 최대 픽셀
 const MAX_IMAGE_DRAW_WIDTH = 800;
 const MIN_IMAGE_DRAW_SIZE = 48;
 
@@ -989,7 +988,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (topic && topic !== MEETING_BOARD_TOPIC) return;
       const msg = decodeMeetingBoardMessage(payload);
       if (!msg) return;
-      if (participant && 'identity' in (participant as any) && (participant as any).identity === localParticipant.identity) {
+      // localParticipant가 아직 없으면 identity 비교를 건너뜁니다.
+      if (participant && 'identity' in (participant as any) && (participant as any).identity === localParticipant?.identity) {
         return;
       }
       applyBoardSelection(msg);
@@ -999,7 +999,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (!participant || !room) return;
       if (!('identity' in (participant as any))) return;
       const remote = participant as { identity: string; metadata?: string };
-      if (remote.identity === localParticipant.identity) return;
+      if (remote.identity === localParticipant?.identity) return;
       const msg = decodeMeetingBoardMetadata(metadata);
       if (!msg) return;
       applyBoardSelection(msg);

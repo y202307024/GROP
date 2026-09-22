@@ -610,7 +610,7 @@ export default function Room() {
   const navigate = useNavigate();
   const [token, setToken] = useState('');
   const [userId, setUserId] = useState('');
-  const [userName, setUserName] = useState('');
+  const [, setUserName] = useState('');
   const [groupName, setGroupName] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -682,8 +682,6 @@ export default function Room() {
         if (sessionMeetingIdRef.current) {
           return { ok: true };
         }
-        const now = new Date();
-        const titleStr = `${now.getFullYear()}년 ${now.getMonth() + 1}월 ${now.getDate()}일 회의`;
         const { data: userData } = await supabase.auth.getUser();
         const result = await syncMeetingAttachmentsDoc({
           meetingId: null,

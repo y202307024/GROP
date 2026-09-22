@@ -12,7 +12,8 @@ export default defineConfig({
     }),
   ],
   server: {
-    https: true,
+    // mkcert 플러그인이 인증서를 붙입니다. Vite 타입상 boolean 대신 객체를 씁니다.
+    https: {},
     // Cloudflare 터널 주소는 매번 바뀌므로 호스트 검사를 열어 둡니다.
     host: true,
     allowedHosts: true,
