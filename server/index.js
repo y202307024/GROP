@@ -839,12 +839,16 @@ app.use((err, req, res, next) => {
 })
 
 const PORT = process.env.PORT || 3001
-app.listen(PORT, () => {
+// Render 등 클라우드는 외부 헬스체크를 위해 0.0.0.0 바인딩이 필요합니다.
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`서버 실행중: port ${PORT}`)
   console.log(`  요약 모델: ${CHAT_MODEL}`)
   console.log(`  음성 모델: ${TRANSCRIBE_MODEL}`)
   console.log(`  녹화본 저장 경로: ${MEETING_VIDEOS_DIR}`)
   console.log(`  채팅 첨부 경로: ${CHAT_FILES_DIR}`)
   console.log(`  회의 문서(첨부목록) 경로: ${MEETING_DOCS_DIR}`)
-  startOauthFallback()
+  // 로컬 개발용 OAuth 폴백(127.0.0.1:3000). 클라우드에서는 불필요해 건너뜁니다.
+  if (!process.env.RENDER && process.env.ENABLE_OAUTH_FALLBACK !== '0') {
+    startOauthFallback()
+  }
 })

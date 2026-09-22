@@ -16,11 +16,14 @@ import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import {
+  canChangeBoard as userCanChangeBoard,
   canDraw as userCanDraw,
   canRecord as userCanRecord,
   fetchGroupMeta,
+  fetchMemberPermissions,
   isGroupOwner,
   type GroupMeta,
+  type MemberPermissionFlags,
 } from '../utils/groupPermissions';
 import {
   MEETING_FILE_TOPIC,
@@ -267,6 +270,7 @@ function RoomContent({
   savingRecording,
   canRecord = true,
   canDrawBoard = true,
+  canChangeBoard = true,
   canEditGroupName = true,
 }: {
   groupId: string;
@@ -288,6 +292,7 @@ function RoomContent({
   savingRecording: boolean;
   canRecord?: boolean;
   canDrawBoard?: boolean;
+  canChangeBoard?: boolean;
   canEditGroupName?: boolean;
 }) {
   const [drawTool, setDrawTool] = useState<MeetingDrawAction>('hand');
@@ -503,6 +508,7 @@ function RoomContent({
             meetingMode
             gropShell
             canDraw={canDrawBoard}
+            canChangeBoard={canChangeBoard}
             onToolChange={(tool) => {
               if (!canDrawBoard) return;
               if (SHAPE_TOOLS.includes(tool)) {
@@ -642,6 +648,7 @@ export default function Room() {
   const [, setUserName] = useState('');
   const [groupName, setGroupName] = useState('');
   const [groupMeta, setGroupMeta] = useState<GroupMeta | null>(null);
+  const [memberPerms, setMemberPerms] = useState<MemberPermissionFlags | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
@@ -866,6 +873,8 @@ export default function Room() {
           if (meta) {
             setGroupMeta(meta);
             setGroupName(meta.name);
+            const mp = await fetchMemberPermissions(id, userData.user.id);
+            setMemberPerms(mp);
           } else {
             const { data: group } = await supabase
               .from('groups')
@@ -1050,8 +1059,8 @@ export default function Room() {
   };
 
   const toggleRecording = () => {
-    if (!userCanRecord(groupMeta, userId)) {
-      alert('방장이 멤버 녹화를 허용하지 않았습니다.');
+    if (!userCanRecord(groupMeta, userId, memberPerms)) {
+      alert('방장이 녹화를 허용하지 않았습니다.');
       return;
     }
     if (isRecording) {
@@ -1108,8 +1117,9 @@ export default function Room() {
     return null;
   }
 
-  const allowRecord = userCanRecord(groupMeta, userId);
-  const allowDraw = userCanDraw(groupMeta, userId);
+  const allowRecord = userCanRecord(groupMeta, userId, memberPerms);
+  const allowDraw = userCanDraw(groupMeta, userId, memberPerms);
+  const allowChangeBoard = userCanChangeBoard(groupMeta, userId, memberPerms);
   const allowEditName = isGroupOwner(groupMeta, userId);
 
   return (
@@ -1154,6 +1164,7 @@ export default function Room() {
             savingRecording={savingRecording}
             canRecord={allowRecord}
             canDrawBoard={allowDraw}
+            canChangeBoard={allowChangeBoard}
             canEditGroupName={allowEditName}
           />
         </div>
