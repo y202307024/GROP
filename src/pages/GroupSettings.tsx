@@ -13,7 +13,7 @@ import {
 const MAX_FILE_SIZE_MB = 3;
 
 /**
- * 그룹 설정 — 방장은 이름/프사/초대코드/권한 토글, 멤버는 음성·조회만.
+ * 그룹 설정 — 방장은 이름/프사/초대코드/권한 토글, 멤버는 음성·조회·그룹 나가기.
  */
 export default function GroupSettings() {
   const { id } = useParams();
@@ -31,6 +31,8 @@ export default function GroupSettings() {
   const [copied, setCopied] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const owner = isGroupOwner(meta, userId);
@@ -172,6 +174,57 @@ export default function GroupSettings() {
       );
       alert('권한 설정이 저장되었습니다.');
     }
+  };
+
+  /** 일반 멤버가 그룹에서 나갑니다. 방장은 탈퇴 불가(다른 멤버에게 방장 이양 필요). */
+  const leaveGroup = async () => {
+    if (!id || !userId) return;
+    if (owner) {
+      alert('방장은 그룹을 나갈 수 없습니다. 그룹을 없애려면 「그룹 제거하기」를 사용해 주세요.');
+      return;
+    }
+    if (!confirm('이 그룹에서 나가시겠습니까? 다시 들어오려면 초대코드가 필요합니다.')) return;
+
+    setLeaving(true);
+    const { error } = await supabase
+      .from('group_members')
+      .delete()
+      .eq('group_id', id)
+      .eq('user_id', userId);
+    setLeaving(false);
+
+    if (error) {
+      alert(`나가기 실패: ${error.message}`);
+      return;
+    }
+    alert('그룹에서 나갔습니다.');
+    navigate('/main');
+  };
+
+  /** 방장이 그룹 전체를 삭제합니다. 멤버·회의·보드 등도 cascade 로 함께 삭제됩니다. */
+  const deleteGroup = async () => {
+    if (!owner || !id) return;
+    const label = name.trim() || '이 그룹';
+    if (
+      !confirm(
+        `"${label}" 그룹을 정말 제거할까요?\n멤버·회의·문서·화이트보드가 모두 삭제되며 되돌릴 수 없습니다.`,
+      )
+    ) {
+      return;
+    }
+    // 실수 방지용 한 번 더 확인
+    if (!confirm('마지막으로 한 번 더 확인합니다. 그룹을 영구 삭제할까요?')) return;
+
+    setDeleting(true);
+    const { error } = await supabase.from('groups').delete().eq('id', id);
+    setDeleting(false);
+
+    if (error) {
+      alert(`그룹 제거 실패: ${error.message}\n(Supabase에서 12_그룹삭제.sql 을 실행했는지 확인해 주세요.)`);
+      return;
+    }
+    alert('그룹이 제거되었습니다.');
+    navigate('/main');
   };
 
   if (loading) {
@@ -322,7 +375,35 @@ export default function GroupSettings() {
           </div>
 
           <div className="settings-section">
-            <button className="danger-button" type="button" onClick={() => navigate(`/group/${id}`)}>
+            <h3>{owner ? '그룹 제거' : '그룹 나가기'}</h3>
+            <p className="settings-desc">
+              {owner
+                ? '그룹을 제거하면 멤버·회의·문서·화이트보드가 모두 삭제되며 되돌릴 수 없습니다.'
+                : '나가면 이 그룹의 회의·문서·화이트보드에 접근할 수 없습니다. 다시 참여하려면 초대코드가 필요합니다.'}
+            </p>
+            {owner ? (
+              <button
+                className="danger-button"
+                type="button"
+                disabled={deleting}
+                onClick={() => void deleteGroup()}
+              >
+                {deleting ? '제거 중...' : '그룹 제거하기'}
+              </button>
+            ) : (
+              <button
+                className="danger-button"
+                type="button"
+                disabled={leaving}
+                onClick={() => void leaveGroup()}
+              >
+                {leaving ? '처리 중...' : '그룹 나가기'}
+              </button>
+            )}
+          </div>
+
+          <div className="settings-section">
+            <button className="secondary-button" type="button" onClick={() => navigate(`/group/${id}`)}>
               그룹으로 돌아가기
             </button>
           </div>

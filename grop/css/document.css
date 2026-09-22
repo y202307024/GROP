@@ -90,6 +90,36 @@
     overflow: hidden;
 }
 
+/* 문서 탭 전용 — 헤더 고정, 행이 많아지면 목록만 세로 스크롤 */
+.page.doc-page {
+    overflow: hidden;
+    min-height: 0;
+}
+
+.page.doc-page .doc-list-card {
+    flex: 1;
+    min-height: 0;
+    max-height: calc(100vh - 200px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.page.doc-page .doc-list-card .list-head {
+    flex-shrink: 0;
+}
+
+.page.doc-page .doc-list-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.page.doc-page .doc-list-scroll .list-row:last-child {
+    border-bottom: none;
+}
+
 
 .list-row {
     display: grid;

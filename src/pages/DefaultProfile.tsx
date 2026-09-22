@@ -19,6 +19,7 @@ export default function DefaultProfile() {
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -100,6 +101,19 @@ export default function DefaultProfile() {
     }
   };
 
+  /** 전체 설정에서 로그아웃 — 세션 종료 후 로그인 화면으로 */
+  const handleLogout = async () => {
+    if (!confirm('로그아웃 하시겠습니까?')) return;
+    setLoggingOut(true);
+    const { error } = await supabase.auth.signOut();
+    setLoggingOut(false);
+    if (error) {
+      alert(`로그아웃 실패: ${error.message}`);
+      return;
+    }
+    navigate('/');
+  };
+
   if (loading) {
     return (
       <AppShell activePage="setting">
@@ -174,6 +188,21 @@ export default function DefaultProfile() {
             <h3>음성</h3>
             <p className="settings-desc">마이크와 헤드셋을 고르고 음량을 조절합니다. 장치가 없으면 없음을 선택하세요. 회의방에 그대로 적용됩니다.</p>
             <VoiceSettingsPanel hideHeading />
+          </div>
+        </div>
+
+        <div className="settings-card" style={{ marginTop: 24 }}>
+          <div className="settings-section">
+            <h3>계정</h3>
+            <p className="settings-desc">이 기기에서 GROP 계정 접속을 종료합니다.</p>
+            <button
+              type="button"
+              className="danger-button"
+              disabled={loggingOut}
+              onClick={() => void handleLogout()}
+            >
+              {loggingOut ? '로그아웃 중...' : '로그아웃'}
+            </button>
           </div>
         </div>
       </div>
