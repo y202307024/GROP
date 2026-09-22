@@ -112,6 +112,16 @@ $$;
 revoke all on function public.is_group_member(uuid) from public;
 grant execute on function public.is_group_member(uuid) to authenticated;
 
+-- 같은 그룹 멤버끼리는 서로의 행도 조회 가능
+drop policy if exists "group_members_select_own" on public.group_members;
+drop policy if exists "group_members_select_member" on public.group_members;
+create policy "group_members_select_member" on public.group_members
+for select to authenticated
+using (
+  user_id = auth.uid()
+  or public.is_group_member(group_id)
+);
+
 -- 그룹을 만든 사람이 멤버 테이블에 빠져 있을 때 자동 등록
 create or replace function public.ensure_group_creator_member(p_group_id uuid)
 returns boolean

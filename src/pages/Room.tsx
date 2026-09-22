@@ -16,6 +16,13 @@ import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import {
+  canDraw as userCanDraw,
+  canRecord as userCanRecord,
+  fetchGroupMeta,
+  isGroupOwner,
+  type GroupMeta,
+} from '../utils/groupPermissions';
+import {
   MEETING_FILE_TOPIC,
   decodeMeetingSharedFile,
   encodeMeetingSharedFile,
@@ -213,20 +220,22 @@ function MeetingCallControls({
   onToggleRecord,
   isRecording,
   savingRecording,
+  canRecord = true,
 }: {
   onLeave: () => void;
   onToggleRecord: () => void;
   isRecording: boolean;
   savingRecording: boolean;
+  canRecord?: boolean;
 }) {
   return (
     <div className="call-controls">
       <button
         type="button"
         className={`call-icon-button${isRecording ? ' is-recording' : ''}`}
-        data-tooltip="녹화"
+        data-tooltip={canRecord ? '녹화' : '녹화 권한 없음'}
         aria-label="녹화 시작/종료"
-        disabled={savingRecording}
+        disabled={savingRecording || !canRecord}
         onClick={onToggleRecord}
       >
         <svg viewBox="0 0 24 24" fill={isRecording ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -256,6 +265,9 @@ function RoomContent({
   onRemoteStopRecording,
   isRecording,
   savingRecording,
+  canRecord = true,
+  canDrawBoard = true,
+  canEditGroupName = true,
 }: {
   groupId: string;
   groupName: string;
@@ -274,6 +286,9 @@ function RoomContent({
   onRemoteStopRecording: () => void;
   isRecording: boolean;
   savingRecording: boolean;
+  canRecord?: boolean;
+  canDrawBoard?: boolean;
+  canEditGroupName?: boolean;
 }) {
   const [drawTool, setDrawTool] = useState<MeetingDrawAction>('hand');
   const [activeShape, setActiveShape] = useState<ExcalidrawTool>('rectangle');
@@ -396,6 +411,11 @@ function RoomContent({
   };
 
   const handlePick = (next: MeetingDrawAction) => {
+    // 판서 권한 없으면 화면 이동만 허용
+    if (!canDrawBoard && next !== 'hand' && next !== 'pan') {
+      alert('방장이 멤버 판서를 허용하지 않았습니다.');
+      return;
+    }
     setDrawTool(next);
     setEraserActive(false);
     setAreaEraseActive(false);
@@ -482,7 +502,9 @@ function RoomContent({
             embedded
             meetingMode
             gropShell
+            canDraw={canDrawBoard}
             onToolChange={(tool) => {
+              if (!canDrawBoard) return;
               if (SHAPE_TOOLS.includes(tool)) {
                 setDrawTool('shapes');
                 setActiveShape(tool);
@@ -513,11 +535,17 @@ function RoomContent({
           groupId={groupId}
           groupName={groupName}
           onGroupNameChange={onGroupNameChange}
+          canEditGroupName={canEditGroupName}
           speakerMuted={speakerMuted}
           onSpeakerMutedChange={setSpeakerMuted}
         />
       </main>
       <footer className="bottom-bar">
+        {!canDrawBoard ? (
+          <div style={{ padding: '8px 12px', fontSize: 13, color: '#6b7280' }}>
+            판서 권한이 없습니다. 화면 이동만 가능합니다.
+          </div>
+        ) : null}
         <MeetingDrawingTools
           active={drawTool}
           onPick={handlePick}
@@ -599,6 +627,7 @@ function RoomContent({
           onToggleRecord={onToggleRecord}
           isRecording={isRecording}
           savingRecording={savingRecording}
+          canRecord={canRecord}
         />
       </footer>
     </>
@@ -612,6 +641,7 @@ export default function Room() {
   const [userId, setUserId] = useState('');
   const [, setUserName] = useState('');
   const [groupName, setGroupName] = useState('');
+  const [groupMeta, setGroupMeta] = useState<GroupMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
@@ -832,12 +862,18 @@ export default function Room() {
         setUserName(name);
 
         if (id) {
-          const { data: group } = await supabase
-            .from('groups')
-            .select('name')
-            .eq('id', id)
-            .maybeSingle();
-          if (group?.name) setGroupName(group.name);
+          const meta = await fetchGroupMeta(id);
+          if (meta) {
+            setGroupMeta(meta);
+            setGroupName(meta.name);
+          } else {
+            const { data: group } = await supabase
+              .from('groups')
+              .select('name')
+              .eq('id', id)
+              .maybeSingle();
+            if (group?.name) setGroupName(group.name);
+          }
         }
 
         const res = await fetch(`${getApiBase()}/api/livekit-token`, {
@@ -1014,6 +1050,10 @@ export default function Room() {
   };
 
   const toggleRecording = () => {
+    if (!userCanRecord(groupMeta, userId)) {
+      alert('방장이 멤버 녹화를 허용하지 않았습니다.');
+      return;
+    }
     if (isRecording) {
       recordingSyncRef.current?.broadcastStop();
       void stopRecordingAndSave({ save: true });
@@ -1068,6 +1108,10 @@ export default function Room() {
     return null;
   }
 
+  const allowRecord = userCanRecord(groupMeta, userId);
+  const allowDraw = userCanDraw(groupMeta, userId);
+  const allowEditName = isGroupOwner(groupMeta, userId);
+
   return (
     <div className="meeting-page stage">
       <LiveKitRoom
@@ -1108,6 +1152,9 @@ export default function Room() {
             onRemoteStopRecording={() => { void stopRecordingAndSave({ save: false }); }}
             isRecording={isRecording}
             savingRecording={savingRecording}
+            canRecord={allowRecord}
+            canDrawBoard={allowDraw}
+            canEditGroupName={allowEditName}
           />
         </div>
       </LiveKitRoom>

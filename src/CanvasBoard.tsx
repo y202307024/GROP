@@ -17,12 +17,22 @@ import { chatFileUrl, displayFileName, formatChatFileSize, MAX_CHAT_FILE_BYTES }
 import StickyNoteOverlay, { type PlacedSticky, type StickyEditMode } from './components/StickyNoteOverlay';
 
 const MEETING_BOARD_TOPIC = 'meeting-board';
+/** 회의방 펜/지우개 획 실시간 동기화 (Supabase Realtime 병목 회피) */
+const MEETING_BOARD_STROKE_TOPIC = 'meeting-board-stroke';
 
 type MeetingBoardMessage = {
   type: 'board:selected';
   boardId: string;
   title?: string;
   from: string;
+};
+
+/** LiveKit으로 보내는 stroke 이벤트. DB payload와 동일한 type/payload를 담습니다. */
+type MeetingStrokeMessage = {
+  type: 'stroke.begin' | 'stroke.append' | 'stroke.end';
+  boardId: string;
+  actorId: string;
+  payload: unknown;
 };
 
 function encodeMeetingBoardMessage(msg: MeetingBoardMessage): Uint8Array {
@@ -52,6 +62,41 @@ function decodeMeetingBoardMetadata(metadata?: string): MeetingBoardMessage | nu
   } catch {
     return null;
   }
+}
+
+function encodeMeetingStrokeMessage(msg: MeetingStrokeMessage): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+function decodeMeetingStrokeMessage(payload: Uint8Array): MeetingStrokeMessage | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(payload));
+    if (
+      !parsed ||
+      (parsed.type !== 'stroke.begin' && parsed.type !== 'stroke.append' && parsed.type !== 'stroke.end') ||
+      typeof parsed.boardId !== 'string' ||
+      typeof parsed.actorId !== 'string'
+    ) {
+      return null;
+    }
+    return parsed as MeetingStrokeMessage;
+  } catch {
+    return null;
+  }
+}
+
+/** LiveKit ↔ Realtime 중복 적용 방지용 키 (append는 liveSeq 필요) */
+function strokeLiveDedupeKey(type: string, payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as { strokeId?: string; liveSeq?: number };
+  if (typeof p.strokeId !== 'string' || !p.strokeId) return null;
+  if (type === 'stroke.begin') return `begin:${p.strokeId}`;
+  if (type === 'stroke.end') return `end:${p.strokeId}`;
+  if (type === 'stroke.append') {
+    if (typeof p.liveSeq !== 'number') return null;
+    return `append:${p.strokeId}:${p.liveSeq}`;
+  }
+  return null;
 }
 
 const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3] as const;
@@ -85,6 +130,8 @@ type Props = {
   onTextSelectedChange?: (selected: boolean) => void;
   /** 텍스트를 선택했을 때 툴바 글자 크기를 맞춥니다. */
   onTextFontSizeChange?: (size: number) => void;
+  /** false면 판서 불가(관전). 원격 획 수신은 그대로입니다. */
+  canDraw?: boolean;
 };
 
 export type CanvasBoardHandle = {
@@ -183,6 +230,8 @@ type StrokeBeginPayload = {
 type StrokeAppendPayload = {
   strokeId: string;
   points: Point[];
+  /** LiveKit/Realtime 중복 제거용 순번 (회의 모드에서 부여) */
+  liveSeq?: number;
 };
 
 type StrokeEndPayload = {
@@ -712,6 +761,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   onTextDecorChange,
   onTextSelectedChange,
   onTextFontSizeChange,
+  canDraw = true,
 }, ref) {
   const isEmbedded = embedded || meetingMode;
   // 회의방·단독 캔버스 모두 원본 CSS 껍데기를 쓰면 내부 상단바를 숨깁니다.
@@ -727,6 +777,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const pendingChunkRef = useRef<Point[]>([]);
   const chunkTimerRef = useRef<number | null>(null);
   const strokeWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  /** 획별 append 순번 — LiveKit·DB payload에 넣어 Realtime 중복을 막습니다. */
+  const strokeLiveSeqByIdRef = useRef<Map<string, number>>(new Map());
+  /** LiveKit 또는 Realtime으로 이미 적용한 stroke 키 */
+  const appliedLiveStrokeKeysRef = useRef<Set<string>>(new Set());
   const remoteLastPointByStrokeRef = useRef<Map<string, Point>>(new Map());
   const remotePendingAppendsRef = useRef<Map<string, Point[][]>>(new Map());
   const remotePendingEndsRef = useRef<Set<string>>(new Set());
@@ -970,18 +1024,27 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   // LiveKit으로 보드 선택 정보를 주고받는 영역입니다.
   // 다른 참가자에게 현재 선택된 보드를 알려주고, 누가 새로 들어오거나 다시 들어와도
   // 같은 보드를 보도록 상태를 맞춰줍니다.
+  // 주의: 수신 시 publish를 다시 하면 N명이 서로 재방송하며 data 채널이 폭주합니다.
+  // (3명 이상에서 채팅·화이트보드 반응이 같이 느려지는 원인이었습니다.)
   useEffect(() => {
     if (!room) return;
     if (!meetingMode) return;
 
+    // 수신한 선택은 로컬에만 반영합니다. 재방송은 ParticipantConnected 쪽에서만 합니다.
     const applyBoardSelection = (msg: MeetingBoardMessage) => {
       if (!msg.boardId) return;
       setShowInitChoice(false);
       initChoiceHandledRef.current = true;
+
+      const prev = latestBoardSelectionRef.current;
+      // 이미 같은 보드면 상태/네트워크 작업을 건너뛰어 불필요한 렌더·폭주를 막습니다.
+      if (prev?.boardId === msg.boardId && (prev.title ?? '') === (msg.title ?? '')) {
+        return;
+      }
+
       setBoardId(msg.boardId);
       if (msg.title) setBoardTitle(msg.title);
       latestBoardSelectionRef.current = msg;
-      publishBoardSelection(msg);
     };
 
     const handler = (payload: Uint8Array, participant?: unknown, _kind?: unknown, topic?: string) => {
@@ -1015,17 +1078,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       }
     };
 
-    const publishCurrentBoardSelection = () => {
-      const payload = latestBoardSelectionRef.current;
-      if (payload) publishBoardSelection(payload);
-    };
-
+    // 새 참가자가 들어오면 기존 인원 중 한 명만 현재 보드를 알려 주면 됩니다.
+    // 전원이 동시에 보내면 입장 순간 data가 불필요하게 겹칩니다.
     const onParticipantConnected = (participant: unknown) => {
       if (!localParticipant) return;
       if (!participant || !('identity' in (participant as any))) return;
       const remote = participant as { identity: string };
       if (remote.identity === localParticipant.identity) return;
-      publishCurrentBoardSelection();
+
+      const payload = latestBoardSelectionRef.current;
+      if (!payload) return;
+      // identity 사전순 최소인 로컬만 환영 메시지를 보내 중복 방송을 줄입니다.
+      const identities = [localParticipant.identity, ...Array.from(room.remoteParticipants.keys())]
+        .filter((id) => id !== remote.identity)
+        .sort();
+      if (identities[0] !== localParticipant.identity) return;
+      publishBoardSelection(payload);
     };
 
     syncFromExistingParticipants();
@@ -2429,8 +2497,49 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   };
 
   const enqueueStrokeWrite = (type: EventType, payload: unknown): Promise<void> => {
-    const task = strokeWriteChainRef.current.then(() => insertEvent(type, payload));
+    let nextPayload = payload;
+
+    // append마다 liveSeq를 붙여 LiveKit↔Realtime 중복 적용을 막습니다.
+    if (type === 'stroke.begin') {
+      const p = payload as StrokeBeginPayload;
+      strokeLiveSeqByIdRef.current.set(p.strokeId, 0);
+    } else if (type === 'stroke.append') {
+      const p = payload as StrokeAppendPayload;
+      const seq = (strokeLiveSeqByIdRef.current.get(p.strokeId) ?? 0) + 1;
+      strokeLiveSeqByIdRef.current.set(p.strokeId, seq);
+      nextPayload = { ...p, liveSeq: seq } satisfies StrokeAppendPayload;
+    } else if (type === 'stroke.end') {
+      const p = payload as StrokeEndPayload;
+      strokeLiveSeqByIdRef.current.delete(p.strokeId);
+    }
+
+    // 회의방: LiveKit으로 먼저 뿌려 동시 필기 체감을 DB RTT에서 분리합니다.
+    const isStrokeEvent =
+      type === 'stroke.begin' || type === 'stroke.append' || type === 'stroke.end';
+    const canLivePublish = Boolean(meetingMode && localParticipant && boardId && isStrokeEvent);
+
+    if (meetingMode && localParticipant && boardId && isStrokeEvent) {
+      const dedupeKey = strokeLiveDedupeKey(type, nextPayload);
+      if (dedupeKey) appliedLiveStrokeKeysRef.current.add(dedupeKey);
+
+      const msg: MeetingStrokeMessage = {
+        type,
+        boardId,
+        actorId: actorIdRef.current,
+        payload: nextPayload,
+      };
+      void localParticipant.publishData(encodeMeetingStrokeMessage(msg), {
+        // append는 손실보다 지연이 치명적이라 unreliable, begin/end는 신뢰 전송
+        reliable: type !== 'stroke.append',
+        topic: MEETING_BOARD_STROKE_TOPIC,
+      });
+    }
+
+    // DB insert는 타임랩스·늦게 입장한 사람용으로 백그라운드 유지
+    const task = strokeWriteChainRef.current.then(() => insertEvent(type, nextPayload));
     strokeWriteChainRef.current = task.catch(() => {});
+    // 회의 라이브 경로는 DB 완료를 기다리지 않습니다.
+    if (canLivePublish) return Promise.resolve();
     return task;
   };
 
@@ -2861,6 +2970,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   useEffect(() => {
     if (!boardId) return;
+    // 보드가 바뀌면 LiveKit/Realtime 중복 키를 비워 메모리·오 dedupe를 막습니다.
+    appliedLiveStrokeKeysRef.current = new Set();
+    strokeLiveSeqByIdRef.current = new Map();
     const b = boards.find((x) => x.id === boardId);
     if (b) {
       const title = formatBoardTitle(b.title);
@@ -2882,6 +2994,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           if (isReplayingRef.current) return;
           // 내가 보낸 이벤트는 이미 로컬에서 그렸으므로 중복 적용하지 않음
           if (row.actor_id === actorIdRef.current) return;
+
+          // LiveKit으로 이미 그린 stroke는 Realtime INSERT에서 스킵 (반대 순서면 키를 남김)
+          if (row.type === 'stroke.begin' || row.type === 'stroke.append' || row.type === 'stroke.end') {
+            const key = strokeLiveDedupeKey(row.type, row.payload);
+            if (key) {
+              if (appliedLiveStrokeKeysRef.current.has(key)) return;
+              appliedLiveStrokeKeysRef.current.add(key);
+            }
+          }
+
           void applyEvent(row).then(() => {
             if (isHistoryCommitEvent(row.type)) commitHistory();
           });
@@ -2933,6 +3055,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       remotePendingEndsRef.current = new Set();
       strokeStyleByIdRef.current = new Map();
       translucentStrokePointsRef.current = new Map();
+      strokeLiveSeqByIdRef.current = new Map();
+      appliedLiveStrokeKeysRef.current = new Set();
       return;
     }
 
@@ -3264,6 +3388,52 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
   };
 
+  // 회의방: LiveKit stroke data → 원격 획을 DB 왕복 없이 즉시 반영합니다.
+  useEffect(() => {
+    if (!room || !meetingMode) return;
+
+    const handler = (payload: Uint8Array, participant?: unknown, _kind?: unknown, topic?: string) => {
+      if (topic && topic !== MEETING_BOARD_STROKE_TOPIC) return;
+      const msg = decodeMeetingStrokeMessage(payload);
+      if (!msg) return;
+      // 다른 보드 메시지는 무시
+      if (msg.boardId !== boardId) return;
+      if (msg.actorId === actorIdRef.current) return;
+      if (participant && 'identity' in (participant as object)) {
+        const identity = (participant as { identity: string }).identity;
+        if (identity === localParticipant?.identity) return;
+      }
+      if (isReplayingRef.current) return;
+
+      const key = strokeLiveDedupeKey(msg.type, msg.payload);
+      if (key) {
+        if (appliedLiveStrokeKeysRef.current.has(key)) return;
+        appliedLiveStrokeKeysRef.current.add(key);
+      }
+
+      const row: BoardEventRow = {
+        id: key ? `livekit:${key}` : `livekit:${msg.type}:${Date.now()}`,
+        board_id: msg.boardId,
+        seq: 0,
+        ts: new Date().toISOString(),
+        actor_id: msg.actorId,
+        type: msg.type,
+        payload: msg.payload,
+      };
+
+      void applyEvent(row).then(() => {
+        if (isHistoryCommitEvent(row.type)) commitHistory();
+      });
+    };
+
+    room.on(RoomEvent.DataReceived, handler);
+    return () => {
+      room.off(RoomEvent.DataReceived, handler);
+    };
+    // applyEvent/commitHistory는 매 렌더 갱신되지만 board·room 기준으로만 재구독합니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, meetingMode, boardId, localParticipant?.identity]);
+
   const getPoint = (e: PointerEvent): Point | null => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -3582,6 +3752,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
     const p = getPoint(e.nativeEvent);
     if (!p) return;
+
+    // 판서 권한 없음: 화면 이동(hand)만 허용하고 그리기·배치 도구는 막습니다.
+    if (!canDraw) {
+      if (activeTool !== 'hand' && !spacePressed) return;
+      panningRef.current = true;
+      panAnchorRef.current = { x: e.clientX, y: e.clientY };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
 
     // 메모장 배치: 도구 선택 후 화면을 한 번 더 클릭한 위치에 붙입니다.
     if (stickyPlaceModeRef.current) {

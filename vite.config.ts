@@ -7,8 +7,9 @@ import mkcert from 'vite-plugin-mkcert'
 export default defineConfig({
   plugins: [
     react(),
+    // LAN IP도 인증서에 넣어 같은 Wi-Fi 기기에서 https://IP:5173 접속이 되게 합니다.
     mkcert({
-      hosts: ['localhost', '127.0.0.1'],
+      hosts: ['localhost', '127.0.0.1', '10.105.3.122', '192.168.236.1', '192.168.233.1'],
     }),
   ],
   server: {
