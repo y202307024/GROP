@@ -273,43 +273,47 @@ export default function GroupSettings() {
             </div>
           </div>
 
-          {/* 방장만: 멤버 권한 토글 */}
-          {owner ? (
-            <div className="settings-section">
-              <h3>멤버 권한</h3>
-              <p className="settings-desc">
-                방장은 항상 가능합니다. 아래는 일반 멤버 기본 허용입니다.
-                특정 멤버만 막으려면 팀원 목록에서 그 멤버를 클릭하세요.
-              </p>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-                <input
-                  type="checkbox"
-                  checked={membersCanRecord}
-                  onChange={(e) => setMembersCanRecord(e.target.checked)}
-                />
-                회의록 녹화 / 저장 허용
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-                <input
-                  type="checkbox"
-                  checked={membersCanDraw}
-                  onChange={(e) => setMembersCanDraw(e.target.checked)}
-                />
-                화이트보드 판서 허용
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                <input
-                  type="checkbox"
-                  checked={membersCanChangeBoard}
-                  onChange={(e) => setMembersCanChangeBoard(e.target.checked)}
-                />
-                보드 변경(선택·생성·이름) 허용
-              </label>
+          {/* 멤버 권한 — 전원 열람, 방장만 수정 */}
+          <div className="settings-section">
+            <h3>멤버 권한 (그룹 기본)</h3>
+            <p className="settings-desc">
+              {owner
+                ? '방장은 항상 가능합니다. 아래는 일반 멤버 기본 허용입니다. 특정 멤버만 막으려면 팀원 목록에서 클릭하세요.'
+                : '열람만 가능합니다. 권한 변경은 방장만 할 수 있습니다.'}
+            </p>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <input
+                type="checkbox"
+                checked={membersCanRecord}
+                disabled={!owner}
+                onChange={(e) => setMembersCanRecord(e.target.checked)}
+              />
+              회의록 녹화 / 저장 허용
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <input
+                type="checkbox"
+                checked={membersCanDraw}
+                disabled={!owner}
+                onChange={(e) => setMembersCanDraw(e.target.checked)}
+              />
+              화이트보드 판서 허용
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <input
+                type="checkbox"
+                checked={membersCanChangeBoard}
+                disabled={!owner}
+                onChange={(e) => setMembersCanChangeBoard(e.target.checked)}
+              />
+              보드 변경(선택·생성·이름) 허용
+            </label>
+            {owner ? (
               <button className="primary-button" type="button" disabled={saving} onClick={savePermissions}>
                 권한 저장
               </button>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
 
           <div className="settings-section">
             <h3>음성</h3>
