@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { RoomEvent, type RemoteParticipant } from 'livekit-client';
+import { RoomEvent, Track, type RemoteParticipant } from 'livekit-client';
 import { useLocalParticipant, useParticipants, useRoomContext } from '@livekit/components-react';
 import { supabase } from '../services/supabaseClient';
 import {
@@ -108,6 +108,8 @@ export default function MeetingChatPanel({
   const [savingName, setSavingName] = useState(false);
   /** identity(userId) → 프로필 아바타(key 또는 URL) */
   const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
+  /** 지금 말하고 있는 참가자 — 캐릭터 아바타 초록 테두리 */
+  const [speakingIds, setSpeakingIds] = useState<Set<string>>(() => new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -118,6 +120,84 @@ export default function MeetingChatPanel({
   useEffect(() => {
     if (editingName) nameInputRef.current?.focus();
   }, [editingName]);
+
+  // 내 목소리는 Web Audio로 바로 재고, 상대는 LiveKit 레벨을 짧게 읽습니다.
+  useEffect(() => {
+    const SPEAK_ON = 0.02;
+    const SPEAK_OFF = 0.01;
+    let prevKey = '';
+    const wasSpeaking = new Set<string>();
+    let localRms = 0;
+    let cleanupAnalyser: (() => void) | undefined;
+
+    const hookLocalMic = () => {
+      cleanupAnalyser?.();
+      cleanupAnalyser = undefined;
+      localRms = 0;
+      if (!room.localParticipant.isMicrophoneEnabled) return;
+      const media = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.track?.mediaStreamTrack;
+      if (!media || media.readyState === 'ended') return;
+
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(new MediaStream([media]));
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.08;
+      source.connect(analyser);
+      const samples = new Uint8Array(analyser.fftSize);
+      const read = () => {
+        analyser.getByteTimeDomainData(samples);
+        let sum = 0;
+        for (let i = 0; i < samples.length; i += 1) {
+          const v = (samples[i] - 128) / 128;
+          sum += v * v;
+        }
+        localRms = Math.sqrt(sum / samples.length);
+      };
+      const readTimer = window.setInterval(read, 32);
+      if (ctx.state === 'suspended') void ctx.resume();
+      cleanupAnalyser = () => {
+        window.clearInterval(readTimer);
+        source.disconnect();
+        void ctx.close();
+      };
+    };
+
+    hookLocalMic();
+    room.on(RoomEvent.LocalTrackPublished, hookLocalMic);
+    room.on(RoomEvent.LocalTrackUnpublished, hookLocalMic);
+    room.on(RoomEvent.TrackMuted, hookLocalMic);
+    room.on(RoomEvent.TrackUnmuted, hookLocalMic);
+
+    const collect = () => {
+      const next = new Set<string>();
+      const list = [room.localParticipant, ...room.remoteParticipants.values()];
+      for (const p of list) {
+        if (!p?.identity || p.isMicrophoneEnabled === false) continue;
+        const livekitLevel = Number(p.audioLevel) || 0;
+        const level = p.isLocal ? Math.max(livekitLevel, localRms) : livekitLevel;
+        const keep = wasSpeaking.has(p.identity) && level > SPEAK_OFF;
+        if (level >= SPEAK_ON || keep) next.add(p.identity);
+      }
+      const key = [...next].sort().join(',');
+      if (key === prevKey) return;
+      prevKey = key;
+      wasSpeaking.clear();
+      next.forEach((id) => wasSpeaking.add(id));
+      setSpeakingIds(new Set(next));
+    };
+
+    collect();
+    const timer = window.setInterval(collect, 32);
+    return () => {
+      window.clearInterval(timer);
+      cleanupAnalyser?.();
+      room.off(RoomEvent.LocalTrackPublished, hookLocalMic);
+      room.off(RoomEvent.LocalTrackUnpublished, hookLocalMic);
+      room.off(RoomEvent.TrackMuted, hookLocalMic);
+      room.off(RoomEvent.TrackUnmuted, hookLocalMic);
+    };
+  }, [room]);
 
   // 참가자 프로필 사진 — 그룹 프로필 우선, 없으면 기본 프로필
   const participantIdsKey = participants
@@ -301,11 +381,12 @@ export default function MeetingChatPanel({
               const isLocal = p.isLocal;
               const name = readableName(p.name) || (isLocal ? '나' : '참여자');
               const micOn = p.isMicrophoneEnabled;
+              const speaking = micOn && speakingIds.has(p.identity);
               const headsetMuted = isLocal ? speakerMuted : Boolean(remoteDeafened[p.identity]);
               return (
                 <li key={p.identity} className="participant-row">
                   <div className="participant-identity">
-                    <div className="participant-avatar" title={name}>
+                    <div className={`participant-avatar${speaking ? ' is-speaking' : ''}`} title={name}>
                       {avatarByUserId[p.identity] ? (
                         <img src={getAvatarSrc(avatarByUserId[p.identity])} alt="" />
                       ) : (
@@ -327,7 +408,7 @@ export default function MeetingChatPanel({
                     <button
                       type="button"
                       className={`participant-ctrl${!micOn ? ' is-off' : ''}`}
-                      title={isLocal ? (micOn ? '마이크 끄기' : '마이크 켜기') : (micOn ? '말하는 중' : '마이크 꺼짐')}
+                      title={isLocal ? (micOn ? '마이크 끄기' : '마이크 켜기') : (speaking ? '말하는 중' : (micOn ? '마이크 켜짐' : '마이크 꺼짐'))}
                       aria-label={`${name} 마이크`}
                       disabled={!isLocal}
                       onClick={() => { if (isLocal) void toggleLocalMic(); }}

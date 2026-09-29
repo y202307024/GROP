@@ -10,6 +10,7 @@ import {
   parseTimestamp,
   type MeetingChapter,
 } from '../utils/meetingChapters';
+import { notifyGroupMembers } from '../utils/notifications';
 
 type Meeting = {
   id: string;
@@ -334,6 +335,16 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       if (error) throw new Error(error.message);
 
       await fetchMeeting();
+      if (meeting.group_id) {
+        await notifyGroupMembers({
+          groupId: meeting.group_id,
+          type: 'ai_summary',
+          title: `${meeting.title || '회의'} AI 요약이 완료됐어요`,
+          body: 'AI 요약이 준비되었습니다.',
+          link: `/ai?meeting=${meeting.id}`,
+          excludeSelf: false,
+        });
+      }
       alert(
         nextChapters.length > 0
           ? `AI 요약 완성! 타임라인 ${nextChapters.length}개가 만들어졌어요 🎉`

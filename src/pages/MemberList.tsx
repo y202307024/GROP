@@ -16,6 +16,7 @@ import {
   type GroupMeta,
   type MemberPermissionFlags,
 } from '../utils/groupPermissions';
+import { notifyGroupMembers } from '../utils/notifications';
 
 type Member = {
   id: string;
@@ -168,6 +169,14 @@ export default function MemberList() {
       setKickingId(null);
       return;
     }
+
+    const groupLabel = groupMeta?.name?.trim() || '그룹';
+    void notifyGroupMembers({
+      groupId,
+      type: 'group_leave',
+      title: `${label} 님이 ${groupLabel}에서 나갔어요`,
+      link: `/group/${groupId}`,
+    });
 
     try {
       await fetch(`${getApiBase()}/api/livekit-remove-participant`, {

@@ -114,7 +114,7 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          ...(settings.micDeviceId ? { deviceId: { exact: settings.micDeviceId } } : {}),
+          ...(settings.micDeviceId ? { deviceId: { ideal: settings.micDeviceId } } : {}),
         },
       });
       const audioContext = new AudioContext();

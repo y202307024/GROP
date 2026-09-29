@@ -9,6 +9,7 @@ import {
   isGroupOwner,
   type GroupMeta,
 } from '../utils/groupPermissions';
+import { fetchDisplayNickname, notifyGroupMembers } from '../utils/notifications';
 
 const MAX_FILE_SIZE_MB = 3;
 
@@ -186,6 +187,14 @@ export default function GroupSettings() {
     if (!confirm('이 그룹에서 나가시겠습니까? 다시 들어오려면 초대코드가 필요합니다.')) return;
 
     setLeaving(true);
+    // 멤버에서 빠지기 전에 알려야 나머지 멤버에게 알림이 들어갑니다.
+    const nickname = await fetchDisplayNickname(userId, id);
+    await notifyGroupMembers({
+      groupId: id,
+      type: 'group_leave',
+      title: `${nickname} 님이 ${name.trim() || '그룹'}에서 나갔어요`,
+      link: `/group/${id}`,
+    });
     const { error } = await supabase
       .from('group_members')
       .delete()

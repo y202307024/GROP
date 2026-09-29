@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import MeetingDetailView from '../components/MeetingDetailView';
+import { readLastMeeting } from '../utils/lastMeeting';
 
 // 우측 회의 목록에 쓸 회의 행 타입 (문서 탭과 동일한 meetings 데이터)
 type MeetingRow = {
@@ -35,6 +36,7 @@ function formatMeetingDate(dateStr: string) {
  */
 export default function AiSummaryPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   // 우측 회의 목록 — 문서 탭과 같은 소스(내가 속한 그룹의 회의)를 최신순으로 보여 줍니다.
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
   // 왼쪽에 표시할 회의 id. 목록을 누르면 여기가 바뀝니다.
@@ -50,35 +52,57 @@ export default function AiSummaryPage() {
         return;
       }
 
-      const { data: memberRows } = await supabase
+      const { data: memberRows, error: memberError } = await supabase
         .from('group_members')
         .select('group_id')
         .eq('user_id', sessionData.session.user.id);
+      if (memberError) {
+        console.warn('그룹 목록을 불러오지 못했습니다:', memberError.message);
+      }
 
       const ids = [...new Set((memberRows ?? []).map((row) => row.group_id).filter(Boolean))];
-      if (!mounted || ids.length === 0) {
-        if (mounted) setMeetings([]);
+      if (!mounted) return;
+      if (ids.length === 0) {
+        setMeetings([]);
+        setSelectedId(null);
         return;
       }
 
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('meetings')
         .select('id, title, date, summary, video_url, group_id')
         .in('group_id', ids)
         .order('date', { ascending: false });
+      if (error) {
+        console.warn('회의록 목록을 불러오지 못했습니다:', error.message);
+      }
 
       if (!mounted) return;
       const rows = data ?? [];
       setMeetings(rows);
-      // 처음 진입 시 가장 최근 회의를 기본으로 선택합니다.
-      setSelectedId((prev) => prev ?? rows[0]?.id ?? null);
+
+      // 방금 녹화 저장한 회의가 있으면 그걸 엽니다. 이미 다른 행을 보고 있으면 유지합니다.
+      const wanted = searchParams.get('meeting') || readLastMeeting();
+      setSelectedId((prev) => {
+        if (searchParams.get('meeting') && rows.some((r) => r.id === wanted)) return wanted;
+        if (prev && rows.some((r) => r.id === prev)) return prev;
+        if (wanted && rows.some((r) => r.id === wanted)) return wanted;
+        return rows[0]?.id ?? null;
+      });
     };
 
     void load();
+    const onFocus = () => {
+      void load();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
     return () => {
       mounted = false;
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
     };
-  }, [navigate]);
+  }, [navigate, searchParams]);
 
   return (
     <AppShell activePage="ai">

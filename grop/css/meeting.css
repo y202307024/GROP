@@ -444,6 +444,23 @@
     height: 100%;
     object-fit: cover;
     display: block;
+    border-radius: 50%;
+}
+
+/* 말할 때 캐릭터 아바타에 초록 테두리가 바로 울립니다. */
+.participant-avatar.is-speaking {
+    overflow: visible;
+    box-shadow: 0 0 0 2px var(--color-speaking, #57f287);
+    animation: avatar-speak-ring 0.45s ease-out infinite;
+}
+
+@keyframes avatar-speak-ring {
+    0% {
+        box-shadow: 0 0 0 2px rgba(87, 242, 135, 0.95);
+    }
+    100% {
+        box-shadow: 0 0 0 8px rgba(87, 242, 135, 0);
+    }
 }
 
 

@@ -6,6 +6,9 @@ import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
 import { ensureGroupCanvasAccess } from '../utils/groupAccess';
 import { uploadMeetingAttachment, type MeetingChatFile } from '../utils/meetingChat';
+import NotificationBell from '../components/NotificationBell';
+import { syncMeetingAttachmentsDoc } from '../utils/meetingDocs';
+import { notifyDocumentUpload } from '../utils/notifications';
 
 const SHAPE_TOOLS: ExcalidrawTool[] = [
   'rectangle', 'ellipse', 'diamond', 'triangle', 'pentagon', 'hexagon', 'star', 'arrow', 'line', 'elbowArrow', 'curveArrow',
@@ -47,6 +50,7 @@ export default function CanvasPage() {
   const [shapeFillOpacity, setShapeFillOpacity] = useState(0.35);
   const [attachments, setAttachments] = useState<MeetingChatFile[]>([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [userId, setUserId] = useState('');
   const canvasBoardRef = useRef<CanvasBoardHandle | null>(null);
 
   const initialBoardId = searchParams.get('boardId') ?? undefined;
@@ -68,6 +72,7 @@ export default function CanvasPage() {
 
       if (groupId) {
         const userId = sessionData.session.user.id;
+        setUserId(userId);
         const access = await ensureGroupCanvasAccess(groupId, userId);
 
         if (!access.ok) {
@@ -127,6 +132,22 @@ export default function CanvasPage() {
     try {
       const saved = await uploadMeetingAttachment(file, groupId);
       setAttachments((prev) => [...prev, saved]);
+      if (groupId) {
+        void notifyDocumentUpload(groupId, [saved.name]);
+        await syncMeetingAttachmentsDoc({
+          meetingId: null,
+          groupId,
+          userId,
+          files: [{
+            id: crypto.randomUUID(),
+            name: saved.name,
+            path: saved.path,
+            size: saved.size,
+            mime: saved.mime,
+            ts: Date.now(),
+          }],
+        });
+      }
     } catch (err) {
       alert(err instanceof Error ? err.message : '파일 첨부에 실패했습니다.');
     } finally {
@@ -145,6 +166,7 @@ export default function CanvasPage() {
       <header className="meeting-header">
         <Link to="/main" className="logo">GROP</Link>
         <span className="meeting-title">{groupName || '캔버스'}</span>
+        <NotificationBell />
       </header>
 
       <main className="meeting-main">

@@ -50,6 +50,11 @@ export class LiveKitRoomAudioMixer {
     this.sources.delete(id);
   }
 
+  /** getUserMedia 폴백처럼 LiveKit 밖 트랙을 믹서에 붙입니다. */
+  addExternalTrack(identity: string, mediaTrack: MediaStreamTrack) {
+    this.addTrack(identity, mediaTrack.id, mediaTrack);
+  }
+
   private syncParticipant(participant: Participant, isLocal = false) {
     participant.audioTrackPublications.forEach((pub) => {
       const mediaTrack = pub.track?.mediaStreamTrack;
