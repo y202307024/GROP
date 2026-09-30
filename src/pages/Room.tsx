@@ -4,7 +4,6 @@ import { RoomEvent } from 'livekit-client';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
-  StartAudio,
   useLocalParticipant,
   useRoomContext,
 } from '@livekit/components-react';
@@ -149,25 +148,23 @@ function MeetingAudioSetup() {
     });
   }, [room]);
 
-  return (
-    <StartAudio
-      label="🔊 상대방 소리 켜기"
-      style={{
-        position: 'absolute',
-        top: 12,
-        right: 12,
-        zIndex: 20,
-        padding: '8px 12px',
-        borderRadius: 8,
-        border: 'none',
-        background: 'var(--color-primary-soft)',
-        color: '#fff',
-        fontSize: 12,
-        cursor: 'pointer',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
-      }}
-    />
-  );
+  // 브라우저 자동재생 정책 때문에 사용자 조작 전에는 상대방 소리가 막힐 수 있습니다.
+  // "상대방 소리 켜기" 버튼을 띄우는 대신, 회의방 어디든 처음 클릭/키 입력할 때 조용히 오디오를 켭니다.
+  // (보드·채팅 등이 stopPropagation 해도 받도록 capture 단계에서 듣습니다.)
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (room.canPlaybackAudio) return;
+      room.startAudio().catch((err) => console.warn('상대방 오디오 재생 시작 실패:', err));
+    };
+    document.addEventListener('pointerdown', unlockAudio, true);
+    document.addEventListener('keydown', unlockAudio, true);
+    return () => {
+      document.removeEventListener('pointerdown', unlockAudio, true);
+      document.removeEventListener('keydown', unlockAudio, true);
+    };
+  }, [room]);
+
+  return null;
 }
 
 function RecordingDataSync({
