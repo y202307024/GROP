@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { RoomEvent, Track } from 'livekit-client';
+import { RoomEvent, Track, type RemoteParticipant } from 'livekit-client';
 import { useLocalParticipant, useParticipants, useRoomContext } from '@livekit/components-react';
 import { supabase } from '../services/supabaseClient';
 import {
@@ -25,8 +25,8 @@ type Props = {
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** LiveKit participant attributes 에 헤드셋(스피커) 꺼짐 여부를 '1'/'0' 으로 싣는 키 */
-const HEADSET_OFF_ATTR = 'headsetOff';
+/** 헤드셋(스피커) 꺼짐 여부를 다른 참가자에게 알리는 데이터 채널 topic */
+const MEETING_HEADSET_TOPIC = 'meeting-headset';
 
 function participantInitial(name: string) {
   const trimmed = name.trim();
@@ -103,6 +103,8 @@ export default function MeetingChatPanel({
   const participants = useParticipants();
   const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
   const [draft, setDraft] = useState('');
+  /** identity → 그 참가자가 헤드셋을 껐는지 (데이터 채널로 받은 값) */
+  const [remoteHeadsetOff, setRemoteHeadsetOff] = useState<Record<string, boolean>>({});
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(groupName);
   const [savingName, setSavingName] = useState(false);
@@ -122,20 +124,50 @@ export default function MeetingChatPanel({
   }, [editingName]);
 
   // 헤드셋은 내 스피커만 끄는 로컬 상태라 다른 사람에게 자동으로 전달되지 않습니다.
-  // participant attributes 에 실어 두면 다른 참가자 화면의 헤드셋 아이콘이 따라 바뀝니다.
-  // (metadata 는 CanvasBoard 가 보드 선택 공유에 쓰고 있어 attributes 를 씁니다.)
+  // 채팅과 같은 데이터 채널로 내 상태를 보내, 다른 참가자 화면의 헤드셋 아이콘이 따라 바뀌게 합니다.
   useEffect(() => {
     const publish = () => {
       if (room.state !== 'connected') return;
+      const payload = new TextEncoder().encode(JSON.stringify({ off: speakerMuted }));
       room.localParticipant
-        .setAttributes({ [HEADSET_OFF_ATTR]: speakerMuted ? '1' : '0' })
+        .publishData(payload, { reliable: true, topic: MEETING_HEADSET_TOPIC })
         .catch((err) => console.warn('헤드셋 상태 공유 실패:', err));
     };
     publish();
-    // 연결 전에 바꾼 상태나 재연결 뒤에도 다시 알립니다.
+    // 데이터 메시지는 저장되지 않으므로, 연결·재연결 때와 새 참가자가 들어올 때마다 다시 보냅니다.
     room.on(RoomEvent.Connected, publish);
-    return () => { room.off(RoomEvent.Connected, publish); };
+    room.on(RoomEvent.ParticipantConnected, publish);
+    return () => {
+      room.off(RoomEvent.Connected, publish);
+      room.off(RoomEvent.ParticipantConnected, publish);
+    };
   }, [room, speakerMuted]);
+
+  // 다른 참가자가 보낸 헤드셋 상태를 받아 둡니다. 나간 참가자 값은 지웁니다.
+  useEffect(() => {
+    const onData = (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
+      if (topic !== MEETING_HEADSET_TOPIC || !participant?.identity) return;
+      try {
+        const msg = JSON.parse(new TextDecoder().decode(payload)) as { off?: unknown };
+        setRemoteHeadsetOff((prev) => ({ ...prev, [participant.identity]: msg.off === true }));
+      } catch {
+        // 형식이 다른 메시지는 무시합니다.
+      }
+    };
+    const onLeft = (participant: RemoteParticipant) => {
+      setRemoteHeadsetOff((prev) => {
+        const next = { ...prev };
+        delete next[participant.identity];
+        return next;
+      });
+    };
+    room.on(RoomEvent.DataReceived, onData);
+    room.on(RoomEvent.ParticipantDisconnected, onLeft);
+    return () => {
+      room.off(RoomEvent.DataReceived, onData);
+      room.off(RoomEvent.ParticipantDisconnected, onLeft);
+    };
+  }, [room]);
 
   // 내 목소리는 Web Audio로 바로 재고, 상대는 LiveKit 레벨을 짧게 읽습니다.
   useEffect(() => {
@@ -389,8 +421,8 @@ export default function MeetingChatPanel({
               const name = readableName(p.name) || (isLocal ? '나' : '참여자');
               const micOn = p.isMicrophoneEnabled;
               const speaking = micOn && speakingIds.has(p.identity);
-              // 원격 참가자는 그 사람이 공유한 attributes 값으로 헤드셋 상태를 표시합니다.
-              const headsetMuted = isLocal ? speakerMuted : p.attributes?.[HEADSET_OFF_ATTR] === '1';
+              // 원격 참가자는 그 사람이 데이터 채널로 보낸 값으로 헤드셋 상태를 표시합니다.
+              const headsetMuted = isLocal ? speakerMuted : Boolean(remoteHeadsetOff[p.identity]);
               return (
                 <li key={p.identity} className="participant-row">
                   <div className="participant-identity">
