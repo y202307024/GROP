@@ -732,7 +732,7 @@ export default function Room() {
 
   // 영상 파일은 서버 컴퓨터 디스크에만 둡니다.
   // meetings.video_url 에는 재생 URL만 저장합니다.
-  const persistMeetingRecording = async (): Promise<{ ok: boolean; error?: string }> => {
+  const persistMeetingRecording = async (): Promise<{ ok: boolean; error?: string; meetingId?: string }> => {
     // stop 직후 마지막 청크가 늦게 들어오는 경우를 한 번 더 기다립니다.
     if (recordedChunksRef.current.length === 0) {
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -880,7 +880,8 @@ export default function Room() {
       if (second.error || !second.data?.id) {
         return { ok: false, error: second.error?.message || first.error?.message || '회의록 저장에 실패했습니다.' };
       }
-      insertedId = second.data.id;
+      // 바로 위에서 id 존재를 확인했으므로 string 으로 확정합니다.
+      insertedId = second.data.id as string;
     }
 
     recordedChunksRef.current = [];
@@ -1074,13 +1075,15 @@ export default function Room() {
       if (!opts?.remote) {
         recordingSyncRef.current?.broadcastStart();
         const gid = groupIdRef.current;
+        // 녹화 시작을 회의 시작으로 보고, 알림을 누르면 바로 회의방으로 들어오게 합니다.
+        // 원격 동기화로 따라 시작한 참가자(opts.remote)는 중복 알림을 보내지 않습니다.
         if (gid) {
           void notifyGroupMembers({
             groupId: gid,
             type: 'meeting_start',
-            title: `${groupName || '그룹'} 녹화가 시작됐어요`,
-            body: '회의 화면 녹화가 시작되었습니다.',
-            link: `/ai`,
+            title: `${groupName || '그룹'} 회의가 시작됐어요`,
+            body: '지금 회의방에 참여할 수 있어요.',
+            link: `/room/${gid}`,
             excludeSelf: false,
           });
         }
