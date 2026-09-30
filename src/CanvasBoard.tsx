@@ -201,7 +201,9 @@ type EventType =
   | 'sticky.update'
   | 'sticky.transform'
   | 'sticky.remove'
-  | 'region.erase';
+  | 'region.erase'
+  | 'history.undo'
+  | 'history.redo';
 
 // 캔버스에 붙이는 이미지: 화면에 그릴 때 가로 최대 픽셀
 const MAX_IMAGE_DRAW_WIDTH = 800;
@@ -216,6 +218,54 @@ type BoardEventRow = {
   type: EventType;
   payload: unknown;
 };
+
+/**
+ * Ctrl+Z 한 번에 되돌릴 "내 동작 하나".
+ * - 획: begin/append/end 여러 행이 한 획이라 strokeId 로 묶습니다.
+ * - 그 외: 한 동작에서 넣은 board_events 행 id 목록 (영역 지우기는 여러 행)
+ */
+type HistoryTarget = { strokeId: string } | { eventIds: string[] };
+
+type HistoryTogglePayload = { target: HistoryTarget };
+
+function isStrokeEventType(type: EventType) {
+  return type === 'stroke.begin' || type === 'stroke.append' || type === 'stroke.end';
+}
+
+/**
+ * history.undo / history.redo 를 순서대로 접어, 되돌려진 동작의 이벤트를 뺀 목록을 돌려줍니다.
+ * 모든 참가자가 같은 이벤트 로그로 같은 결과를 그리게 하는 것이 목적입니다.
+ * events 는 seq 오름차순이어야 undo → redo 순서가 맞습니다.
+ */
+function filterUndoneEvents(events: BoardEventRow[]): BoardEventRow[] {
+  const undoneStrokes = new Set<string>();
+  const undoneEvents = new Set<string>();
+  for (const ev of events) {
+    if (ev.type !== 'history.undo' && ev.type !== 'history.redo') continue;
+    const target = (ev.payload as HistoryTogglePayload | null)?.target;
+    if (!target) continue;
+    const undo = ev.type === 'history.undo';
+    if ('strokeId' in target) {
+      if (undo) undoneStrokes.add(target.strokeId);
+      else undoneStrokes.delete(target.strokeId);
+    } else {
+      for (const id of target.eventIds ?? []) {
+        if (undo) undoneEvents.add(id);
+        else undoneEvents.delete(id);
+      }
+    }
+  }
+
+  return events.filter((ev) => {
+    if (ev.type === 'history.undo' || ev.type === 'history.redo') return false;
+    if (undoneEvents.has(ev.id)) return false;
+    if (isStrokeEventType(ev.type)) {
+      const strokeId = (ev.payload as { strokeId?: string } | null)?.strokeId;
+      if (strokeId && undoneStrokes.has(strokeId)) return false;
+    }
+    return true;
+  });
+}
 
 type StrokeBeginPayload = {
   strokeId: string;
@@ -854,6 +904,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const onTextDecorChangeRef = useRef(onTextDecorChange);
   onTextDecorChangeRef.current = onTextDecorChange;
   const lastInsertErrorAlertMsRef = useRef(0);
+  /** 내가 한 동작 / 내가 되돌린 동작 스택 — Ctrl+Z 는 다른 사람 동작을 건드리지 않습니다. */
+  const myUndoStackRef = useRef<HistoryTarget[]>([]);
+  const myRedoStackRef = useRef<HistoryTarget[]>([]);
+  /** 영역 지우기처럼 여러 행이 한 동작일 때, 여기 모았다가 한 번에 스택에 올립니다. */
+  const undoGroupRef = useRef<string[] | null>(null);
+  /** 아직 끝나지 않은 insert — 되돌리기 전에 기다려야 방금 한 동작이 대상이 됩니다. */
+  const pendingInsertsRef = useRef<Set<Promise<void>>>(new Set());
+  const historyBusyRef = useRef(false);
   const deepLinkHandledRef = useRef(false);
   const historyRef = useRef<ImageData[]>([]);
   const historyIndexRef = useRef(-1);
@@ -989,6 +1047,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     });
   };
 
+  /**
+   * 회의 중에 내가 보드를 바꾸거나 새로 만들면 다른 참가자도 같은 보드로 따라오게 알립니다.
+   * (예전엔 입장 직후 선택창에서만 알려서, 회의 중 "새 보드"·목록 변경이 나에게만 반영됐습니다.)
+   */
+  const announceBoardSelection = (id: string, title: string) => {
+    if (!meetingMode || !localParticipant || !id) return;
+    const payload: MeetingBoardMessage = {
+      type: 'board:selected',
+      boardId: id,
+      title,
+      from: localParticipant.identity,
+    };
+    latestBoardSelectionRef.current = payload;
+    publishBoardSelection(payload);
+  };
+
   // 회의방 접속 상태를 확인해서, 첫 참가자일 때만 초기 선택창을 띄웁니다.
   // 방에 아무도 없던 시점에 첫 사람이 들어오면 이 모달이 보이고,
   // 이후 참가자들은 이미 선택된 보드를 따라가게 됩니다.
@@ -1047,6 +1121,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
       setBoardId(msg.boardId);
       if (msg.title) setBoardTitle(msg.title);
+      // 다른 사람이 방금 만든 보드는 내 목록에 없어서 선택칸이 비어 보이므로 목록에도 넣습니다.
+      setBoards((list) =>
+        list.some((b) => b.id === msg.boardId)
+          ? list
+          : [{ id: msg.boardId, title: msg.title ?? '새 보드', created_at: new Date().toISOString() }, ...list],
+      );
       latestBoardSelectionRef.current = msg;
     };
 
@@ -1444,20 +1524,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
   };
 
-  const applyCanvasState = (data: ImageData) => {
-    const canvas = canvasRef.current;
-    const ctx = ctxRef.current ?? ensureContext();
-    if (!canvas || !ctx) return;
-    // 리사이즈 전 스냅샷은 크기가 다를 수 있어 맞을 때만 복원합니다.
-    if (data.width !== canvas.width || data.height !== canvas.height) return;
-    try {
-      ctx.putImageData(data, 0, 0);
-    } catch {
-      return;
-    }
-    revealExpandedFilesOnCanvas();
-  };
-
   /** 펼친 파일 자리의 흰 배경만 지워, 파일 내용이 비치고 그 위에 획이 올라가게 합니다. */
   const revealExpandedFilesOnCanvas = () => {
     const canvas = canvasRef.current;
@@ -1492,9 +1558,18 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (placedFiles.some((file) => file.expanded)) revealExpandedFilesOnCanvas();
   }, [placedFiles]);
 
+  // 실행취소 버튼 활성 여부는 "내가 되돌릴 수 있는 동작"이 있는지로 정합니다.
   const syncHistoryUi = () => {
-    setCanUndo(historyIndexRef.current > 0);
-    setCanRedo(historyIndexRef.current >= 0 && historyIndexRef.current < historyRef.current.length - 1);
+    setCanUndo(myUndoStackRef.current.length > 0);
+    setCanRedo(myRedoStackRef.current.length > 0);
+  };
+
+  /** 새로 한 내 동작을 되돌리기 스택에 올립니다. 새 동작이 생기면 다시 실행 목록은 비웁니다. */
+  const pushMyUndoTarget = (target: HistoryTarget) => {
+    myUndoStackRef.current.push(target);
+    if (myUndoStackRef.current.length > MAX_HISTORY) myUndoStackRef.current.shift();
+    myRedoStackRef.current = [];
+    syncHistoryUi();
   };
 
   const resetHistory = () => {
@@ -1547,20 +1622,51 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     syncHistoryUi();
   };
 
+  /**
+   * 실행취소/다시 실행을 board_events 에 history.undo / history.redo 로 남깁니다.
+   * 화면 픽셀만 되돌리면 다른 참가자·새로고침에 반영되지 않으므로,
+   * 이벤트로 저장한 뒤 되돌려진 동작을 뺀 이벤트 로그로 보드를 다시 그립니다.
+   * 다른 참가자는 Realtime 으로 이 이벤트를 받아 같은 방식으로 다시 그립니다.
+   */
+  const toggleMyHistory = async (kind: 'undo' | 'redo') => {
+    if (!boardId || historyBusyRef.current || isReplayingRef.current) return;
+    historyBusyRef.current = true;
+    try {
+      // 방금 그린 획·도형 저장이 끝나야 그 동작이 스택 맨 위에 올라옵니다.
+      await strokeWriteChainRef.current;
+      await Promise.all([...pendingInsertsRef.current]);
+
+      const from = kind === 'undo' ? myUndoStackRef : myRedoStackRef;
+      const to = kind === 'undo' ? myRedoStackRef : myUndoStackRef;
+      const target = from.current.pop();
+      if (!target) return;
+
+      const { error } = await supabase.from('board_events').insert({
+        board_id: boardId,
+        actor_id: actorIdRef.current,
+        type: kind === 'undo' ? 'history.undo' : 'history.redo',
+        payload: { target } satisfies HistoryTogglePayload,
+      });
+      if (error) {
+        // 저장 실패 시 스택을 원래대로 돌려 다음 시도에 같은 동작을 다시 대상으로 삼습니다.
+        from.current.push(target);
+        reportInsertError(error.message);
+        return;
+      }
+      to.current.push(target);
+      await loadAndRenderBoard(boardId);
+    } finally {
+      historyBusyRef.current = false;
+      syncHistoryUi();
+    }
+  };
+
   const undoHistory = () => {
-    if (historyIndexRef.current <= 0) return;
-    historyIndexRef.current -= 1;
-    const state = historyRef.current[historyIndexRef.current];
-    if (state) applyCanvasState(state);
-    syncHistoryUi();
+    void toggleMyHistory('undo');
   };
 
   const redoHistory = () => {
-    if (historyIndexRef.current >= historyRef.current.length - 1) return;
-    historyIndexRef.current += 1;
-    const state = historyRef.current[historyIndexRef.current];
-    if (state) applyCanvasState(state);
-    syncHistoryUi();
+    void toggleMyHistory('redo');
   };
   undoHistoryRef.current = undoHistory;
   redoHistoryRef.current = redoHistory;
@@ -1777,6 +1883,18 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     setBoardId(b.id);
     setBoardTitle(savedTitle);
     lastSavedTitleRef.current[b.id] = savedTitle;
+    announceBoardSelection(b.id, savedTitle);
+  };
+
+  /** 보드 선택칸 변경 — 권한을 확인하고, 회의 중이면 다른 참가자에게도 알립니다. */
+  const selectBoard = (id: string) => {
+    if (!canChangeBoard) {
+      alert('보드 변경 권한이 없습니다.');
+      return;
+    }
+    setBoardId(id);
+    const picked = boards.find((b) => b.id === id);
+    announceBoardSelection(id, picked ? formatBoardTitle(picked.title) : boardTitle);
   };
 
   const saveBoardTitle = async () => {
@@ -2025,6 +2143,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     applyRegionEraseLocal(rect);
 
     void (async () => {
+      // 객체 삭제 여러 건 + region.erase 를 Ctrl+Z 한 번에 함께 되돌리도록 묶습니다.
+      undoGroupRef.current = [];
       for (const t of hitTexts) {
         await insertEvent('text.remove', { id: t.id } satisfies TextRemovePayload);
       }
@@ -2047,6 +2167,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         width: rect.width,
         height: rect.height,
       } satisfies RegionErasePayload);
+      const groupIds = undoGroupRef.current ?? [];
+      undoGroupRef.current = null;
+      if (groupIds.length > 0) pushMyUndoTarget({ eventIds: groupIds });
       commitHistory();
       // 객체 제거·영역 구멍을 이벤트 순서로 다시 맞춰 다른 참가자와 동일하게 보이게 합니다.
       if (boardId) await loadAndRenderBoard(boardId);
@@ -2084,13 +2207,44 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const insertEvent = async (type: EventType, payload: unknown) => {
     if (!boardId) return;
-    const { error } = await supabase.from('board_events').insert({
-      board_id: boardId,
-      actor_id: actorIdRef.current,
-      type,
-      payload,
-    });
-    if (error) reportInsertError(error.message);
+    const task = (async () => {
+      // 되돌리기 대상으로 삼으려면 저장된 행 id 가 필요해 insert 후 id 를 받아옵니다.
+      const { data, error } = await supabase
+        .from('board_events')
+        .insert({
+          board_id: boardId,
+          actor_id: actorIdRef.current,
+          type,
+          payload,
+        })
+        .select('id')
+        .single();
+      if (error) {
+        reportInsertError(error.message);
+        return;
+      }
+      const id = (data as { id?: string } | null)?.id;
+      if (!id || !isHistoryCommitEvent(type)) return;
+
+      // 영역 지우기처럼 묶음 동작 중이면 모았다가 한 번에 올립니다.
+      if (undoGroupRef.current) {
+        undoGroupRef.current.push(id);
+        return;
+      }
+      if (type === 'stroke.end') {
+        const strokeId = (payload as StrokeEndPayload | null)?.strokeId;
+        if (strokeId) pushMyUndoTarget({ strokeId });
+        return;
+      }
+      pushMyUndoTarget({ eventIds: [id] });
+    })();
+
+    pendingInsertsRef.current.add(task);
+    try {
+      await task;
+    } finally {
+      pendingInsertsRef.current.delete(task);
+    }
   };
 
   const selectPlacedImage = (id: string | null) => {
@@ -2821,7 +2975,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       alert(`보드 로드 실패: ${error.message}`);
       return;
     }
-    const events = (data ?? []) as BoardEventRow[];
+    // 실행취소된 동작은 여기서 빼고 그려, 모든 참가자·새로고침 화면이 같게 합니다.
+    const events = filterUndoneEvents((data ?? []) as BoardEventRow[]);
     const transforms = new Map<string, ImageTransformPayload>();
     const textTransforms = new Map<string, TextTransformPayload>();
     const shapeTransforms = new Map<string, ShapeTransformPayload>();
@@ -2989,6 +3144,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // 보드가 바뀌면 LiveKit/Realtime 중복 키를 비워 메모리·오 dedupe를 막습니다.
     appliedLiveStrokeKeysRef.current = new Set();
     strokeLiveSeqByIdRef.current = new Map();
+    // 되돌리기 스택은 보드별이라, 보드를 바꾸면 비웁니다.
+    myUndoStackRef.current = [];
+    myRedoStackRef.current = [];
+    undoGroupRef.current = null;
+    syncHistoryUi();
     const b = boards.find((x) => x.id === boardId);
     if (b) {
       const title = formatBoardTitle(b.title);
@@ -3010,6 +3170,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           if (isReplayingRef.current) return;
           // 내가 보낸 이벤트는 이미 로컬에서 그렸으므로 중복 적용하지 않음
           if (row.actor_id === actorIdRef.current) return;
+
+          // 다른 참가자의 실행취소/다시 실행: 픽셀로는 되돌릴 수 없어 이벤트 로그로 보드를 다시 그립니다.
+          if (row.type === 'history.undo' || row.type === 'history.redo') {
+            void loadAndRenderBoard(boardId);
+            return;
+          }
 
           // LiveKit으로 이미 그린 stroke는 Realtime INSERT에서 스킵 (반대 순서면 키를 남김)
           if (row.type === 'stroke.begin' || row.type === 'stroke.append' || row.type === 'stroke.end') {
@@ -4398,13 +4564,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             <span style={{ color: meetingMode ? '#949ba4' : '#6b7280', fontSize: 12 }}>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
             <select
               value={boardId}
-              onChange={(e) => {
-                if (!canChangeBoard) {
-                  alert('보드 변경 권한이 없습니다.');
-                  return;
-                }
-                setBoardId(e.target.value);
-              }}
+              onChange={(e) => selectBoard(e.target.value)}
               disabled={isLoadingBoards || !canChangeBoard}
               style={{
                 padding: meetingMode ? '6px 8px' : '8px 10px',
@@ -4556,7 +4716,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             <span>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
             <select
               value={boardId}
-              onChange={(e) => setBoardId(e.target.value)}
+              onChange={(e) => selectBoard(e.target.value)}
               disabled={isLoadingBoards}
             >
               <option value="">선택...</option>
