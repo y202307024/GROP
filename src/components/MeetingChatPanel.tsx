@@ -27,6 +27,51 @@ type Props = {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** 헤드셋(스피커) 꺼짐 여부를 다른 참가자에게 알리는 데이터 채널 topic */
 const MEETING_HEADSET_TOPIC = 'meeting-headset';
+/** 늦게 들어온 참가자가 이전 채팅을 요청·수신하는 데이터 채널 topic */
+const MEETING_CHAT_HISTORY_TOPIC = 'meeting-chat-history';
+const MAX_CHAT_MESSAGES = 300;
+/** LiveKit reliable 메시지 한 개 크기 제한(약 15KB)보다 작게 나눠 보냅니다. */
+const HISTORY_CHUNK_BYTES = 12_000;
+
+type ChatHistoryPacket =
+  | { type: 'request' }
+  | { type: 'history'; messages: MeetingChatMessage[] };
+
+/** 받은 기록을 기존 목록에 합칩니다. 같은 id는 한 번만 넣고 시간순으로 정렬합니다. */
+function mergeChatMessages(prev: MeetingChatMessage[], incoming: unknown[]) {
+  const seen = new Set(prev.map((m) => m.id));
+  const added = incoming.filter((m): m is MeetingChatMessage => {
+    if (!m || typeof m !== 'object') return false;
+    const msg = m as Partial<MeetingChatMessage>;
+    return typeof msg.id === 'string'
+      && typeof msg.text === 'string'
+      && msg.text.trim() !== ''
+      && typeof msg.ts === 'number'
+      && !seen.has(msg.id);
+  });
+  if (added.length === 0) return prev;
+  return [...prev, ...added].sort((a, b) => a.ts - b.ts).slice(-MAX_CHAT_MESSAGES);
+}
+
+/** 채팅 기록을 크기 제한에 맞는 묶음들로 나눕니다. */
+function chunkChatHistory(messages: MeetingChatMessage[]) {
+  const encoder = new TextEncoder();
+  const chunks: MeetingChatMessage[][] = [];
+  let current: MeetingChatMessage[] = [];
+  let size = 0;
+  for (const msg of messages) {
+    const bytes = encoder.encode(JSON.stringify(msg)).length + 1;
+    if (current.length > 0 && size + bytes > HISTORY_CHUNK_BYTES) {
+      chunks.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(msg);
+    size += bytes;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
 
 function participantInitial(name: string) {
   const trimmed = name.trim();
@@ -306,10 +351,74 @@ export default function MeetingChatPanel({
       const msg = decodeMeetingChatMessage(payload);
       // 파일만 있는 옛 메시지는 채팅에 표시하지 않습니다.
       if (!msg || (!msg.text.trim() && msg.file)) return;
-      setMessages((prev) => [...prev, msg].slice(-300));
+      setMessages((prev) => mergeChatMessages(prev, [msg]));
     };
     room.on(RoomEvent.DataReceived, handler);
     return () => { room.off(RoomEvent.DataReceived, handler); };
+  }, [room]);
+
+  // 채팅은 서버에 저장되지 않아서, 늦게 들어온 사람은 이전 메시지를 받지 못합니다.
+  // 그래서 입장(재연결) 때 기록을 요청하고, 방에 가장 오래 있던 참가자 한 명이 그 사람에게만 보내 줍니다.
+  const messagesRef = useRef<MeetingChatMessage[]>([]);
+  messagesRef.current = messages;
+
+  useEffect(() => {
+    const send = (packet: ChatHistoryPacket, to?: string) => {
+      const payload = new TextEncoder().encode(JSON.stringify(packet));
+      return room.localParticipant
+        .publishData(payload, {
+          reliable: true,
+          topic: MEETING_CHAT_HISTORY_TOPIC,
+          destinationIdentities: to ? [to] : undefined,
+        })
+        .catch((err) => console.warn('채팅 기록 공유 실패:', err));
+    };
+
+    const requestHistory = () => {
+      if (room.state !== 'connected') return;
+      void send({ type: 'request' });
+    };
+
+    // 요청한 사람을 뺀 참가자 중 가장 먼저 들어온 사람만 응답해 중복 전송을 막습니다.
+    // (입장 시각이 같으면 identity 순으로 정해 모든 참가자가 같은 결론을 내립니다.)
+    const isResponder = (requester: string) => {
+      const candidates = [room.localParticipant, ...room.remoteParticipants.values()]
+        .filter((p) => p.identity && p.identity !== requester)
+        .sort((a, b) => {
+          const ta = a.joinedAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+          const tb = b.joinedAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+          return ta - tb || a.identity.localeCompare(b.identity);
+        });
+      return candidates[0]?.identity === room.localParticipant.identity;
+    };
+
+    const onData = async (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
+      if (topic !== MEETING_CHAT_HISTORY_TOPIC || !participant?.identity) return;
+      let packet: ChatHistoryPacket;
+      try {
+        packet = JSON.parse(new TextDecoder().decode(payload)) as ChatHistoryPacket;
+      } catch {
+        return;
+      }
+      if (packet.type === 'request') {
+        if (!isResponder(participant.identity)) return;
+        for (const chunk of chunkChatHistory(messagesRef.current)) {
+          await send({ type: 'history', messages: chunk }, participant.identity);
+        }
+      } else if (packet.type === 'history' && Array.isArray(packet.messages)) {
+        setMessages((prev) => mergeChatMessages(prev, packet.messages));
+      }
+    };
+
+    requestHistory();
+    room.on(RoomEvent.Connected, requestHistory);
+    room.on(RoomEvent.Reconnected, requestHistory);
+    room.on(RoomEvent.DataReceived, onData);
+    return () => {
+      room.off(RoomEvent.Connected, requestHistory);
+      room.off(RoomEvent.Reconnected, requestHistory);
+      room.off(RoomEvent.DataReceived, onData);
+    };
   }, [room]);
 
   useEffect(() => {
@@ -317,7 +426,7 @@ export default function MeetingChatPanel({
   }, [messages]);
 
   const publishChat = (msg: MeetingChatMessage) => {
-    setMessages((prev) => [...prev, msg].slice(-300));
+    setMessages((prev) => mergeChatMessages(prev, [msg]));
     void localParticipant.publishData(encodeMeetingChatMessage(msg), {
       reliable: true,
       topic: MEETING_CHAT_TOPIC,
