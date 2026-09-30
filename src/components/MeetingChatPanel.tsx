@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { RoomEvent, Track, type RemoteParticipant } from 'livekit-client';
+import { RoomEvent, Track } from 'livekit-client';
 import { useLocalParticipant, useParticipants, useRoomContext } from '@livekit/components-react';
 import { supabase } from '../services/supabaseClient';
 import {
@@ -25,6 +25,8 @@ type Props = {
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** LiveKit participant attributes 에 헤드셋(스피커) 꺼짐 여부를 '1'/'0' 으로 싣는 키 */
+const HEADSET_OFF_ATTR = 'headsetOff';
 
 function participantInitial(name: string) {
   const trimmed = name.trim();
@@ -101,8 +103,6 @@ export default function MeetingChatPanel({
   const participants = useParticipants();
   const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
   const [draft, setDraft] = useState('');
-  // 원격 참가자만 로컬에서 안 들리게 한 identity 목록
-  const [remoteDeafened, setRemoteDeafened] = useState<Record<string, boolean>>({});
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(groupName);
   const [savingName, setSavingName] = useState(false);
@@ -120,6 +120,22 @@ export default function MeetingChatPanel({
   useEffect(() => {
     if (editingName) nameInputRef.current?.focus();
   }, [editingName]);
+
+  // 헤드셋은 내 스피커만 끄는 로컬 상태라 다른 사람에게 자동으로 전달되지 않습니다.
+  // participant attributes 에 실어 두면 다른 참가자 화면의 헤드셋 아이콘이 따라 바뀝니다.
+  // (metadata 는 CanvasBoard 가 보드 선택 공유에 쓰고 있어 attributes 를 씁니다.)
+  useEffect(() => {
+    const publish = () => {
+      if (room.state !== 'connected') return;
+      room.localParticipant
+        .setAttributes({ [HEADSET_OFF_ATTR]: speakerMuted ? '1' : '0' })
+        .catch((err) => console.warn('헤드셋 상태 공유 실패:', err));
+    };
+    publish();
+    // 연결 전에 바꾼 상태나 재연결 뒤에도 다시 알립니다.
+    room.on(RoomEvent.Connected, publish);
+    return () => { room.off(RoomEvent.Connected, publish); };
+  }, [room, speakerMuted]);
 
   // 내 목소리는 Web Audio로 바로 재고, 상대는 LiveKit 레벨을 짧게 읽습니다.
   useEffect(() => {
@@ -319,18 +335,9 @@ export default function MeetingChatPanel({
     }
   };
 
-  // 로컬 헤드셋: 전체 스피커 음소거. 원격: 해당 참가자만 로컬에서 안 들리게.
-  const toggleHeadset = (identity: string, isLocal: boolean) => {
-    if (isLocal) {
-      onSpeakerMutedChange?.(!speakerMuted);
-      return;
-    }
-    const nextMuted = !remoteDeafened[identity];
-    setRemoteDeafened((prev) => ({ ...prev, [identity]: nextMuted }));
-    const remote = room.getParticipantByIdentity(identity);
-    if (remote && 'setVolume' in remote && typeof remote.setVolume === 'function') {
-      (remote as RemoteParticipant).setVolume(nextMuted ? 0 : 1);
-    }
+  // 내 헤드셋만 켜고 끕니다. 다른 참가자 헤드셋은 그 사람 상태를 보여주기만 합니다.
+  const toggleLocalHeadset = () => {
+    onSpeakerMutedChange?.(!speakerMuted);
   };
 
   return (
@@ -382,7 +389,8 @@ export default function MeetingChatPanel({
               const name = readableName(p.name) || (isLocal ? '나' : '참여자');
               const micOn = p.isMicrophoneEnabled;
               const speaking = micOn && speakingIds.has(p.identity);
-              const headsetMuted = isLocal ? speakerMuted : Boolean(remoteDeafened[p.identity]);
+              // 원격 참가자는 그 사람이 공유한 attributes 값으로 헤드셋 상태를 표시합니다.
+              const headsetMuted = isLocal ? speakerMuted : p.attributes?.[HEADSET_OFF_ATTR] === '1';
               return (
                 <li key={p.identity} className="participant-row">
                   <div className="participant-identity">
@@ -399,9 +407,10 @@ export default function MeetingChatPanel({
                     <button
                       type="button"
                       className={`participant-ctrl${headsetMuted ? ' is-off' : ''}`}
-                      title={headsetMuted ? '헤드셋 켜기' : '헤드셋 끄기'}
+                      title={isLocal ? (headsetMuted ? '헤드셋 켜기' : '헤드셋 끄기') : (headsetMuted ? '헤드셋 꺼짐' : '헤드셋 켜짐')}
                       aria-label={`${name} 헤드셋`}
-                      onClick={() => toggleHeadset(p.identity, isLocal)}
+                      disabled={!isLocal}
+                      onClick={() => { if (isLocal) toggleLocalHeadset(); }}
                     >
                       <HeadsetIcon muted={headsetMuted} />
                     </button>
