@@ -299,7 +299,8 @@ export default function DocumentList() {
 
   return (
     <AppShell activePage="document">
-      <div className="page">
+      {/* doc-page: 헤더는 고정, 목록만 스크롤 */}
+      <div className="page doc-page">
         <div className="page-header">
           <h1>문서</h1>
           <button type="button" className="primary-button" onClick={handleCreate}>
@@ -311,7 +312,7 @@ export default function DocumentList() {
         {loading ? (
           <div>불러오는 중...</div>
         ) : (
-          <div className="list-card">
+          <div className="list-card doc-list-card">
             <div className="list-row list-head doc-row">
               <span>문서 제목</span>
               <span>연결된 회의</span>
@@ -319,32 +320,35 @@ export default function DocumentList() {
               <span />
             </div>
 
-            {docs.length === 0 ? (
-              <div className="list-row">
-                아직 문서가 없어요. 회의방에서 파일을 올리거나 녹화를 저장하면 이 목록에 나타납니다.
-              </div>
-            ) : (
-              docs.map((doc) => {
-                const fileCount = normalizeAttachments(doc.attachments).length;
-                return (
-                  <div className="list-row doc-row" key={doc.id}>
-                    <span>
-                      {documentTitle(doc.title, doc.date)}
-                      {fileCount > 0 ? (
-                        <span style={{ marginLeft: 8, color: '#888', fontSize: 12 }}>
-                          첨부 {fileCount}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span>{linkedMeetingLabel(doc)}</span>
-                    <span>{formatDocDate(doc.date)}</span>
-                    <button type="button" className="text-button" onClick={() => { void handleOpen(doc); }}>
-                      열기
-                    </button>
-                  </div>
-                );
-              })
-            )}
+            {/* 문서 개수가 늘어도 이전 항목을 스크롤로 확인 */}
+            <div className="doc-list-scroll">
+              {docs.length === 0 ? (
+                <div className="list-row">
+                  아직 문서가 없어요. 회의방에서 파일을 올리거나 녹화를 저장하면 이 목록에 나타납니다.
+                </div>
+              ) : (
+                docs.map((doc) => {
+                  const fileCount = normalizeAttachments(doc.attachments).length;
+                  return (
+                    <div className="list-row doc-row" key={doc.id}>
+                      <span>
+                        {documentTitle(doc.title, doc.date)}
+                        {fileCount > 0 ? (
+                          <span style={{ marginLeft: 8, color: '#888', fontSize: 12 }}>
+                            첨부 {fileCount}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span>{linkedMeetingLabel(doc)}</span>
+                      <span>{formatDocDate(doc.date)}</span>
+                      <button type="button" className="text-button" onClick={() => { void handleOpen(doc); }}>
+                        열기
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         )}
       </div>

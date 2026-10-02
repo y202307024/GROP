@@ -77,7 +77,7 @@ export function voiceCaptureOptions(settings: VoiceSettings) {
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
-    ...(settings.micDeviceId ? { deviceId: settings.micDeviceId } : {}),
+    ...(settings.micDeviceId ? { deviceId: { ideal: settings.micDeviceId } } : {}),
   }
 }
 

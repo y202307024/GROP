@@ -10,6 +10,7 @@ import {
   parseTimestamp,
   type MeetingChapter,
 } from '../utils/meetingChapters';
+import { notifyGroupMembers } from '../utils/notifications';
 
 type Meeting = {
   id: string;
@@ -332,6 +333,16 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
 
       await fetchMeeting();
       const sourceNote = data.source === 'chat' ? ' (마이크 음성이 없어 채팅 기록으로 요약했어요)' : '';
+      if (meeting.group_id) {
+        await notifyGroupMembers({
+          groupId: meeting.group_id,
+          type: 'ai_summary',
+          title: `${meeting.title || '회의'} AI 요약이 완료됐어요`,
+          body: 'AI 요약이 준비되었습니다.',
+          link: `/ai?meeting=${meeting.id}`,
+          excludeSelf: false,
+        });
+      }
       alert(
         (nextChapters.length > 0
           ? `AI 요약 완성! 타임라인 ${nextChapters.length}개가 만들어졌어요 🎉`

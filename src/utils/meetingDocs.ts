@@ -1,6 +1,7 @@
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
 import type { MeetingSharedFile } from './meetingChat';
+import { notifyDocumentUpload } from './notifications';
 
 /** meetings.attachments / 서버 meeting-docs 에 넣을 형태로 맞춥니다. */
 export function toMeetingAttachments(files: MeetingSharedFile[]) {
@@ -216,13 +217,16 @@ export async function syncMeetingAttachmentsDoc(options: {
   const date = now.toISOString();
   let meetingId = options.meetingId;
   const errors: string[] = [];
-  let attachPayload = toMeetingAttachments(files);
+  const incoming = toMeetingAttachments(files);
+  let previousPaths = new Set<string>();
+  let attachPayload = incoming;
 
   // 세션 id 가 없으면 오늘 같은 그룹 회의를 재사용합니다. (파일마다 행이 갈라지는 것 방지)
   if (!meetingId) {
     const existing = await findTodayMeetingForGroup(groupId);
     if (existing) {
       meetingId = existing.id;
+      previousPaths = new Set(existing.attachments.map((f) => f.path).filter(Boolean));
       attachPayload = mergeAttachmentLists(existing.attachments, files);
     }
   }
@@ -276,10 +280,11 @@ export async function syncMeetingAttachmentsDoc(options: {
       .eq('id', meetingId)
       .maybeSingle();
     if (Array.isArray(row?.attachments)) {
-      attachPayload = mergeAttachmentLists(
-        row.attachments as MeetingSharedFile[],
-        attachPayload,
+      const prev = toMeetingAttachments(
+        row.attachments.filter((item): item is MeetingSharedFile => Boolean(item) && typeof item === 'object') as MeetingSharedFile[],
       );
+      previousPaths = new Set(prev.map((f) => f.path).filter(Boolean));
+      attachPayload = mergeAttachmentLists(prev, files);
     }
 
     const { error } = await supabase
@@ -305,6 +310,15 @@ export async function syncMeetingAttachmentsDoc(options: {
   });
   if (!serverSave.ok) {
     errors.push(serverSave.error || '서버 첨부 저장 실패');
+  }
+
+  // 서버 저장이 실패해도 새 파일이 있으면 알림은 남깁니다.
+  const addedNames = incoming
+    .filter((f) => f.path && !previousPaths.has(f.path))
+    .map((f) => f.name)
+    .filter(Boolean);
+  if (addedNames.length > 0) {
+    await notifyDocumentUpload(groupId, addedNames);
   }
 
   return {

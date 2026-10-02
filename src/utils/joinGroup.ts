@@ -1,4 +1,5 @@
 import { supabase } from '../services/supabaseClient';
+import { fetchDisplayNickname, notifyGroupMembers } from './notifications';
 
 type JoinResult =
   | { ok: true; group: { id: string; name: string }; alreadyMember: boolean }
@@ -52,6 +53,15 @@ export async function joinGroupByInviteCode(inviteCode: string, userId: string):
   if (!joinResult.ok) {
     return { ok: false, error: joinResult.error };
   }
+
+  // DB 트리거가 기본 경로이고, SQL이 아직이면 여기서도 한 번 넣습니다.
+  const nickname = await fetchDisplayNickname(userId, group.id);
+  await notifyGroupMembers({
+    groupId: group.id,
+    type: 'group_join',
+    title: `${nickname} 님이 ${group.name}에 참여했어요`,
+    link: `/group/${group.id}`,
+  });
 
   return { ok: true, group, alreadyMember: false };
 }

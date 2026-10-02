@@ -4,7 +4,6 @@ import { RoomEvent } from 'livekit-client';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
-  StartAudio,
   useLocalParticipant,
   useRoomContext,
 } from '@livekit/components-react';
@@ -34,6 +33,9 @@ import {
   type MeetingSharedFile,
 } from '../utils/meetingChat';
 import { syncMeetingAttachmentsDoc, toMeetingAttachments } from '../utils/meetingDocs';
+import { notifyGroupMembers, notifyDocumentUpload } from '../utils/notifications';
+import { addGroupMember } from '../utils/joinGroup';
+import { rememberLastMeeting } from '../utils/lastMeeting';
 import { createMeetingRecordingStream } from '../utils/meetingRecordingCapture';
 import { pickMeetingRecorderMimeType } from '../utils/meetingVideo';
 import { createRecordingBridge, type RecordingBridge } from '../utils/recordingBridge';
@@ -47,7 +49,7 @@ import {
   isSecureMediaContext,
   localhostAppUrl,
 } from '../utils/microphoneAccess';
-import { isNoneDevice, loadVoiceSettings, syncMicrophoneSetting, voiceCaptureOptions } from '../utils/voiceSettings';
+import { isNoneDevice, loadVoiceSettings, subscribeVoiceSettings, syncMicrophoneSetting, voiceCaptureOptions } from '../utils/voiceSettings';
 
 type RecordingSyncHandle = {
   broadcastStart: () => void;
@@ -113,13 +115,22 @@ function MeetingAudioSetup() {
 
   useEffect(() => {
     if (!isSecureMediaContext()) return;
-    const enableMic = async () => {
+
+    const applyVoice = async () => {
       const settings = loadVoiceSettings();
       try {
-        // 없음으로 둔 사용자는 마이크를 켜지 않습니다.
-        if (!isNoneDevice(settings.micDeviceId)) {
+        if (isNoneDevice(settings.micDeviceId)) {
+          await room.localParticipant.setMicrophoneEnabled(false);
+        } else {
           const capture = voiceCaptureOptions(settings);
           if (capture) {
+            if (settings.micDeviceId) {
+              try {
+                await room.switchActiveDevice('audioinput', settings.micDeviceId);
+              } catch {
+                // 장치 id가 바뀌었으면 기본 마이크로 켭니다.
+              }
+            }
             await room.localParticipant.setMicrophoneEnabled(true, capture);
           }
         }
@@ -130,28 +141,31 @@ function MeetingAudioSetup() {
         console.error('마이크 활성화 실패:', err);
       }
     };
-    void enableMic();
+
+    void applyVoice();
+    // 설정 패널에서 마이크를 바꿔도 회의/녹화에 바로 반영합니다.
+    return subscribeVoiceSettings(() => {
+      void applyVoice();
+    });
   }, [room]);
 
-  return (
-    <StartAudio
-      label="🔊 상대방 소리 켜기"
-      style={{
-        position: 'absolute',
-        top: 12,
-        right: 12,
-        zIndex: 20,
-        padding: '8px 12px',
-        borderRadius: 8,
-        border: 'none',
-        background: 'var(--color-primary-soft)',
-        color: '#fff',
-        fontSize: 12,
-        cursor: 'pointer',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
-      }}
-    />
-  );
+  // 브라우저 자동재생 정책 때문에 사용자 조작 전에는 상대방 소리가 막힐 수 있습니다.
+  // "상대방 소리 켜기" 버튼을 띄우는 대신, 회의방 어디든 처음 클릭/키 입력할 때 조용히 오디오를 켭니다.
+  // (보드·채팅 등이 stopPropagation 해도 받도록 capture 단계에서 듣습니다.)
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (room.canPlaybackAudio) return;
+      room.startAudio().catch((err) => console.warn('상대방 오디오 재생 시작 실패:', err));
+    };
+    document.addEventListener('pointerdown', unlockAudio, true);
+    document.addEventListener('keydown', unlockAudio, true);
+    return () => {
+      document.removeEventListener('pointerdown', unlockAudio, true);
+      document.removeEventListener('keydown', unlockAudio, true);
+    };
+  }, [room]);
+
+  return null;
 }
 
 function RecordingDataSync({
@@ -412,6 +426,8 @@ function RoomContent({
         },
         true,
       );
+      // 문서 탭 저장과 별개로, 올린 직후 파일명 알림을 남깁니다.
+      if (groupId) void notifyDocumentUpload(groupId, [saved.name]);
     } catch (err) {
       alert(err instanceof Error ? err.message : '파일 첨부에 실패했습니다.');
     } finally {
@@ -670,6 +686,8 @@ export default function Room() {
   const recorderMimeRef = useRef('video/webm');
   const groupIdRef = useRef(id);
   const isRecordingRef = useRef(false);
+  /** persist 중인지 — 나가기 버튼이 저장을 끊지 않게 합니다. */
+  const savingRecordingRef = useRef(false);
   /** 녹화 시작 준비 중(캡처 생성) — 중복 클릭 방지 */
   const startingRecordingRef = useRef(false);
   /** 회의 중 첨부 — RoomContent 와 공유 (파일만 올려도 문서 탭에 반영) */
@@ -678,6 +696,10 @@ export default function Room() {
   // 마이크 없는 회의도 채팅 기록으로 AI 요약을 만들 수 있게 합니다.
   const chatLogRef = useRef<MeetingChatMessage[]>([]);
   const sessionMeetingIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    groupIdRef.current = id;
+  }, [id]);
 
   // 스트림을 먼저 끄면 MediaRecorder가 마지막 청크를 못 남기고 끝납니다.
   // stop 이벤트가 난 뒤에 트랙/캡처를 정리합니다.
@@ -715,7 +737,7 @@ export default function Room() {
 
   // 영상 파일은 서버 컴퓨터 디스크에만 둡니다.
   // meetings.video_url 에는 재생 URL만 저장합니다.
-  const persistMeetingRecording = async (): Promise<{ ok: boolean; error?: string }> => {
+  const persistMeetingRecording = async (): Promise<{ ok: boolean; error?: string; meetingId?: string }> => {
     // stop 직후 마지막 청크가 늦게 들어오는 경우를 한 번 더 기다립니다.
     if (recordedChunksRef.current.length === 0) {
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -780,12 +802,39 @@ export default function Room() {
       };
     }
 
-    // 파일은 서버에만 두고, DB에는 재생 URL + 회의 중 첨부 + 채팅 기록을 저장합니다.
-    // 채팅 기록은 마이크 없이 진행한 회의도 나중에 AI 요약을 만들 수 있게 해줍니다.
-    // 이미 파일만으로 만든 문서가 있으면 그 행에 녹화를 이어 붙입니다.
     const videoUrl = `${getApiBase()}/videos/${relativePath}`;
     const attachments = toMeetingAttachments(sharedFilesRef.current);
+    // 채팅 기록은 마이크 없이 진행한 회의도 나중에 AI 요약을 만들 수 있게 해줍니다.
     const chatLog = chatLogRef.current;
+    const gid = groupIdRef.current;
+    if (!gid) {
+      return { ok: false, error: '그룹 정보가 없어 회의록을 저장하지 못했습니다.' };
+    }
+
+    // 멤버 행이 없으면 meetings RLS 때문에 insert가 조용히 실패합니다.
+    if (userData.user?.id) {
+      await addGroupMember(gid, userData.user.id);
+      await supabase.rpc('ensure_group_creator_member', { p_group_id: gid });
+    }
+
+    const remember = (meetingId: string) => {
+      sessionMeetingIdRef.current = meetingId;
+      rememberLastMeeting(meetingId);
+    };
+
+    const notifySaved = async (meetingId: string) => {
+      await notifyGroupMembers({
+        groupId: gid,
+        type: 'meeting_end',
+        title: `${groupName || '그룹'} 녹화가 종료됐어요`,
+        body: '녹화본이 저장되었습니다.',
+        link: `/ai?meeting=${meetingId}`,
+        excludeSelf: false,
+      });
+    };
+
+    // 파일은 서버에만 두고, DB에는 재생 URL + 회의 중 첨부를 저장합니다.
+    // 이미 파일만으로 만든 문서가 있으면 그 행에 녹화를 이어 붙입니다.
     const existingId = sessionMeetingIdRef.current;
 
     if (existingId) {
@@ -810,37 +859,44 @@ export default function Room() {
       }
 
       recordedChunksRef.current = [];
-      return { ok: true };
+      remember(existingId);
+      await notifySaved(existingId);
+      return { ok: true, meetingId: existingId };
     }
 
-    const { error: insertError } = await supabase.from('meetings').insert({
-      group_id: groupIdRef.current,
+    const baseRow = {
+      group_id: gid,
       title: titleStr,
       date: now.toISOString(),
       video_url: videoUrl,
-      created_by: userData.user?.id,
-      attachments,
-      chat_log: chatLog,
-    });
+      created_by: userData.user?.id ?? null,
+    };
 
-    if (insertError) {
+    const first = await supabase
+      .from('meetings')
+      .insert({ ...baseRow, attachments, chat_log: chatLog })
+      .select('id')
+      .maybeSingle();
+
+    let insertedId = first.data?.id as string | undefined;
+    if (first.error || !insertedId) {
       // attachments/chat_log 컬럼이 아직 없으면(마이그레이션 전) 그것들 없이라도 회의록은 저장합니다.
-      if (/attachments|chat_log/i.test(insertError.message)) {
-        const { error: fallbackError } = await supabase.from('meetings').insert({
-          group_id: groupIdRef.current,
-          title: titleStr,
-          date: now.toISOString(),
-          video_url: videoUrl,
-          created_by: userData.user?.id,
-        });
-        if (fallbackError) return { ok: false, error: fallbackError.message };
-      } else {
-        return { ok: false, error: insertError.message };
+      const canRetryWithoutAttach = !first.error || /attachments|chat_log/i.test(first.error.message);
+      if (!canRetryWithoutAttach) {
+        return { ok: false, error: first.error.message };
       }
+      const second = await supabase.from('meetings').insert(baseRow).select('id').maybeSingle();
+      if (second.error || !second.data?.id) {
+        return { ok: false, error: second.error?.message || first.error?.message || '회의록 저장에 실패했습니다.' };
+      }
+      // 바로 위에서 id 존재를 확인했으므로 string 으로 확정합니다.
+      insertedId = second.data.id as string;
     }
 
     recordedChunksRef.current = [];
-    return { ok: true };
+    remember(insertedId);
+    await notifySaved(insertedId);
+    return { ok: true, meetingId: insertedId };
   };
 
   useEffect(() => {
@@ -981,11 +1037,27 @@ export default function Room() {
         return;
       }
 
-      // 마이크 권한/LiveKit 대기는 녹화 시작을 막아서, 화면만으로 바로 시작합니다.
       const combined = new MediaStream(videoTracks);
+      // 믹서의 오디오 트랙은 마이크가 아직 안 붙어도 존재합니다.
+      // MediaRecorder 시작 전에 넣어 둬야 나중에 목소리가 녹화에 들어갑니다.
+      const settings = loadVoiceSettings();
+      const wantMic = isSecureMediaContext() && !isNoneDevice(settings.micDeviceId);
+      if (wantMic && recordingBridgeRef.current) {
+        const mixed = recordingBridgeRef.current.prepareAudioStream();
+        mixed.getAudioTracks()
+          .filter((t) => t.readyState !== 'ended')
+          .forEach((track) => combined.addTrack(track));
+        await Promise.race([
+          recordingBridgeRef.current.connectSources(),
+          new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 1500);
+          }),
+        ]);
+      }
       recordingStreamRef.current = combined;
 
-      const mimeType = pickMeetingRecorderMimeType(true, false);
+      const hasAudio = combined.getAudioTracks().length > 0;
+      const mimeType = pickMeetingRecorderMimeType(true, hasAudio);
       recorderMimeRef.current = mimeType || 'video/webm';
 
       let mediaRecorder: MediaRecorder;
@@ -1011,6 +1083,19 @@ export default function Room() {
 
       if (!opts?.remote) {
         recordingSyncRef.current?.broadcastStart();
+        const gid = groupIdRef.current;
+        // 녹화 시작을 회의 시작으로 보고, 알림을 누르면 바로 회의방으로 들어오게 합니다.
+        // 원격 동기화로 따라 시작한 참가자(opts.remote)는 중복 알림을 보내지 않습니다.
+        if (gid) {
+          void notifyGroupMembers({
+            groupId: gid,
+            type: 'meeting_start',
+            title: `${groupName || '그룹'} 회의가 시작됐어요`,
+            body: '지금 회의방에 참여할 수 있어요.',
+            link: `/room/${gid}`,
+            excludeSelf: false,
+          });
+        }
       }
     } catch (err) {
       console.error('회의 화면 녹화 시작 실패:', err);
@@ -1031,7 +1116,7 @@ export default function Room() {
 
   const stopRecordingAndSave = async (opts?: { save?: boolean }) => {
     const shouldSave = opts?.save !== false;
-    if (savingRecording) return;
+    if (savingRecordingRef.current) return;
     const recorderActive = mediaRecorderRef.current?.state === 'recording';
     if (!isRecording && !recorderActive && recordedChunksRef.current.length === 0) return;
 
@@ -1046,6 +1131,7 @@ export default function Room() {
     }
 
     setSavingRecording(true);
+    savingRecordingRef.current = true;
     try {
       // 시작 직후 종료하면 MediaRecorder가 아직 없을 수 있어 잠깐 기다립니다.
       for (let i = 0; i < 25 && !mediaRecorderRef.current; i += 1) {
@@ -1057,7 +1143,7 @@ export default function Room() {
       const result = await persistMeetingRecording();
       if (result.ok) {
         canvasBoardRef.current?.clearBoard();
-        alert('녹화를 종료하고 회의록에 저장했습니다.\n캔버스가 초기화되었습니다.');
+        alert('녹화를 종료하고 회의록에 저장했습니다.\nAI 요약 탭에서 바로 확인할 수 있습니다.');
       } else {
         alert(`회의록 저장 실패: ${result.error}`);
       }
@@ -1066,6 +1152,7 @@ export default function Room() {
       alert('녹음 종료 중 오류가 발생했습니다.');
       setIsRecording(false);
     } finally {
+      savingRecordingRef.current = false;
       setSavingRecording(false);
     }
   };
@@ -1087,6 +1174,21 @@ export default function Room() {
     setSaving(true);
 
     try {
+      // 녹화 중이면 버리지 않고 회의록에 저장한 뒤 나갑니다.
+      const recorderActive =
+        isRecordingRef.current
+        || mediaRecorderRef.current?.state === 'recording'
+        || recordedChunksRef.current.length > 0;
+      if (recorderActive || savingRecordingRef.current) {
+        if (!savingRecordingRef.current) {
+          await stopRecordingAndSave({ save: true });
+        } else {
+          for (let i = 0; i < 80 && savingRecordingRef.current; i += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+        }
+      }
+
       // 나가기 직전에 첨부 목록을 한 번 더 저장해 문서 탭에 남깁니다.
       if (sharedFilesRef.current.length > 0 && id) {
         const result = await syncMeetingAttachmentsDoc({
@@ -1101,15 +1203,13 @@ export default function Room() {
           alert(`첨부 파일을 문서 탭에 완전히 저장하지 못했습니다.\n${result.error}`);
         }
       }
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        await stopRecordingLocal(true);
-      }
     } catch (err) {
       console.error('오류:', err);
     }
 
     setSaving(false);
-    navigate(`/group/${id}`);
+    const lastId = sessionMeetingIdRef.current;
+    navigate(lastId ? `/ai?meeting=${lastId}` : `/group/${id}`);
   };
 
   if (loading) {
