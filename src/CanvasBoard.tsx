@@ -1217,17 +1217,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       applyBoardSelection(msg);
     };
 
-    const participantMetadataHandler = (metadata: string | undefined, participant?: unknown) => {
+    // 주의: 이 이벤트의 첫 인자는 "바뀌기 전" metadata 입니다(livekit-client 규약).
+    // 그 값을 쓰면 새 보드로 바뀐 직후 이전 보드로 되돌아가므로, 참가자의 현재 metadata 를 읽습니다.
+    const participantMetadataHandler = (_prevMetadata: string | undefined, participant?: unknown) => {
       if (!participant || !room) return;
       if (!('identity' in (participant as any))) return;
       const remote = participant as { identity: string; metadata?: string };
       if (remote.identity === localParticipant?.identity) return;
-      const msg = decodeMeetingBoardMetadata(metadata);
+      const msg = decodeMeetingBoardMetadata(remote.metadata);
       if (!msg) return;
       applyBoardSelection(msg);
     };
 
+    // metadata 는 마지막으로 보드를 고른 사람만 최신이고 다른 참가자 값은 예전 보드일 수 있습니다.
+    // 그래서 아직 받은 보드가 없을 때만 임시로 맞추고, 정확한 값은 응답자의 답으로 다시 맞춥니다.
     const syncFromExistingParticipants = () => {
+      if (latestBoardSelectionRef.current) return;
       for (const participant of room.remoteParticipants.values()) {
         const msg = decodeMeetingBoardMetadata(participant.metadata);
         if (msg) {
