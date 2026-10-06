@@ -27,6 +27,12 @@ type MeetingBoardMessage = {
   from: string;
 };
 
+/** 늦게 들어오거나 재연결한 참가자가 "지금 어떤 보드인지" 묻는 메시지 */
+type MeetingBoardRequest = {
+  type: 'board:request';
+  from: string;
+};
+
 /** LiveKit으로 보내는 stroke 이벤트. DB payload와 동일한 type/payload를 담습니다. */
 type MeetingStrokeMessage = {
   type: 'stroke.begin' | 'stroke.append' | 'stroke.end';
@@ -35,8 +41,20 @@ type MeetingStrokeMessage = {
   payload: unknown;
 };
 
-function encodeMeetingBoardMessage(msg: MeetingBoardMessage): Uint8Array {
+function encodeMeetingBoardMessage(msg: MeetingBoardMessage | MeetingBoardRequest): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+function decodeMeetingBoardRequest(payload: Uint8Array): MeetingBoardRequest | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(payload));
+    if (parsed && parsed.type === 'board:request' && typeof parsed.from === 'string') {
+      return parsed as MeetingBoardRequest;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function decodeMeetingBoardMessage(payload: Uint8Array): MeetingBoardMessage | null {
@@ -1022,6 +1040,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [boards, setBoards] = useState<Board[]>([]);
   const [boardId, setBoardId] = useState<string>(initialBoardId ?? '');
   const [boardTitle, setBoardTitle] = useState<string>('새 보드');
+  // 비동기 콜백·LiveKit 이벤트 핸들러에서 오래된 클로저 대신 "지금 보고 있는 보드"를 읽기 위한 ref
+  const boardIdRef = useRef(boardId);
+  boardIdRef.current = boardId;
+  const boardTitleRef = useRef(boardTitle);
+  boardTitleRef.current = boardTitle;
+  // 보드를 빠르게 바꾸면 이전 보드 로딩이 늦게 끝나 새 보드 위에 섞여 그려지므로, 최신 로딩만 반영하기 위한 번호
+  const boardLoadSeqRef = useRef(0);
   const [isLoadingBoards, setIsLoadingBoards] = useState(false);
   const [, setIsLoadingBoard] = useState(false);
 
@@ -1114,8 +1139,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       initChoiceHandledRef.current = true;
 
       const prev = latestBoardSelectionRef.current;
-      // 이미 같은 보드면 상태/네트워크 작업을 건너뛰어 불필요한 렌더·폭주를 막습니다.
-      if (prev?.boardId === msg.boardId && (prev.title ?? '') === (msg.title ?? '')) {
+      // 이미 같은 보드를 보고 있으면 상태/네트워크 작업을 건너뛰어 불필요한 렌더·폭주를 막습니다.
+      // (기록만 같고 실제 화면 보드가 다르면 다시 맞춰야 하므로 boardIdRef 도 함께 확인합니다.)
+      if (
+        prev?.boardId === msg.boardId
+        && boardIdRef.current === msg.boardId
+        && (prev.title ?? '') === (msg.title ?? '')
+      ) {
         return;
       }
 
@@ -1130,14 +1160,60 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       latestBoardSelectionRef.current = msg;
     };
 
+    // 요청한 사람을 뺀 참가자 중 가장 먼저 들어온 사람만 응답해 중복 전송을 막습니다.
+    // (입장 시각이 같으면 identity 순으로 정해 모든 참가자가 같은 결론을 내립니다.)
+    const isResponder = (requester: string) => {
+      const me = room.localParticipant;
+      const candidates = [me, ...room.remoteParticipants.values()]
+        .filter((p) => p.identity && p.identity !== requester)
+        .sort((a, b) => {
+          const ta = a.joinedAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+          const tb = b.joinedAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+          return ta - tb || a.identity.localeCompare(b.identity);
+        });
+      return candidates[0]?.identity === me.identity;
+    };
+
+    // 요청한 사람에게만 내가 지금 보고 있는 보드를 알려 줍니다.
+    // latestBoardSelectionRef 가 비어 있어도(직접 고른 적이 없어도) 화면의 보드를 기준으로 답합니다.
+    const replyCurrentBoard = (requester: string) => {
+      if (!requester || !isResponder(requester)) return;
+      const currentId = boardIdRef.current;
+      if (!currentId) return;
+      const latest = latestBoardSelectionRef.current;
+      const payload: MeetingBoardMessage = latest?.boardId === currentId
+        ? latest
+        : {
+            type: 'board:selected',
+            boardId: currentId,
+            title: boardTitleRef.current,
+            from: room.localParticipant.identity,
+          };
+      void room.localParticipant
+        .publishData(encodeMeetingBoardMessage(payload), {
+          reliable: true,
+          topic: MEETING_BOARD_TOPIC,
+          destinationIdentities: [requester],
+        })
+        .catch((err) => console.warn('현재 보드 공유 실패:', err));
+    };
+
     const handler = (payload: Uint8Array, participant?: unknown, _kind?: unknown, topic?: string) => {
       if (topic && topic !== MEETING_BOARD_TOPIC) return;
-      const msg = decodeMeetingBoardMessage(payload);
-      if (!msg) return;
+      const sender = participant && 'identity' in (participant as any)
+        ? String((participant as any).identity)
+        : undefined;
       // localParticipant가 아직 없으면 identity 비교를 건너뜁니다.
-      if (participant && 'identity' in (participant as any) && (participant as any).identity === localParticipant?.identity) {
+      if (sender && sender === localParticipant?.identity) return;
+
+      // 현재 보드를 묻는 요청이면 정해진 응답자 한 명만 답하고, 그 외에는 보드 선택으로 처리합니다.
+      const request = decodeMeetingBoardRequest(payload);
+      if (request) {
+        replyCurrentBoard(sender ?? request.from);
         return;
       }
+      const msg = decodeMeetingBoardMessage(payload);
+      if (!msg) return;
       applyBoardSelection(msg);
     };
 
@@ -1161,32 +1237,33 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       }
     };
 
-    // 새 참가자가 들어오면 기존 인원 중 한 명만 현재 보드를 알려 주면 됩니다.
-    // 전원이 동시에 보내면 입장 순간 data가 불필요하게 겹칩니다.
-    const onParticipantConnected = (participant: unknown) => {
-      if (!localParticipant) return;
-      if (!participant || !('identity' in (participant as any))) return;
-      const remote = participant as { identity: string };
-      if (remote.identity === localParticipant.identity) return;
-
-      const payload = latestBoardSelectionRef.current;
-      if (!payload) return;
-      // identity 사전순 최소인 로컬만 환영 메시지를 보내 중복 방송을 줄입니다.
-      const identities = [localParticipant.identity, ...Array.from(room.remoteParticipants.keys())]
-        .filter((id) => id !== remote.identity)
-        .sort();
-      if (identities[0] !== localParticipant.identity) return;
-      publishBoardSelection(payload);
+    // 예전에는 기존 참가자가 ParticipantConnected 순간에 보드를 알려 줬는데,
+    // 새 참가자가 아직 수신 준비가 안 됐거나 보낼 사람이 선택 기록이 없으면 놓쳤습니다.
+    // 그래서 들어온(재연결한) 쪽이 직접 현재 보드를 요청하고, 응답자 한 명이 답하게 합니다.
+    const requestCurrentBoard = () => {
+      if (room.state !== 'connected') return;
+      const me = room.localParticipant;
+      if (!me.identity) return;
+      // metadata 에 이미 보드 정보가 있으면 응답을 기다리지 않고 먼저 맞춥니다.
+      syncFromExistingParticipants();
+      if (room.remoteParticipants.size === 0) return;
+      const request: MeetingBoardRequest = { type: 'board:request', from: me.identity };
+      void me
+        .publishData(encodeMeetingBoardMessage(request), { reliable: true, topic: MEETING_BOARD_TOPIC })
+        .catch((err) => console.warn('현재 보드 요청 실패:', err));
     };
 
-    syncFromExistingParticipants();
     room.on(RoomEvent.DataReceived, handler);
     room.on(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
-    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    room.on(RoomEvent.Connected, requestCurrentBoard);
+    room.on(RoomEvent.Reconnected, requestCurrentBoard);
+    // 핸들러를 먼저 등록한 뒤 요청해야 응답을 놓치지 않습니다.
+    requestCurrentBoard();
     return () => {
       room.off(RoomEvent.DataReceived, handler);
       room.off(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
-      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+      room.off(RoomEvent.Connected, requestCurrentBoard);
+      room.off(RoomEvent.Reconnected, requestCurrentBoard);
     };
   }, [room, meetingMode, localParticipant?.identity]);
 
@@ -1201,24 +1278,24 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     initChoiceHandledRef.current = true;
     try {
       const title = isGroupCanvas ? `${GROUP_BOARD_TITLE_PREFIX}${groupId ?? ''}${Date.now()}` : '새 보드';
-      const { data, error } = await supabase.from('boards').insert([{ title }]).select().limit(1).single();
+      // group_id 를 함께 넣어야 그룹 보드 목록(fetchGroupBoards)에 나타나 늦게 온 참가자 목록에도 보입니다.
+      const insertPayload: { title: string; group_id?: string } = { title };
+      if (isGroupCanvas && groupId) insertPayload.group_id = groupId;
+      let { data, error } = await supabase.from('boards').insert([insertPayload]).select().limit(1).single();
+      // group_id 컬럼이 없는 DB(마이그레이션 전)에서는 제목 접두어만으로 저장합니다.
+      if (error?.message?.includes('group_id') && insertPayload.group_id) {
+        ({ data, error } = await supabase.from('boards').insert([{ title }]).select().limit(1).single());
+      }
       if (error) throw error;
       if (data && data.id) {
         const board = data as Board;
-        const title = board.title ?? '새 보드';
+        // 접두어가 붙은 내부 제목이 그대로 보이지 않게 표시용 제목으로 바꿔 알립니다.
+        const displayTitle = formatBoardTitle(board.title ?? '새 보드');
         setBoards((prev) => [board, ...prev]);
         setBoardId(board.id);
-        setBoardTitle(title);
-        if (localParticipant) {
-          const payload: MeetingBoardMessage = {
-            type: 'board:selected',
-            boardId: board.id,
-            title,
-            from: localParticipant.identity,
-          };
-          latestBoardSelectionRef.current = payload;
-          publishBoardSelection(payload);
-        }
+        setBoardTitle(displayTitle);
+        lastSavedTitleRef.current[board.id] = displayTitle;
+        announceBoardSelection(board.id, displayTitle);
       }
     } catch (e) {
       console.error('failed to create board on choice', e);
@@ -1241,22 +1318,19 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     setShowInitChoice(false);
     initChoiceHandledRef.current = true;
     try {
-      const { data, error } = await supabase.from('boards').select('*').order('created_at', { ascending: false }).limit(1).maybeSingle();
-      if (!error && data && data.id) {
-        const board = data as Board;
-        const title = board.title ?? '보드';
+      // 그룹 회의에서는 다른 그룹 보드가 섞이지 않도록 이 그룹의 최신 보드만 고릅니다.
+      let board: Board | null = null;
+      if (isGroupCanvas && groupId) {
+        board = (await fetchGroupBoards(groupId))[0] ?? null;
+      } else {
+        const { data, error } = await supabase.from('boards').select('*').order('created_at', { ascending: false }).limit(1).maybeSingle();
+        if (!error && data && data.id) board = data as Board;
+      }
+      if (board) {
+        const displayTitle = formatBoardTitle(board.title ?? '보드');
         setBoardId(board.id);
-        setBoardTitle(title);
-        if (localParticipant) {
-          const payload: MeetingBoardMessage = {
-            type: 'board:selected',
-            boardId: board.id,
-            title,
-            from: localParticipant.identity,
-          };
-          latestBoardSelectionRef.current = payload;
-          publishBoardSelection(payload);
-        }
+        setBoardTitle(displayTitle);
+        announceBoardSelection(board.id, displayTitle);
       }
     } catch (e) {
       console.error('failed to load existing board on choice', e);
@@ -1801,9 +1875,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     const deduped = dedupeBoardsById(list);
-    setBoards(deduped);
-    const preferredId = boardId || initialBoardId;
-    const selected = deduped.find((b) => b.id === preferredId) ?? deduped[0];
+    // 조회하는 동안 보드가 바뀌었을 수 있어, 클로저의 boardId 대신 ref 로 지금 보드를 읽습니다.
+    const currentId = boardIdRef.current || initialBoardId;
+    // 지금 보고 있는 보드가 그룹 목록에 없더라도(다른 참가자가 막 만든 보드 등) 선택칸에서 사라지지 않게 남깁니다.
+    setBoards((prev) => {
+      const keep = prev.find((b) => b.id === currentId && !deduped.some((d) => d.id === b.id));
+      return keep ? [keep, ...deduped] : deduped;
+    });
+    // 회의 중 다른 참가자에게서 이미 보드를 받았다면 목록만 갱신하고 선택은 덮어쓰지 않습니다.
+    // (늦게 들어온 사람이 회의 보드 대신 그룹 기본 보드로 돌아가던 원인)
+    if (meetingMode && latestBoardSelectionRef.current?.boardId) {
+      setIsLoadingBoards(false);
+      return;
+    }
+    const selected = deduped.find((b) => b.id === currentId) ?? deduped[0];
     if (selected) {
       const title = formatBoardTitle(selected.title);
       setBoardId(selected.id);
@@ -2954,6 +3039,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   // 예를 들어 이전에 그린 선이나 도형이 있다면, 새로 들어왔을 때 다시 화면에 그려줍니다.
   const loadAndRenderBoard = async (targetBoardId: string) => {
     if (!targetBoardId) return;
+    // 이 호출 이후 다른 보드 로딩이 시작되면 이번 결과는 버립니다.
+    const loadSeq = ++boardLoadSeqRef.current;
+    const isStale = () => loadSeq !== boardLoadSeqRef.current;
     clearReplaySession();
     setIsLoadingBoard(true);
     clearAllLocal();
@@ -2970,6 +3058,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       .eq('board_id', targetBoardId)
       .order('seq', { ascending: true });
 
+    // 조회하는 사이 다른 보드로 바뀌었으면 옛 보드 내용을 새 보드 위에 그리지 않습니다.
+    if (isStale()) return;
     setIsLoadingBoard(false);
     if (error) {
       alert(`보드 로드 실패: ${error.message}`);
@@ -3037,6 +3127,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
     resetHistory();
     for (const ev of events) {
+      // 이미지 등은 비동기로 그려지므로, 그리는 도중 보드가 바뀌면 남은 이벤트를 멈춥니다.
+      if (isStale()) return;
       if (
         ev.type === 'image.transform' ||
         ev.type === 'image.remove' ||
@@ -3135,6 +3227,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       await applyEvent(ev);
       if (isHistoryCommitEvent(ev.type)) commitHistory();
     }
+    if (isStale()) return;
     revealExpandedFilesOnCanvas();
     if (historyRef.current.length === 0) initHistory();
   };
