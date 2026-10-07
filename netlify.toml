@@ -2,7 +2,23 @@
   command = "npm run build"
   publish = "dist"
 
+# Netlify 함수(netlify/functions) 번들 설정
+# - ffmpeg-static 은 실행 파일(ffmpeg 바이너리)을 포함한 패키지라 번들하지 않고 통째로 함께 올립니다.
+#   (AI 요약에서 녹화 영상의 오디오를 뽑을 때 씁니다.)
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["ffmpeg-static"]
+
+# preview 시연(branch deploy / deploy preview)에서만 백엔드를 Netlify 함수 + Blobs 로 씁니다.
+# production 은 기존처럼 VITE_API_URL(Render 서버)을 그대로 씁니다.
+[context.branch-deploy.environment]
+  VITE_BACKEND = "netlify"
+
+[context.deploy-preview.environment]
+  VITE_BACKEND = "netlify"
+
 # React Router: 새로고침/직접 URL 진입 시 index.html로 처리
+# (/api/*, /videos/*, /files/* 는 경로가 지정된 함수가 먼저 처리하므로 여기로 오지 않습니다.)
 [[redirects]]
   from = "/*"
   to = "/index.html"

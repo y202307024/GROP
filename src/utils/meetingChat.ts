@@ -1,4 +1,5 @@
-import { getApiBase } from './apiBase';
+import { getApiBase, isNetlifyBackend } from './apiBase';
+import { storedUploadFileName, uploadToNetlifyBlobs } from './netlifyUpload';
 
 export const MEETING_CHAT_TOPIC = 'meeting-chat';
 /** 하단 파일 도구로 올린 첨부 — 채팅이 아닌 사이드바 목록용 */
@@ -80,6 +81,14 @@ export function decodeMeetingSharedFile(payload: Uint8Array): MeetingSharedFile 
 export async function uploadMeetingAttachment(file: File, groupId?: string): Promise<MeetingChatFile> {
   if (file.size > MAX_CHAT_FILE_BYTES) {
     throw new Error('파일은 20MB 이하만 첨부할 수 있어요.');
+  }
+  if (isNetlifyBackend()) {
+    // Netlify 백엔드(preview 시연): files/<groupId>/<저장파일명> 으로 Blobs 에 올립니다.
+    // 응답의 path(그룹id/저장파일명)는 Express 와 같아 chatFileUrl() 로 그대로 열 수 있습니다.
+    return uploadToNetlifyBlobs(`files/${groupId || 'unknown'}/${storedUploadFileName(file.name)}`, file, {
+      name: file.name,
+      mime: file.type,
+    });
   }
   const body = new FormData();
   body.append('file', file);

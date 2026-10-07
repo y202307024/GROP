@@ -13,7 +13,8 @@ import MeetingChatPanel from '../components/MeetingChatPanel';
 import MeetingDrawingTools, { type MeetingDrawAction } from '../components/MeetingDrawingTools';
 import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
-import { getApiBase } from '../utils/apiBase';
+import { getApiBase, isNetlifyBackend } from '../utils/apiBase';
+import { uploadToNetlifyBlobs } from '../utils/netlifyUpload';
 import {
   canChangeBoard as userCanChangeBoard,
   canDraw as userCanDraw,
@@ -783,17 +784,28 @@ export default function Room() {
 
     let relativePath: string;
     try {
-      const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
-      const uploadRes = await fetch(`${getApiBase()}/api/meetings/upload`, {
-        method: 'POST',
-        headers: uploadToken ? { 'x-upload-token': uploadToken } : undefined,
-        body: formData,
-      });
-      if (!uploadRes.ok) {
-        const errBody = await uploadRes.json().catch(() => ({}));
-        throw new Error((errBody as { error?: string }).error || `녹화본 업로드 실패 (${uploadRes.status})`);
+      if (isNetlifyBackend()) {
+        // Netlify 백엔드(preview 시연): 서버 디스크 대신 Netlify Blobs 에 조각으로 올립니다.
+        // 저장 경로는 Express 와 같은 그룹id/날짜/타임스탬프.webm 이라 재생·요약 URL 이 그대로 맞습니다.
+        const rel = `${groupIdRef.current || 'unknown'}/${dateStr}/${Date.now()}.webm`;
+        const uploaded = await uploadToNetlifyBlobs(`videos/${rel}`, blob, {
+          name: 'recording.webm',
+          mime: recorderMimeRef.current,
+        });
+        relativePath = uploaded.path;
+      } else {
+        const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
+        const uploadRes = await fetch(`${getApiBase()}/api/meetings/upload`, {
+          method: 'POST',
+          headers: uploadToken ? { 'x-upload-token': uploadToken } : undefined,
+          body: formData,
+        });
+        if (!uploadRes.ok) {
+          const errBody = await uploadRes.json().catch(() => ({}));
+          throw new Error((errBody as { error?: string }).error || `녹화본 업로드 실패 (${uploadRes.status})`);
+        }
+        relativePath = ((await uploadRes.json()) as { path: string }).path;
       }
-      relativePath = ((await uploadRes.json()) as { path: string }).path;
     } catch (err) {
       const msg = err instanceof Error ? err.message : '알 수 없는 오류';
       return {
