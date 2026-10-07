@@ -4,20 +4,41 @@
  * - 영상 파일을 어디서 읽어오는지는 호출하는 쪽이 정하고(loadVideo), 여기서는
  *   오디오 추출 → Whisper 받아쓰기 → LLM 요약/챕터 생성만 담당합니다.
  */
-const Groq = require('groq-sdk')
-const { toFile } = require('groq-sdk')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { execFile } = require('child_process')
 
+/**
+ * npm 의존성(groq-sdk, ffmpeg-static)은 처음 쓸 때 불러옵니다.
+ * Netlify 번들러는 server/ 폴더 안의 require 를 함수 번들에 넣지 못해 실행 시 "Cannot find module" 이 나므로,
+ * Netlify 함수는 직접 import 한 모듈을 configureAiSummaryDeps 로 넘겨줍니다. Express 는 아래 require 를 그대로 씁니다.
+ */
+let deps = null
+
+/** @param {{ Groq: any, toFile: Function, ffmpegPath?: string | null }} next */
+function configureAiSummaryDeps(next) {
+  deps = next
+}
+
+function getDeps() {
+  if (!deps) {
+    const groqSdk = require('groq-sdk')
+    let ffmpegPath = null
+    try {
+      ffmpegPath = require('ffmpeg-static')
+    } catch {
+      /* ffmpeg-static 미설치 → FFMPEG_PATH 또는 PATH 의 ffmpeg 사용 */
+    }
+    deps = { Groq: groqSdk, toFile: groqSdk.toFile, ffmpegPath }
+  }
+  return deps
+}
+
 // 오디오 추출용 ffmpeg. ffmpeg-static 을 우선 쓰고,
 // 없으면 FFMPEG_PATH 환경변수, 그것도 없으면 PATH 의 ffmpeg 를 씁니다.
-let FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg'
-try {
-  FFMPEG_PATH = require('ffmpeg-static') || FFMPEG_PATH
-} catch {
-  /* ffmpeg-static 미설치 → PATH 의 ffmpeg 사용 */
+function getFfmpegPath() {
+  return getDeps().ffmpegPath || process.env.FFMPEG_PATH || 'ffmpeg'
 }
 
 // Groq Whisper 업로드 한도 (초과 시 친절히 안내)
@@ -40,6 +61,7 @@ function getGroq() {
   if (!process.env.GROQ_API_KEY) {
     throw new Error('GROQ_API_KEY 환경변수가 설정되지 않았습니다')
   }
+  const { Groq } = getDeps()
   return new Groq({ apiKey: process.env.GROQ_API_KEY })
 }
 
@@ -73,6 +95,7 @@ function parseModelJson(raw) {
 /** Whisper 옵션을 바꿔가며 재시도합니다. 영상 원본을 그대로 올리면 400이 자주 납니다. */
 async function transcribeAudio(audioBuffer, isMp3) {
   const groq = getGroq()
+  const { toFile } = getDeps()
   const makeFile = () => toFile(
     audioBuffer,
     isMp3 ? 'audio.mp3' : 'audio.webm',
@@ -334,7 +357,7 @@ function extractAudio(inputPath, inputBuffer) {
     }
 
     const args = ['-y', '-i', realInput, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', outPath]
-    execFile(FFMPEG_PATH, args, { timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 * 10 }, (err) => {
+    execFile(getFfmpegPath(), args, { timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 * 10 }, (err) => {
       if (err) {
         cleanup()
         reject(new Error(`오디오 추출 실패: ${err.message}`))
@@ -477,6 +500,7 @@ function summaryErrorMessage(err) {
 }
 
 module.exports = {
+  configureAiSummaryDeps,
   getChatModel,
   getTranscribeModel,
   summarizeMeeting,

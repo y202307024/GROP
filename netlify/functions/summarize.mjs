@@ -9,10 +9,15 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import ffmpegPath from 'ffmpeg-static'
+import Groq, { toFile } from 'groq-sdk'
 import aiSummary from '../../server/aiSummary.js'
 import { json, metaKey, partKey, uploadsStore } from '../lib/uploads.mjs'
 
-const { summarizeMeeting, summaryErrorMessage } = aiSummary
+const { configureAiSummaryDeps, summarizeMeeting, summaryErrorMessage } = aiSummary
+
+// 이 파일에서 직접 import 해야 Netlify 번들러가 두 모듈을 함수 번들에 포함합니다. (aiSummary.js 주석 참고)
+configureAiSummaryDeps({ Groq, toFile, ffmpegPath })
 
 /** videoUrl(https://사이트/videos/그룹/날짜/파일.webm) → Blobs key(videos/그룹/날짜/파일.webm) */
 function videoKeyFromUrl(videoUrl) {
