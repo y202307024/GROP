@@ -32,6 +32,43 @@ function hasUsableChatLog(raw: unknown): boolean {
   return Array.isArray(raw) && raw.some((m) => m && typeof (m as { text?: unknown }).text === 'string' && (m as { text: string }).text.trim());
 }
 
+type ChatLogMessage = { name: string; text: string; ts: number };
+
+/** meetings.chat_log(신뢰 못 할 형태) → 시간순 메시지 배열 */
+function normalizeChatLog(raw: unknown): ChatLogMessage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((m) => {
+      const rec = m as Record<string, unknown>;
+      const name = typeof rec?.name === 'string' && rec.name.trim() ? rec.name.trim() : '참여자';
+      const text = typeof rec?.text === 'string' ? rec.text.trim() : '';
+      const ts = Number(rec?.ts) || 0;
+      return { name, text, ts };
+    })
+    .filter((m) => m.text)
+    .sort((a, b) => a.ts - b.ts);
+}
+
+/** 채팅 메시지를 보낸 사람별로 모아, 그 사람이 한 말 전체를 이어 붙입니다(요약 아님). */
+function groupChatBySpeaker(messages: ChatLogMessage[]): { speaker: string; text: string }[] {
+  const order: string[] = [];
+  const byName = new Map<string, string[]>();
+  for (const m of messages) {
+    if (!byName.has(m.name)) {
+      byName.set(m.name, []);
+      order.push(m.name);
+    }
+    byName.get(m.name)!.push(m.text);
+  }
+  return order.map((name) => ({ speaker: name, text: byName.get(name)!.join('\n') }));
+}
+
+/** 채팅 메시지 전송 시각(ms) → "HH:MM" */
+function formatClockTime(ts: number) {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 /** meetings.speakers → { speaker, summary }[] 로 정규화 */
 function normalizeSpeakers(raw: unknown): { speaker: string; summary: string }[] {
   if (!Array.isArray(raw)) return [];
@@ -440,8 +477,12 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     const canSummarize = !!meeting.video_url || hasUsableChatLog(meeting.chat_log);
     // 왼쪽엔 핵심 요약만, 오른쪽(영상 옆)엔 타임라인만 보여줍니다.
     const { core: coreSummary, timeline } = splitSummary(meeting.summary, chapters);
-    // 발언자별요약 = { speaker, summary }[] (녹취록에 화자 표시가 없어 AI 추정치)
+    // 발언자별요약 = { speaker, summary }[] (녹취록에 화자 표시가 없어 AI 추정치) — 채팅 기록이 없을 때만 씁니다.
     const speakers = normalizeSpeakers(meeting.speakers);
+    // 회의 중 채팅 원문 — '전체 채팅' 탭은 이걸 그대로 보여주고, '발언자별'도 요약 대신
+    // 실제로 그 사람이 쓴 메시지를 전부 모아서 보여줍니다(채팅 기록이 있을 때 더 정확함).
+    const chatMessages = normalizeChatLog(meeting.chat_log);
+    const chatBySpeaker = groupChatBySpeaker(chatMessages);
 
     return (
       <>
@@ -490,11 +531,23 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
               </div>
             )}
 
-            {/* 오른쪽 열: '전체 채팅' → 타임라인 / '발언자별' → 화자별 요약 (많으면 세로 스크롤) */}
+            {/* 오른쪽 열: '전체 채팅' → 실제 채팅 메시지 / '발언자별' → 그 사람이 한 말 전체 (많으면 세로 스크롤) */}
             <div className="ai-transcript">
               <div className="ai-transcript-list">
                 {videoTab === 'speaker' ? (
-                  speakers.length > 0 ? (
+                  chatBySpeaker.length > 0 ? (
+                    // 채팅 기록이 있으면 AI 요약이 아니라 그 사람이 실제로 쓴 메시지를 전부 모아 보여줍니다.
+                    chatBySpeaker.map((s, i) => (
+                      <div key={i}>
+                        <div className="ai-transcript-meta">
+                          <Icon name="circle-user" />
+                          <span className="ai-transcript-speaker">{s.speaker}</span>
+                        </div>
+                        <p className="ai-transcript-text" style={{ whiteSpace: 'pre-wrap' }}>{s.text}</p>
+                      </div>
+                    ))
+                  ) : speakers.length > 0 ? (
+                    // 채팅 기록이 없는(음성만 있는) 회의는 AI가 추정한 화자별 요약으로 대신합니다.
                     speakers.map((s, i) => (
                       <div key={i}>
                         <div className="ai-transcript-meta">
@@ -507,31 +560,24 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                   ) : (
                     <p className="ai-transcript-text" style={{ color: '#999' }}>
                       {hasSummary
-                        ? '녹음에 화자 구분 정보가 없어 발언자별 요약을 만들지 못했어요.'
-                        : 'AI 요약을 생성하면 발언자별 요약이 여기에 표시됩니다.'}
+                        ? '발언자별로 보여줄 채팅이나 화자 구분 정보가 없어요.'
+                        : 'AI 요약을 생성하면 발언자별 내용이 여기에 표시됩니다.'}
                     </p>
                   )
-                ) : timeline.length > 0 ? (
-                  timeline.map((c, i) => (
-                    <button
-                      type="button"
-                      key={`${c.time}-${i}`}
-                      onClick={() => void seekTo(c.time)}
-                      style={{ width: '100%', border: 'none', background: 'transparent', textAlign: 'left', padding: 0, cursor: 'pointer' }}
-                    >
+                ) : chatMessages.length > 0 ? (
+                  chatMessages.map((m, i) => (
+                    <div key={i}>
                       <div className="ai-transcript-meta">
                         <Icon name="clock" />
-                        <span className="ai-transcript-time">{formatTimestamp(c.time)}</span>
-                        <span className="ai-transcript-speaker">{c.title}</span>
+                        <span className="ai-transcript-time">{formatClockTime(m.ts)}</span>
+                        <span className="ai-transcript-speaker">{m.name}</span>
                       </div>
-                      {c.summary && <p className="ai-transcript-text">{c.summary}</p>}
-                    </button>
+                      <p className="ai-transcript-text" style={{ whiteSpace: 'pre-wrap' }}>{m.text}</p>
+                    </div>
                   ))
                 ) : (
                   <p className="ai-transcript-text" style={{ color: '#999' }}>
-                    {hasSummary
-                      ? '이 회의에는 타임라인이 없어요.'
-                      : '아직 타임라인이 없어요. AI 요약을 생성하면 구간별 내용이 여기에 표시됩니다.'}
+                    이 회의에는 채팅 기록이 없어요.
                   </p>
                 )}
               </div>
