@@ -25,7 +25,24 @@ type MeetingBoardMessage = {
   boardId: string;
   title?: string;
   from: string;
+  /**
+   * 보드를 고른 시각(ms). 응답·metadata 가 여러 경로로 뒤섞여 도착해도 가장 최근 선택만 반영하기 위한 기준입니다.
+   * 직접 고른 적 없이 기본 보드를 보고 있는 참가자는 0 으로 보내 실제 선택에 항상 밀리게 합니다.
+   */
+  selectedAt?: number;
 };
+
+/**
+ * next 가 prev 보다 나중의 보드 선택인지 판단합니다.
+ * 같은 시각이면 boardId 로 순서를 정해, 모든 참가자가 같은 보드로 수렴하게 합니다.
+ */
+function isNewerBoardSelection(next: MeetingBoardMessage, prev: MeetingBoardMessage | null): boolean {
+  if (!prev) return true;
+  const nextAt = next.selectedAt ?? 0;
+  const prevAt = prev.selectedAt ?? 0;
+  if (nextAt !== prevAt) return nextAt > prevAt;
+  return next.boardId >= prev.boardId;
+}
 
 /** 늦게 들어오거나 재연결한 참가자가 "지금 어떤 보드인지" 묻는 메시지 */
 type MeetingBoardRequest = {
@@ -1083,6 +1100,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       boardId: id,
       title,
       from: localParticipant.identity,
+      // 내 PC 시계가 다른 참가자보다 늦어도 새 선택이 "예전 선택"으로 버려지지 않게, 마지막으로 본 선택보다 항상 크게 잡습니다.
+      selectedAt: Math.max(Date.now(), (latestBoardSelectionRef.current?.selectedAt ?? 0) + 1),
     };
     latestBoardSelectionRef.current = payload;
     publishBoardSelection(payload);
@@ -1135,10 +1154,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // 수신한 선택은 로컬에만 반영합니다. 재방송은 ParticipantConnected 쪽에서만 합니다.
     const applyBoardSelection = (msg: MeetingBoardMessage) => {
       if (!msg.boardId) return;
+      const prev = latestBoardSelectionRef.current;
+      // 3명 이상이면 응답·metadata 가 여러 명에게서 순서 없이 도착하고, 그중엔 예전 보드 정보도 섞여 있습니다.
+      // 이미 반영한 선택보다 오래된 정보는 버려야 최신 보드가 예전 보드로 덮이지 않습니다.
+      if (!isNewerBoardSelection(msg, prev)) return;
       setShowInitChoice(false);
       initChoiceHandledRef.current = true;
 
-      const prev = latestBoardSelectionRef.current;
       // 이미 같은 보드를 보고 있으면 상태/네트워크 작업을 건너뛰어 불필요한 렌더·폭주를 막습니다.
       // (기록만 같고 실제 화면 보드가 다르면 다시 맞춰야 하므로 boardIdRef 도 함께 확인합니다.)
       if (
@@ -1146,6 +1168,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         && boardIdRef.current === msg.boardId
         && (prev.title ?? '') === (msg.title ?? '')
       ) {
+        // 화면은 그대로 두되 selectedAt 은 최신 값으로 기록해야, 다음 요청 때 정확한 시각으로 답할 수 있습니다.
+        latestBoardSelectionRef.current = msg;
         return;
       }
 
@@ -1160,27 +1184,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       latestBoardSelectionRef.current = msg;
     };
 
-    // 요청한 사람을 뺀 참가자 중 가장 먼저 들어온 사람만 응답해 중복 전송을 막습니다.
-    // (입장 시각이 같으면 identity 순으로 정해 모든 참가자가 같은 결론을 내립니다.)
-    const isResponder = (requester: string) => {
-      const me = room.localParticipant;
-      const candidates = [me, ...room.remoteParticipants.values()]
-        .filter((p) => p.identity && p.identity !== requester)
-        .sort((a, b) => {
-          const ta = a.joinedAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
-          const tb = b.joinedAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
-          return ta - tb || a.identity.localeCompare(b.identity);
-        });
-      return candidates[0]?.identity === me.identity;
-    };
-
     // 요청한 사람에게만 내가 지금 보고 있는 보드를 알려 줍니다.
-    // latestBoardSelectionRef 가 비어 있어도(직접 고른 적이 없어도) 화면의 보드를 기준으로 답합니다.
+    // 예전엔 "가장 먼저 들어온 한 명"만 답했는데, 그 사람이 예전 보드를 보고 있으면 늦게 온 사람도 그 보드로 갔습니다.
+    // 이제는 보드가 있는 참가자 모두가 답하고, 요청한 쪽이 selectedAt 이 가장 최근인 답을 고릅니다.
+    // (요청자에게만 보내는 1회성 응답이라 재방송 폭주는 생기지 않습니다.)
     const replyCurrentBoard = (requester: string) => {
-      if (!requester || !isResponder(requester)) return;
+      if (!requester) return;
       const currentId = boardIdRef.current;
       if (!currentId) return;
       const latest = latestBoardSelectionRef.current;
+      // 직접 고르거나 전달받은 기록이 없는 보드(그룹 기본 보드 등)는 selectedAt 0 으로 보내 실제 선택에 밀리게 합니다.
       const payload: MeetingBoardMessage = latest?.boardId === currentId
         ? latest
         : {
@@ -1188,6 +1201,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             boardId: currentId,
             title: boardTitleRef.current,
             from: room.localParticipant.identity,
+            selectedAt: 0,
           };
       void room.localParticipant
         .publishData(encodeMeetingBoardMessage(payload), {
@@ -1206,7 +1220,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       // localParticipant가 아직 없으면 identity 비교를 건너뜁니다.
       if (sender && sender === localParticipant?.identity) return;
 
-      // 현재 보드를 묻는 요청이면 정해진 응답자 한 명만 답하고, 그 외에는 보드 선택으로 처리합니다.
+      // 현재 보드를 묻는 요청이면 요청자에게 내 보드를 답하고, 그 외에는 보드 선택으로 처리합니다.
       const request = decodeMeetingBoardRequest(payload);
       if (request) {
         replyCurrentBoard(sender ?? request.from);
@@ -1230,21 +1244,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     };
 
     // metadata 는 마지막으로 보드를 고른 사람만 최신이고 다른 참가자 값은 예전 보드일 수 있습니다.
-    // 그래서 아직 받은 보드가 없을 때만 임시로 맞추고, 정확한 값은 응답자의 답으로 다시 맞춥니다.
+    // 예전엔 처음 찾은 참가자의 값을 그대로 써서, 예전 보드를 가진 사람이 먼저 잡히면 그 보드로 갔습니다.
+    // 그래서 모든 참가자의 metadata 중 selectedAt 이 가장 최근인 것을 고릅니다.
     const syncFromExistingParticipants = () => {
-      if (latestBoardSelectionRef.current) return;
+      let newest: MeetingBoardMessage | null = null;
       for (const participant of room.remoteParticipants.values()) {
         const msg = decodeMeetingBoardMetadata(participant.metadata);
-        if (msg) {
-          applyBoardSelection(msg);
-          return;
-        }
+        if (msg && isNewerBoardSelection(msg, newest)) newest = msg;
       }
+      if (newest) applyBoardSelection(newest);
     };
 
     // 예전에는 기존 참가자가 ParticipantConnected 순간에 보드를 알려 줬는데,
     // 새 참가자가 아직 수신 준비가 안 됐거나 보낼 사람이 선택 기록이 없으면 놓쳤습니다.
-    // 그래서 들어온(재연결한) 쪽이 직접 현재 보드를 요청하고, 응답자 한 명이 답하게 합니다.
+    // 그래서 들어온(재연결한) 쪽이 직접 현재 보드를 요청하고, 받은 답 중 가장 최근 선택을 따릅니다.
     const requestCurrentBoard = () => {
       if (room.state !== 'connected') return;
       const me = room.localParticipant;
