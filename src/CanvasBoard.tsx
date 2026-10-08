@@ -1078,6 +1078,47 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const initChoiceHandledRef = useRef(false);
   const latestBoardSelectionRef = useRef<MeetingBoardMessage | null>(null);
 
+  /**
+   * 회의방에서 "어떤 보드를 띄울지" 정해졌는지 여부.
+   * 정해지기 전에 그룹 기본 보드를 먼저 그리면, 예전 보드가 잠깐 보였다가 현재 보드(또는 새 보드 선택창)로 바뀌며 깜빡입니다.
+   * 그래서 다른 참가자의 보드 정보·선택창 결정·대기 시간 초과 중 하나가 올 때까지 보드를 그리지 않습니다.
+   */
+  const [meetingBoardReady, setMeetingBoardReady] = useState(!meetingMode);
+  const meetingBoardReadyRef = useRef(!meetingMode);
+  /** 대기 시간이 끝났을 때 대신 띄울 그룹 기본 보드 (loadGroupBoards 가 채웁니다) */
+  const defaultMeetingBoardRef = useRef<Board | null>(null);
+  const showInitChoiceRef = useRef(false);
+  showInitChoiceRef.current = showInitChoice;
+
+  const markMeetingBoardReady = () => {
+    if (meetingBoardReadyRef.current) return;
+    meetingBoardReadyRef.current = true;
+    setMeetingBoardReady(true);
+  };
+
+  /** 다른 참가자가 끝내 보드를 알려 주지 않거나 LiveKit 연결이 늦을 때, 그룹 기본 보드로 대신 시작합니다. */
+  const fallBackToDefaultMeetingBoard = () => {
+    // 선택창이 떠 있으면 사용자가 고를 때까지 기다립니다. (뒤에 기본 보드를 깔면 다시 깜빡입니다)
+    if (meetingBoardReadyRef.current || showInitChoiceRef.current) return;
+    markMeetingBoardReady();
+    const fallback = defaultMeetingBoardRef.current;
+    // 목록이 아직 안 왔으면 loadGroupBoards 가 끝날 때 기본 보드를 고릅니다.
+    if (!fallback || boardIdRef.current) return;
+    const title = formatBoardTitle(fallback.title);
+    setBoardId(fallback.id);
+    setBoardTitle(title);
+    lastSavedTitleRef.current[fallback.id] = title;
+  };
+
+  // LiveKit 연결 자체가 늦거나 실패해도 보드가 계속 비어 있지 않도록, 일정 시간이 지나면 기본 보드를 띄웁니다.
+  useEffect(() => {
+    if (!meetingMode) return;
+    const timer = window.setTimeout(fallBackToDefaultMeetingBoard, 6000);
+    return () => window.clearTimeout(timer);
+    // fallBackToDefaultMeetingBoard 는 ref 만 읽어 최초 렌더의 함수로도 충분합니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingMode]);
+
   const publishBoardSelection = (payload: MeetingBoardMessage) => {
     if (!localParticipant) return;
     void localParticipant.publishData(encodeMeetingBoardMessage(payload), {
@@ -1160,6 +1201,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (!isNewerBoardSelection(msg, prev)) return;
       setShowInitChoice(false);
       initChoiceHandledRef.current = true;
+      // 회의에서 쓰는 보드를 알게 됐으니 이제부터 보드를 그립니다.
+      markMeetingBoardReady();
 
       // 이미 같은 보드를 보고 있으면 상태/네트워크 작업을 건너뛰어 불필요한 렌더·폭주를 막습니다.
       // (기록만 같고 실제 화면 보드가 다르면 다시 맞춰야 하므로 boardIdRef 도 함께 확인합니다.)
@@ -1258,6 +1301,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // 예전에는 기존 참가자가 ParticipantConnected 순간에 보드를 알려 줬는데,
     // 새 참가자가 아직 수신 준비가 안 됐거나 보낼 사람이 선택 기록이 없으면 놓쳤습니다.
     // 그래서 들어온(재연결한) 쪽이 직접 현재 보드를 요청하고, 받은 답 중 가장 최근 선택을 따릅니다.
+    let fallbackTimer: number | undefined;
     const requestCurrentBoard = () => {
       if (room.state !== 'connected') return;
       const me = room.localParticipant;
@@ -1269,6 +1313,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       void me
         .publishData(encodeMeetingBoardMessage(request), { reliable: true, topic: MEETING_BOARD_TOPIC })
         .catch((err) => console.warn('현재 보드 요청 실패:', err));
+      // 답이 보통 1초 안에 오므로, 2초 넘게 아무도 답하지 않으면(모두 보드를 고르기 전 등) 기본 보드로 시작합니다.
+      if (!meetingBoardReadyRef.current) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = window.setTimeout(fallBackToDefaultMeetingBoard, 2000);
+      }
     };
 
     room.on(RoomEvent.DataReceived, handler);
@@ -1278,11 +1327,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // 핸들러를 먼저 등록한 뒤 요청해야 응답을 놓치지 않습니다.
     requestCurrentBoard();
     return () => {
+      window.clearTimeout(fallbackTimer);
       room.off(RoomEvent.DataReceived, handler);
       room.off(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
       room.off(RoomEvent.Connected, requestCurrentBoard);
       room.off(RoomEvent.Reconnected, requestCurrentBoard);
     };
+    // fallBackToDefaultMeetingBoard 는 ref·setter 만 읽으므로 의존성에 넣어 매 렌더마다 재구독할 필요가 없습니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, meetingMode, localParticipant?.identity]);
 
   // 초기 선택창에서 '새 보드 생성'을 눌렀을 때 실행되는 함수입니다.
@@ -1294,6 +1346,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
     setShowInitChoice(false);
     initChoiceHandledRef.current = true;
+    markMeetingBoardReady();
     try {
       const title = isGroupCanvas ? `${GROUP_BOARD_TITLE_PREFIX}${groupId ?? ''}${Date.now()}` : '새 보드';
       // group_id 를 함께 넣어야 그룹 보드 목록(fetchGroupBoards)에 나타나 늦게 온 참가자 목록에도 보입니다.
@@ -1335,6 +1388,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
     setShowInitChoice(false);
     initChoiceHandledRef.current = true;
+    markMeetingBoardReady();
     try {
       // 그룹 회의에서는 다른 그룹 보드가 섞이지 않도록 이 그룹의 최신 보드만 고릅니다.
       let board: Board | null = null;
@@ -1900,13 +1954,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const keep = prev.find((b) => b.id === currentId && !deduped.some((d) => d.id === b.id));
       return keep ? [keep, ...deduped] : deduped;
     });
-    // 회의 중 다른 참가자에게서 이미 보드를 받았다면 목록만 갱신하고 선택은 덮어쓰지 않습니다.
-    // (늦게 들어온 사람이 회의 보드 대신 그룹 기본 보드로 돌아가던 원인)
-    if (meetingMode && latestBoardSelectionRef.current?.boardId) {
+    const selected = deduped.find((b) => b.id === currentId) ?? deduped[0];
+    defaultMeetingBoardRef.current = selected ?? null;
+    // 회의방에서는 목록만 갱신하고 선택은 하지 않는 경우가 있습니다.
+    // - 다른 참가자에게서 이미 보드를 받았을 때 (늦게 들어온 사람이 그룹 기본 보드로 돌아가던 원인)
+    // - 아직 어떤 보드를 띄울지 모를 때 (기본 보드가 먼저 그려졌다가 현재 보드로 바뀌며 깜빡이던 원인)
+    //   이때는 응답이 끝내 없으면 fallBackToDefaultMeetingBoard 가 위의 기본 보드를 띄웁니다.
+    if (meetingMode && (latestBoardSelectionRef.current?.boardId || !meetingBoardReadyRef.current)) {
       setIsLoadingBoards(false);
       return;
     }
-    const selected = deduped.find((b) => b.id === currentId) ?? deduped[0];
     if (selected) {
       const title = formatBoardTitle(selected.title);
       setBoardId(selected.id);
@@ -5459,6 +5516,25 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         onSaveDraftTitleChange={setTimelapseSaveDraft}
         onSave={() => void handleSaveTimelapse()}
       /> */}
+
+      {/* 회의방에서 띄울 보드가 정해지기 전: 예전 보드를 잠깐 보여 주는 대신 안내 문구만 보여 줍니다. */}
+      {meetingMode && !meetingBoardReady && !showInitChoice ? (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 55,
+            pointerEvents: 'none',
+            color: '#6b7280',
+            fontSize: 14,
+          }}
+        >
+          회의 보드를 불러오는 중...
+        </div>
+      ) : null}
 
       {showInitChoice ? (
         <div
