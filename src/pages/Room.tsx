@@ -55,7 +55,8 @@ import { isNoneDevice, loadVoiceSettings, subscribeVoiceSettings, syncMicrophone
 
 type RecordingSyncHandle = {
   broadcastStart: () => void;
-  broadcastStop: () => void;
+  /** 다른 참가자 녹화를 끊습니다. 방을 나가기 전에 await 해야 전달됩니다. */
+  broadcastStop: () => Promise<void> | void;
 };
 
 /** PostgREST/Postgres가 "없는 컬럼"이라고 할 때만 그 컬럼 이름을 돌려줍니다. */
@@ -140,11 +141,12 @@ function MeetingAttendeesTracker({ attendeeIdsRef }: { attendeeIdsRef: RefObject
   const participants = useParticipants();
 
   useEffect(() => {
+    // 나간 사람도 그 회의 참석자로 남기려고, 지금까지 들어온 id를 지우지 않고 더합니다.
     const ids = participants
       .map((p) => (p.identity || '').trim())
       .filter((id) => /^[0-9a-f-]{36}$/i.test(id));
-    const unique = [...new Set(ids)];
-    if (unique.length > 0) attendeeIdsRef.current = unique;
+    const merged = new Set([...(attendeeIdsRef.current ?? []), ...ids]);
+    if (merged.size > 0) attendeeIdsRef.current = [...merged];
   }, [participants, attendeeIdsRef]);
 
   return null;
@@ -245,12 +247,10 @@ function RecordingDataSync({
           { reliable: true, topic: MEETING_RECORDING_TOPIC },
         );
       },
-      broadcastStop: () => {
-        void room.localParticipant.publishData(
-          encodeRecordingSyncMessage({ type: 'recording:stop', from: userId }),
-          { reliable: true, topic: MEETING_RECORDING_TOPIC },
-        );
-      },
+      broadcastStop: () => room.localParticipant.publishData(
+        encodeRecordingSyncMessage({ type: 'recording:stop', from: userId }),
+        { reliable: true, topic: MEETING_RECORDING_TOPIC },
+      ),
     };
     return () => { syncRef.current = null; };
   }, [room, userId, syncRef]);
@@ -726,6 +726,8 @@ export default function Room() {
   const recorderMimeRef = useRef('video/webm');
   const groupIdRef = useRef(id);
   const isRecordingRef = useRef(false);
+  /** 이 방에서 녹화가 한 번이라도 켜졌는지. 나갈 때 남은 사람 녹화를 같이 끊을지 판단합니다. */
+  const sharedRecordingRef = useRef(false);
   /** persist 중인지 — 나가기 버튼이 저장을 끊지 않게 합니다. */
   const savingRecordingRef = useRef(false);
   /** 녹화 시작 준비 중(캡처 생성) — 중복 클릭 방지 */
@@ -787,6 +789,8 @@ export default function Room() {
     const chatStart = chatLogRef.current.find((m) => m.ts > 0)?.ts ?? null;
     const opened = roomOpenedAtRef.current ?? chatStart ?? Date.now();
     const ids = new Set(attendeeIdsRef.current);
+    // 목록 아이콘은 이 방의 모든 참가자여야 해서, 저장하는 사람도 빠지지 않게 넣습니다.
+    if (/^[0-9a-f-]{36}$/i.test(userId)) ids.add(userId);
     for (const msg of chatLogRef.current) {
       if (/^[0-9a-f-]{36}$/i.test(msg.from || '')) ids.add(msg.from);
     }
@@ -1172,6 +1176,7 @@ export default function Room() {
       mediaRecorder.start(250);
       mediaRecorderRef.current = mediaRecorder;
       isRecordingRef.current = true;
+      sharedRecordingRef.current = true;
       setIsRecording(true);
 
       if (!opts?.remote) {
@@ -1256,22 +1261,38 @@ export default function Room() {
       return;
     }
     if (isRecording) {
-      recordingSyncRef.current?.broadcastStop();
-      void stopRecordingAndSave({ save: true });
+      // 먼저 다른 참가자 녹화를 끊은 뒤에 저장합니다. 안 그러면 남은 사람이 회의를 따로 만듭니다.
+      void (async () => {
+        try {
+          await recordingSyncRef.current?.broadcastStop();
+        } catch (err) {
+          console.warn('녹화 종료 알림 전달 실패:', err);
+        }
+        await stopRecordingAndSave({ save: true });
+      })();
       return;
     }
     void startRecording();
   };
 
   const handleLeave = async () => {
+    const recorderActive =
+      isRecordingRef.current
+      || mediaRecorderRef.current?.state === 'recording'
+      || recordedChunksRef.current.length > 0;
+    // 연결이 끊기기 전에 종료 신호를 보냅니다. 이미 끈 뒤에도 한 번 더 보내 남은 사람 녹화가 따로 이어지지 않게 합니다.
+    if (recorderActive || sharedRecordingRef.current) {
+      try {
+        await recordingSyncRef.current?.broadcastStop();
+      } catch (err) {
+        console.warn('녹화 종료 알림 전달 실패:', err);
+      }
+    }
+
     setSaving(true);
 
     try {
       // 녹화 중이면 버리지 않고 회의록에 저장한 뒤 나갑니다.
-      const recorderActive =
-        isRecordingRef.current
-        || mediaRecorderRef.current?.state === 'recording'
-        || recordedChunksRef.current.length > 0;
       if (recorderActive || savingRecordingRef.current) {
         if (!savingRecordingRef.current) {
           await stopRecordingAndSave({ save: true });

@@ -145,20 +145,29 @@ export default function MainPage() {
       setNextMeeting(null);
       return;
     }
-    const withPeople = await supabase
-      .from('meetings')
-      .select('id, title, date, summary, group_id, attendees, chat_log, created_by')
-      .in('group_id', ids)
-      .order('date', { ascending: false })
-      .limit(4);
-    const meetingRows = withPeople.error
-      ? (await supabase
+    // attendees 칸이 없어도 created_by 는 남겨야 참석자 아이콘이 전부 비지 않습니다.
+    const meetingColumns = [
+      'id, title, date, summary, group_id, attendees, chat_log, created_by',
+      'id, title, date, summary, group_id, chat_log, created_by',
+      'id, title, date, summary, group_id, created_by',
+    ];
+    let meetingRows: MeetingRow[] | null = null;
+    for (const columns of meetingColumns) {
+      const res = await supabase
         .from('meetings')
-        .select('id, title, date, summary, group_id')
+        .select(columns)
         .in('group_id', ids)
         .order('date', { ascending: false })
-        .limit(4)).data
-      : withPeople.data;
+        .limit(4);
+      if (!res.error) {
+        meetingRows = res.data as unknown as MeetingRow[] | null;
+        break;
+      }
+      if (!/attendees|chat_log/i.test(res.error.message)) {
+        console.warn('회의 목록을 불러오지 못했습니다:', res.error.message);
+        break;
+      }
+    }
     setMeetings(meetingRows || []);
     const faces = await loadGroupFaceIndex(ids);
     setAvatarByUserId(faces.avatarByUserId);

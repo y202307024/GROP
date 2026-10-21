@@ -74,23 +74,27 @@ export default function AiSummaryPage() {
         return;
       }
 
-      const withPeople = await supabase
-        .from('meetings')
-        .select('id, title, date, summary, video_url, group_id, attendees, chat_log, created_by')
-        .in('group_id', ids)
-        .order('date', { ascending: false });
-      // 참석자 컬럼이 아직 없는 DB는 목록 자체는 기존 칸만으로 불러옵니다.
-      const fallback = withPeople.error
-        ? await supabase
+      // attendees 칸이 없어도 created_by 는 남겨야 참석자 아이콘이 전부 비지 않습니다.
+      const meetingColumns = [
+        'id, title, date, summary, video_url, group_id, attendees, chat_log, created_by',
+        'id, title, date, summary, video_url, group_id, chat_log, created_by',
+        'id, title, date, summary, video_url, group_id, created_by',
+      ];
+      let data: MeetingRow[] | null = null;
+      for (const columns of meetingColumns) {
+        const res = await supabase
           .from('meetings')
-          .select('id, title, date, summary, video_url, group_id')
+          .select(columns)
           .in('group_id', ids)
-          .order('date', { ascending: false })
-        : null;
-      const data = fallback ? fallback.data : withPeople.data;
-      const error = fallback ? fallback.error : withPeople.error;
-      if (error) {
-        console.warn('회의록 목록을 불러오지 못했습니다:', error.message);
+          .order('date', { ascending: false });
+        if (!res.error) {
+          data = res.data as unknown as MeetingRow[] | null;
+          break;
+        }
+        if (!/attendees|chat_log/i.test(res.error.message)) {
+          console.warn('회의록 목록을 불러오지 못했습니다:', res.error.message);
+          break;
+        }
       }
       const faces = await loadGroupFaceIndex(ids);
       if (!mounted) return;
