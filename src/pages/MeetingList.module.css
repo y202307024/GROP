@@ -122,3 +122,18 @@
   background: var(--color-info-soft);
   color: var(--color-info);
 }
+
+.pillWait {
+  background: var(--color-warning-soft);
+  color: var(--color-warning-text);
+}
+
+.pillOk {
+  background: var(--color-primary-soft);
+  color: var(--color-primary-hover);
+}
+
+.pillDanger {
+  background: #fdecec;
+  color: #b42318;
+}

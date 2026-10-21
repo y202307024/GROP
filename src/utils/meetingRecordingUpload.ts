@@ -1,7 +1,7 @@
 /**
- * IndexedDB에 남겨 둔 회의 녹화를 지금과 같은 서버 업로드 경로로 올립니다.
+ * IndexedDB에 남겨 둔 회의 녹화를 올립니다.
+ * 서버는 R2에 올릴 임시 주소만 발급하고, 파일은 브라우저가 R2로 직접 PUT 합니다.
  * 파일 업로드와 meetings 반영이 모두 끝난 뒤에만 브라우저 보관분을 지웁니다.
- * 서버 디스크에 올린 파일은 재시작으로 사라질 수 있어, 회의록 저장 전에는 보관분을 지우지 않습니다.
  */
 import { supabase } from '../services/supabaseClient';
 import { getApiBase, isNetlifyBackend } from './apiBase';
@@ -69,10 +69,34 @@ export function recordingTitleFromDate(dateStr: string) {
 
 function uploadError(err: unknown) {
   const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-  return `녹화본을 서버 컴퓨터로 전송하지 못했습니다: ${msg}\n\n서버 컴퓨터(백엔드)가 켜져 있고 접속 가능한 상태인지 확인해 주세요.`;
+  return `녹화본을 저장소로 전송하지 못했습니다: ${msg}\n\n서버가 켜져 있고, R2 설정과 버킷 CORS가 맞는지 확인해 주세요.`;
 }
 
-async function uploadVideoFile(input: SaveInput) {
+/** meetings에 넣을 영상 칸. R2는 키와 상태, 시연용 Blobs는 예전 재생 주소입니다. */
+type StoredVideo =
+  | { kind: 'r2'; videoKey: string; sizeBytes: number }
+  | { kind: 'url'; videoUrl: string };
+
+function videoColumns(stored: StoredVideo): Record<string, unknown> {
+  if (stored.kind === 'r2') {
+    return {
+      video_key: stored.videoKey,
+      video_status: 'uploaded',
+      video_size_bytes: stored.sizeBytes,
+    };
+  }
+  return { video_url: stored.videoUrl };
+}
+
+/** 칸이 아직 없으면 적용할 SQL을 같이 알려 줍니다. 녹화는 IndexedDB에 남아 있습니다. */
+function explainVideoSaveError(message: string) {
+  if (/video_key|video_status|video_size_bytes/i.test(message)) {
+    return `${message}\n\nsupabase/08_영상_R2_상태.sql 을 적용하면 영상 키를 저장할 수 있습니다. 녹화는 이 브라우저에 남아 있어, 적용 후 다시 시도하면 올라갑니다.`;
+  }
+  return message;
+}
+
+async function storeVideoFile(input: SaveInput): Promise<StoredVideo> {
   if (isNetlifyBackend()) {
     // Netlify 시연은 서버 디스크 대신 Blobs에 올립니다. 재생 경로는 기존과 같게 맞춥니다.
     const rel = `${input.groupId || 'unknown'}/${input.dateStr}/${Date.now()}.webm`;
@@ -80,25 +104,56 @@ async function uploadVideoFile(input: SaveInput) {
       name: 'recording.webm',
       mime: input.mimeType,
     });
-    return uploaded.path;
+    return { kind: 'url', videoUrl: `${getApiBase()}/videos/${uploaded.path}` };
   }
 
-  const formData = new FormData();
-  // 파일보다 먼저 보내야 서버가 groupId/날짜 폴더를 알 수 있습니다.
-  formData.append('groupId', input.groupId);
-  formData.append('dateStr', input.dateStr);
-  formData.append('video', input.blob, 'recording.webm');
   const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
-  const uploadRes = await fetch(`${getApiBase()}/api/meetings/upload`, {
-    method: 'POST',
-    headers: uploadToken ? { 'x-upload-token': uploadToken } : undefined,
-    body: formData,
-  });
-  if (!uploadRes.ok) {
-    const errBody = await uploadRes.json().catch(() => ({}));
-    throw new Error((errBody as { error?: string }).error || `녹화본 업로드 실패 (${uploadRes.status})`);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (uploadToken) headers['x-upload-token'] = uploadToken;
+
+  // 서버는 파일을 받지 않습니다. 15분짜리 PUT 주소와 객체 키만 받습니다.
+  let ticketRes: Response;
+  try {
+    ticketRes = await fetch(`${getApiBase()}/api/meetings/upload-url`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        groupId: input.groupId,
+        dateStr: input.dateStr,
+        mimeType: input.mimeType || 'video/webm',
+        size: input.blob.size,
+      }),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '네트워크 오류';
+    throw new Error(`업로드 주소를 받지 못했습니다. 서버가 켜져 있는지 확인해 주세요. (${msg})`);
   }
-  return ((await uploadRes.json()) as { path: string }).path;
+  if (!ticketRes.ok) {
+    const errBody = await ticketRes.json().catch(() => ({}));
+    throw new Error((errBody as { error?: string }).error || `업로드 주소 발급 실패 (${ticketRes.status})`);
+  }
+  const ticket = (await ticketRes.json()) as { uploadUrl?: string; key?: string; contentType?: string };
+  if (!ticket.uploadUrl || !ticket.key) {
+    throw new Error('업로드 주소 응답이 올바르지 않습니다');
+  }
+
+  // 서명에 넣은 Content-Type과 같아야 해서, 녹화물 코덱 문자열이 아니라 서버가 돌려준 값을 씁니다.
+  const contentType = ticket.contentType || 'video/webm';
+  let putRes: Response;
+  try {
+    putRes = await fetch(ticket.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': contentType },
+      body: input.blob,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '네트워크 오류';
+    throw new Error(`저장소에 영상을 올리지 못했습니다. R2 버킷 CORS에서 이 화면 주소의 PUT을 허용했는지 확인해 주세요. (${msg})`);
+  }
+  if (!putRes.ok) {
+    throw new Error(`저장소 업로드 실패 (HTTP ${putRes.status})`);
+  }
+  return { kind: 'r2', videoKey: ticket.key, sizeBytes: input.blob.size };
 }
 
 async function rememberStartedAt(meetingId: string, startedAt: number | undefined) {
@@ -128,14 +183,14 @@ export async function uploadBlobAndInsert(input: SaveInput): Promise<{ ok: true;
     };
   }
 
-  let relativePath: string;
+  let stored: StoredVideo;
   try {
-    relativePath = await uploadVideoFile(input);
+    stored = await storeVideoFile(input);
   } catch (err) {
     return { ok: false, error: uploadError(err) };
   }
 
-  const videoUrl = `${getApiBase()}/videos/${relativePath}`;
+  const videoFields = videoColumns(stored);
   const { data: userData } = await supabase.auth.getUser();
   // RLS가 로그인한 사람 기준으로 회의 행을 허용하므로, 저장 주체는 지금 세션을 우선합니다.
   const userId = userData.user?.id ?? input.createdBy ?? null;
@@ -165,7 +220,7 @@ export async function uploadBlobAndInsert(input: SaveInput): Promise<{ ok: true;
     const { error: updateError } = await supabase
       .from('meetings')
       .update({
-        video_url: videoUrl,
+        ...videoFields,
         title: input.title,
         attachments: input.attachments,
         chat_log: input.chatLog,
@@ -175,11 +230,11 @@ export async function uploadBlobAndInsert(input: SaveInput): Promise<{ ok: true;
     if (updateError && /attachments|chat_log/i.test(updateError.message)) {
       const { error: fallbackError } = await supabase
         .from('meetings')
-        .update({ video_url: videoUrl, title: input.title })
+        .update({ ...videoFields, title: input.title })
         .eq('id', existingId);
-      if (fallbackError) return { ok: false, error: fallbackError.message };
+      if (fallbackError) return { ok: false, error: explainVideoSaveError(fallbackError.message) };
     } else if (updateError) {
-      return { ok: false, error: updateError.message };
+      return { ok: false, error: explainVideoSaveError(updateError.message) };
     }
 
     rememberLastMeeting(existingId);
@@ -192,7 +247,7 @@ export async function uploadBlobAndInsert(input: SaveInput): Promise<{ ok: true;
     group_id: input.groupId,
     title: input.title,
     date: recordedAt,
-    video_url: videoUrl,
+    ...videoFields,
     created_by: userId,
   };
   const first = await supabase
@@ -205,11 +260,14 @@ export async function uploadBlobAndInsert(input: SaveInput): Promise<{ ok: true;
   if (first.error || !insertedId) {
     const canRetryWithoutAttach = !first.error || /attachments|chat_log/i.test(first.error.message);
     if (!canRetryWithoutAttach) {
-      return { ok: false, error: first.error.message };
+      return { ok: false, error: explainVideoSaveError(first.error.message) };
     }
     const second = await supabase.from('meetings').insert(baseRow).select('id').maybeSingle();
     if (second.error || !second.data?.id) {
-      return { ok: false, error: second.error?.message || first.error?.message || '회의록 저장에 실패했습니다.' };
+      return {
+        ok: false,
+        error: explainVideoSaveError(second.error?.message || first.error?.message || '회의록 저장에 실패했습니다.'),
+      };
     }
     insertedId = second.data.id as string;
   }

@@ -1,10 +1,56 @@
 import { getApiBase } from './apiBase';
 
+/** 목록·상세에 재생할 영상이 있는지. R2 키와 예전 디스크 주소를 같이 봅니다. */
+export function meetingHasStoredVideo(source: {
+  video_url?: string | null;
+  video_key?: string | null;
+} | null | undefined): boolean {
+  if (!source) return false;
+  return Boolean(source.video_url?.trim() || source.video_key?.trim());
+}
+
+/**
+ * 영상 상태 문구. 상태가 없는 예전 디스크 영상은 아무것도 보여 주지 않습니다.
+ * backed_up 도 저장이 끝난 상태라 화면에는 저장 완료로 둡니다.
+ */
+export function meetingVideoStatusLabel(status: string | null | undefined): string | null {
+  if (status === 'pending_upload') return '업로드 대기';
+  if (status === 'uploaded' || status === 'backed_up') return '저장 완료';
+  if (status === 'failed') return '업로드 실패';
+  return null;
+}
+
+/**
+ * 재생 주소.
+ * video_key(R2)가 있으면 서버가 1시간짜리 주소를 발급합니다.
+ * 없으면 예전 video_url(/videos/...)을 서버 디스크 재생 주소로 바꿉니다.
+ */
+export async function resolveMeetingVideoUrl(
+  videoUrl: string | null | undefined,
+  videoKey?: string | null,
+): Promise<string> {
+  const key = videoKey?.trim();
+  if (key) {
+    const res = await fetch(`${getApiBase()}/api/meetings/video-url?key=${encodeURIComponent(key)}`);
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const message = (errBody as { error?: string }).error || `재생 주소를 받지 못했습니다 (${res.status})`;
+      // 디스크에도 파일이 있으면 R2가 잠깐 실패해도 예전 주소로 재생합니다.
+      if (videoUrl?.trim()) return resolveLegacyMeetingVideoUrl(videoUrl);
+      throw new Error(message);
+    }
+    const data = (await res.json()) as { url?: string };
+    if (!data.url) throw new Error('재생 주소를 받지 못했습니다');
+    return data.url;
+  }
+  return resolveLegacyMeetingVideoUrl(videoUrl || '');
+}
+
 /**
  * DB의 video_url → 서버 컴퓨터에서 재생하는 주소
- * 영상 파일은 Storage에 없고 서버 디스크에만 있으므로 Supabase Storage는 호출하지 않습니다.
+ * 예전 영상은 Storage가 아니라 서버 디스크에 있으므로 Supabase Storage는 호출하지 않습니다.
  */
-export async function resolveMeetingVideoUrl(videoUrl: string): Promise<string> {
+function resolveLegacyMeetingVideoUrl(videoUrl: string): string {
   let path = videoUrl.trim();
   if (!path) return videoUrl;
 

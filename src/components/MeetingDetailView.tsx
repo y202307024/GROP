@@ -3,7 +3,12 @@ import Icon from './Icon';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import { chatLogForSummary } from '../utils/liveMeeting';
-import { primeWebmSeeking, resolveMeetingVideoUrl } from '../utils/meetingVideo';
+import {
+  meetingHasStoredVideo,
+  meetingVideoStatusLabel,
+  primeWebmSeeking,
+  resolveMeetingVideoUrl,
+} from '../utils/meetingVideo';
 import {
   findActiveChapterIndex,
   formatTimestamp,
@@ -19,6 +24,10 @@ type Meeting = {
   date: string;
   summary: string | null;
   video_url: string | null;
+  /** R2 객체 키. 있으면 재생·요약은 이 키를 쓰고, 없으면 video_url(예전 디스크)을 씁니다. */
+  video_key?: string | null;
+  /** pending_upload | uploaded | backed_up | failed */
+  video_status?: string | null;
   group_id: string;
   created_at?: string | null;
   chapters?: unknown;
@@ -490,22 +499,25 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   }, [meeting]);
 
   useEffect(() => {
-    if (!meeting?.video_url) {
+    const videoKey = meeting?.video_key?.trim() || '';
+    const videoUrl = meeting?.video_url?.trim() || '';
+    // R2 키가 있으면 재생 주소를 다시 받고, 없으면 예전 /videos 경로를 그대로 씁니다.
+    if (!videoKey && !videoUrl) {
       setPlaybackUrl(null);
       setPlaybackError('');
       return;
     }
     let mounted = true;
-    void resolveMeetingVideoUrl(meeting.video_url).then((url) => {
+    void resolveMeetingVideoUrl(videoUrl, videoKey).then((url) => {
       if (!mounted) return;
-      setPlaybackUrl(url);
-      setPlaybackError('');
-    }).catch(() => {
+      setPlaybackUrl(url || null);
+      setPlaybackError(url ? '' : '녹화 파일을 불러올 수 없습니다.');
+    }).catch((err: unknown) => {
       if (!mounted) return;
-      setPlaybackError('녹화 파일을 불러올 수 없습니다.');
+      setPlaybackError(err instanceof Error ? err.message : '녹화 파일을 불러올 수 없습니다.');
     });
     return () => { mounted = false; };
-  }, [meeting?.video_url]);
+  }, [meeting?.video_url, meeting?.video_key]);
 
   const fetchMeeting = async () => {
     const { data } = await supabase
@@ -577,7 +589,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   const generateAiSummary = async () => {
     if (!meeting) return;
     const chatAvailable = hasUsableChatLog(meeting.chat_log);
-    if (!meeting.video_url && !chatAvailable) {
+    const hasVideo = meetingHasStoredVideo(meeting);
+    if (!hasVideo && !chatAvailable) {
       alert('녹화 파일도, 채팅 기록도 없어요!');
       return;
     }
@@ -585,17 +598,17 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     setAiLoading(true);
 
     try {
-      setAiStep(meeting.video_url ? '🎙️ 음성 변환 중...' : '💬 채팅 기록 정리 중...');
-      // 브라우저는 https://localhost:5173/videos/... 로 재생하지만,
-      // 서버는 mkcert 인증서를 못 믿어서 그 주소로 다시 받으면 실패합니다.
-      // DB에 저장된 경로(또는 /videos/ 상대경로)를 그대로 넘기면 서버가 디스크에서 읽습니다.
+      setAiStep(hasVideo ? '🎙️ 음성 변환 중...' : '💬 채팅 기록 정리 중...');
+      // R2 영상이면 videoKey만 넘깁니다. 서버가 원본을 내려받아 음성만 추출합니다.
+      // 예전 영상은 video_url을 그대로 넘기고, 서버가 디스크에서 읽습니다.
       // 마이크 음성이 없는 회의(no-mic)에 대비해 채팅 기록도 함께 보내면,
       // 서버가 음성에서 텍스트를 못 뽑았을 때 채팅으로 대신 요약합니다.
+      const videoKey = meeting.video_key?.trim();
       const res = await fetch(`${getApiBase()}/api/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          videoUrl: meeting.video_url,
+          ...(videoKey ? { videoKey } : { videoUrl: meeting.video_url }),
           chatLog: chatLogForSummary(meeting.chat_log),
           // 모델이 날짜를 지어내지 않도록, 화면에 쓰는 것과 같은 날짜 문구를 넘깁니다.
           meetingDateLabel: formatDate(meeting.date),
@@ -783,7 +796,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     };
     const hasSummary = !!meeting.summary;
     // 녹화(마이크 유무 무관) 또는 채팅 기록 중 하나라도 있으면 요약을 만들 수 있습니다.
-    const canSummarize = !!meeting.video_url || hasUsableChatLog(meeting.chat_log);
+    const canSummarize = meetingHasStoredVideo(meeting) || hasUsableChatLog(meeting.chat_log);
+    const videoStatusLabel = meetingVideoStatusLabel(meeting.video_status);
     // 핵심요약 탭은 '회의 핵심 요약' 문단만 보여줍니다. 헤더가 없는 예전 글만 타임라인을 뺀 본문을 씁니다.
     const { core: coreSummary, timeline } = splitSummary(meeting.summary, chapters);
     const coreOverview = parseSummaryForPdf(meeting.summary).overview;
@@ -809,7 +823,13 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         {/* ---------- 회의 영상 ---------- */}
         <section className="panel ai-video-section">
           <div className="ai-video-header">
-            <span>회의 영상</span>
+            <span>
+              회의 영상
+              {/* 업로드 대기 / 저장 완료를 제목 옆에 작게 둡니다. 예전 영상은 상태가 없어 비어 있습니다. */}
+              {videoStatusLabel ? (
+                <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, opacity: 0.75 }}>{videoStatusLabel}</span>
+              ) : null}
+            </span>
             <div className="ai-video-tabs">
               <button
                 type="button"
@@ -829,7 +849,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
           </div>
 
           <div className="ai-video-body">
-            {meeting.video_url && playbackUrl ? (
+            {meetingHasStoredVideo(meeting) && playbackUrl ? (
               <video
                 ref={videoRef}
                 key={playbackUrl}
@@ -847,7 +867,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                 className="ai-video-placeholder"
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.9)', fontSize: 13 }}
               >
-                {meeting.video_url ? playbackError || '녹화 파일 불러오는 중...' : '녹화 파일이 없어요'}
+                {meetingHasStoredVideo(meeting) ? playbackError || videoStatusLabel || '녹화 파일 불러오는 중...' : '녹화 파일이 없어요'}
               </div>
             )}
 
@@ -1088,7 +1108,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   }
 
   // 녹화(마이크 유무 무관) 또는 채팅 기록 중 하나라도 있으면 요약을 만들 수 있습니다.
-  const canSummarize = !!meeting.video_url || hasUsableChatLog(meeting.chat_log);
+  const canSummarize = meetingHasStoredVideo(meeting) || hasUsableChatLog(meeting.chat_log);
+  const videoStatusLabel = meetingVideoStatusLabel(meeting.video_status);
 
   return (
     <div style={{ maxWidth: 720, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 20px' }}>
@@ -1109,8 +1130,14 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
 
       {/* 영상 섹션 */}
       <div style={{ background: '#fff', border: '0.5px solid #eee', borderRadius: 12, padding: 24, marginBottom: 20 }}>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>🎬 회의 녹화</div>
-        {meeting.video_url ? (
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>
+          🎬 회의 녹화
+          {/* 업로드 대기 / 저장 완료. 예전 디스크 영상은 상태가 없어 이 글이 없습니다. */}
+          {videoStatusLabel ? (
+            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: '#888' }}>{videoStatusLabel}</span>
+          ) : null}
+        </div>
+        {meetingHasStoredVideo(meeting) ? (
           playbackUrl ? (
             <video
               ref={videoRef}
@@ -1125,7 +1152,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
             />
           ) : (
             <div style={{ textAlign: 'center', padding: '32px 0', color: '#888', fontSize: 13 }}>
-              {playbackError || '녹화 파일 불러오는 중...'}
+              {playbackError || videoStatusLabel || '녹화 파일 불러오는 중...'}
             </div>
           )
         ) : (

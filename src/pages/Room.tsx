@@ -1129,7 +1129,7 @@ export default function Room() {
     }
   };
 
-  // 영상 파일은 서버 디스크에 올리고, meetings.video_url 에는 재생 URL만 저장합니다.
+  // 영상 원본은 브라우저가 R2에 직접 올리고, meetings에는 video_key와 업로드 상태만 저장합니다.
   // 올리기 전에 IndexedDB에 남겨 두어, 업로드나 회의록 저장이 실패해도 영상을 잃지 않습니다.
   const persistMeetingRecording = async (): Promise<{
     ok: boolean;

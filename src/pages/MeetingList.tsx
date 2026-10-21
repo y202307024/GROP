@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
+import { meetingHasStoredVideo, meetingVideoStatusLabel } from '../utils/meetingVideo';
 import s from './MeetingList.module.css';
 
 type Meeting = {
@@ -10,6 +11,8 @@ type Meeting = {
   date: string;
   summary: string | null;
   video_url: string | null;
+  video_key?: string | null;
+  video_status?: string | null;
   group_id: string;
   group_name?: string | null;
 };
@@ -68,15 +71,29 @@ export default function MeetingList() {
         if (g?.id && typeof g.name === 'string') nameById.set(g.id, g.name);
       }
 
-      const { data } = await supabase
+      // video_key 칸이 아직 없는 배포에서는 예전 칸만으로 목록을 보여 줍니다.
+      let rows: Meeting[] | null = null;
+      const withStatus = await supabase
         .from('meetings')
-        .select('id, title, date, summary, video_url, group_id')
+        .select('id, title, date, summary, video_url, video_key, video_status, group_id')
         .in('group_id', targetGroupIds)
         .order('date', { ascending: false });
+      if (withStatus.error && /video_key|video_status/i.test(withStatus.error.message)) {
+        const fallback = await supabase
+          .from('meetings')
+          .select('id, title, date, summary, video_url, group_id')
+          .in('group_id', targetGroupIds)
+          .order('date', { ascending: false });
+        if (fallback.error) console.warn('회의록 목록을 불러오지 못했습니다:', fallback.error.message);
+        rows = (fallback.data ?? null) as Meeting[] | null;
+      } else {
+        if (withStatus.error) console.warn('회의록 목록을 불러오지 못했습니다:', withStatus.error.message);
+        rows = (withStatus.data ?? null) as Meeting[] | null;
+      }
 
       if (!mounted) return;
       setMeetings(
-        (data ?? []).map((m) => ({
+        (rows ?? []).map((m) => ({
           ...m,
           group_name: nameById.get(m.group_id) ?? null,
         })),
@@ -162,7 +179,7 @@ export default function MeetingList() {
                                 })
                               }
                             >
-                              <span>{m.video_url ? '🎬' : '📄'}</span>
+                              <span>{meetingHasStoredVideo(m) ? '🎬' : '📄'}</span>
                               <div>
                                 <div className={s.meetingTitle}>
                                   {formatTime(m.date)} 회의
@@ -175,7 +192,19 @@ export default function MeetingList() {
                                 {m.summary && <div className={s.meetingSummary}>{m.summary}</div>}
                               </div>
                               <div className={s.pills}>
-                                {m.video_url && <span className={`${s.pill} ${s.pillInfo}`}>영상</span>}
+                                {meetingHasStoredVideo(m) && <span className={`${s.pill} ${s.pillInfo}`}>영상</span>}
+                                {meetingVideoStatusLabel(m.video_status) && (
+                                  <span className={`${s.pill} ${
+                                    m.video_status === 'failed'
+                                      ? s.pillDanger
+                                      : m.video_status === 'pending_upload'
+                                        ? s.pillWait
+                                        : s.pillOk
+                                  }`}
+                                  >
+                                    {meetingVideoStatusLabel(m.video_status)}
+                                  </span>
+                                )}
                                 {m.summary && <span className={s.pill}>메모</span>}
                               </div>
                             </div>

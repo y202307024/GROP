@@ -7,6 +7,7 @@ import MeetingDetailView from '../components/MeetingDetailView';
 import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
 import { liveIdentitiesFor, useLiveRooms } from '../utils/liveMeeting';
 import { readLastMeeting } from '../utils/lastMeeting';
+import { meetingVideoStatusLabel } from '../utils/meetingVideo';
 
 // 우측 회의 목록에 쓸 회의 행 타입 (문서 탭과 동일한 meetings 데이터)
 type MeetingRow = {
@@ -15,6 +16,8 @@ type MeetingRow = {
   date: string;
   summary: string | null;
   video_url?: string | null;
+  video_key?: string | null;
+  video_status?: string | null;
   group_id: string;
   attendees?: unknown;
   chat_log?: unknown;
@@ -78,7 +81,9 @@ export default function AiSummaryPage() {
       }
 
       // attendees 칸이 없어도 created_by 는 남겨야 참석자 아이콘이 전부 비지 않습니다.
+      // 맨 위는 R2 상태 칸을 포함합니다. SQL 적용 전이면 아래 예전 칸으로 내려갑니다.
       const meetingColumns = [
+        'id, title, date, summary, video_url, video_key, video_status, group_id, attendees, chat_log, created_by',
         'id, title, date, summary, video_url, group_id, attendees, chat_log, created_by',
         'id, title, date, summary, video_url, group_id, chat_log, created_by',
         'id, title, date, summary, video_url, group_id, created_by',
@@ -94,7 +99,7 @@ export default function AiSummaryPage() {
           data = res.data as unknown as MeetingRow[] | null;
           break;
         }
-        if (!/attendees|chat_log/i.test(res.error.message)) {
+        if (!/attendees|chat_log|video_key|video_status/i.test(res.error.message)) {
           console.warn('회의록 목록을 불러오지 못했습니다:', res.error.message);
           break;
         }
@@ -175,6 +180,7 @@ export default function AiSummaryPage() {
                 const inRoom = liveRooms.some((room) => room.meetingId === m.id);
                 const statusLabel = inRoom ? '진행중' : '완료';
                 const statusClass = inRoom ? 'progress' : 'done';
+                const videoLabel = meetingVideoStatusLabel(m.video_status);
                 const faceIds = attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id));
                 for (const id of liveIdentitiesFor(liveRooms, m.id)) {
                   if (!faceIds.includes(id)) faceIds.push(id);
@@ -187,7 +193,12 @@ export default function AiSummaryPage() {
                     style={active ? { borderColor: 'var(--color-primary)', background: '#faf8f6' } : undefined}
                   >
                     <div className="meeting-card-row-top">
-                      <span className="title">{m.title?.trim() || '회의'}</span>
+                      <span className="title">
+                        {m.title?.trim() || '회의'}
+                        {videoLabel ? (
+                          <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 600, color: '#888' }}>{videoLabel}</span>
+                        ) : null}
+                      </span>
                       <span className={`status-pill ${statusClass}`}>
                         {statusLabel}
                       </span>
