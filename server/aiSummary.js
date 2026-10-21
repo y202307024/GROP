@@ -160,20 +160,20 @@ ${inputKindLine}
 화제가 바뀌는 지점을 찾아 챕터로 나누고, 반드시 아래 구조의 JSON만 출력하세요.
 
 {
-  "overview": "회의 전체를 2~3문장으로 요약 (핵심요약용)",
+  "overview": "회의 전체를 6문장 이상으로 소개. 회의 목적, 다룬 안건, 나온 의견의 차이, 합의나 미결을 구체적으로 쓸 것. 한 줄 압축은 금지",
   "headline": "회의 날짜와 주제를 담은 제목 한 줄 (40자 이내). 예: 10월 8일 모니터 사양 검토",
   "topicLine": "이번 회의에서 실제로 다룬 내용을 한 줄로 (40자 이내). headline과 같은 문장을 반복하지 말 것",
   "chapters": [
-    { "time": 0, "title": "짧은 소제목 (20자 이내)", "summary": "이 구간에서 다룬 내용 1~2문장" }
+    { "time": 0, "title": "짧은 소제목 (20자 이내)", "summary": "이 구간에서 실제로 말한 내용 2~3문장" }
   ],
   "topics": [
-    { "topic": "논의 주제 이름 (예: 모니터 사양, 응답속도, 가격)", "detail": "그 주제로 오간 이야기를 3~5문장으로 자세히 정리. 나온 수치·의견·비교 내용을 포함" }
+    { "topic": "논의 주제 이름 (예: 모니터 사양, 응답속도, 가격)", "detail": "그 주제만 5~8문장으로 자세히 서술. 누가 어떤 의견을 냈는지, 수치·제품명·비교·이유·반론·결론을 빠뜨리지 말 것" }
   ],
   "speakers": [
-    { "speaker": "화자 1", "summary": "이 화자가 회의에서 한 이야기를 2~4문장으로 요약" }
+    { "speaker": "화자 1", "summary": "이 화자가 회의에서 한 이야기를 3~5문장으로 요약" }
   ],
-  "decisions": ["확정된 결정 사항"],
-  "actionItems": ["담당자와 할 일"]
+  "decisions": ["확정된 결정을 이유와 함께 한 문장으로"],
+  "actionItems": ["담당자가 있으면 이름과 함께 할 일을 한 문장으로"]
 }
 
 규칙:
@@ -184,8 +184,9 @@ ${inputKindLine}
 - headline과 topicLine은 각각 한 줄입니다. 줄바꿈·목록·따옴표로 감싸지 마세요.
 - ${dateHint}
 - topicLine은 입력에 실제로 나온 주제만 쓰고, headline의 문장을 그대로 복사하지 마세요.
-- topics는 '시간'이 아니라 '무엇에 대해 이야기했는지' 기준으로 묶으세요. 2~6개가 적당합니다.
-- topics의 detail은 입력에 실제로 나온 내용만 쓰고, 없는 내용을 지어내지 마세요.
+- topics는 '시간'이 아니라 '무엇에 대해 이야기했는지' 기준으로 묶으세요. 녹취록에 나온 안건은 빠뜨리지 말고 2~8개로 나누세요.
+- topics의 detail은 입력에 실제로 나온 내용만 쓰고, 없는 내용을 지어내지 마세요. 한 문장으로 줄이지 마세요.
+- overview와 topics를 합치면 회의를 다시 읽지 않아도 논의 흐름이 이해되어야 합니다. 타임스탬프는 overview와 topics에 넣지 마세요.
 - ${speakerRule}
 - 내용이 없는 항목은 빈 배열로 두세요.`,
     },
@@ -307,8 +308,12 @@ function normalizeChapters(raw, durationSec) {
   return deduped
 }
 
-/** 구조화된 결과 → meetings.summary에 저장할 사람이 읽는 텍스트 */
-function buildSummaryText(result, chapters) {
+/**
+ * 구조화된 결과 → meetings.summary에 저장할 사람이 읽는 텍스트.
+ * 주제별 상세(topics)는 타임라인과 따로 두어, 화면의 핵심 요약과 PDF 본문에 남깁니다.
+ * @param {{ topic: string, detail: string }[]} topics
+ */
+function buildSummaryText(result, chapters, topics = []) {
   const lines = []
 
   lines.push('📋 회의 핵심 요약')
@@ -322,6 +327,16 @@ function buildSummaryText(result, chapters) {
       if (c.summary) lines.push(`    ${c.summary}`)
     }
     lines.push('')
+  }
+
+  // 시간 순 목차와 별개로, 안건마다 오간 이야기를 본문에 남깁니다.
+  if (topics.length > 0) {
+    lines.push('📝 논의 내용')
+    for (const topic of topics) {
+      lines.push(topic.topic)
+      if (topic.detail) lines.push(topic.detail)
+      lines.push('')
+    }
   }
 
   const decisions = Array.isArray(result.decisions) ? result.decisions.filter(Boolean) : []
@@ -474,7 +489,6 @@ async function summarizeMeeting({ loadVideo, chatLog, meetingDateLabel = '' }) {
   const parsed = await completeMeetingJson(transcriptForLlm, usedChatFallback, String(meetingDateLabel || '').trim())
 
   const chapters = normalizeChapters(parsed.chapters, durationSec)
-  const summaryText = buildSummaryText(parsed, chapters)
 
   // 주제별요약: { topic, detail } 배열만 추려서 그대로 넘깁니다.
   const topics = Array.isArray(parsed.topics)
@@ -482,6 +496,7 @@ async function summarizeMeeting({ loadVideo, chatLog, meetingDateLabel = '' }) {
         .filter((t) => t && typeof t.topic === 'string' && t.topic.trim())
         .map((t) => ({ topic: String(t.topic).trim(), detail: String(t.detail || '').trim() }))
     : []
+  const summaryText = buildSummaryText(parsed, chapters, topics)
   // 발언자별요약: { speaker, summary } (녹취록에 화자 표시가 없어 LLM 추정치)
   const speakers = Array.isArray(parsed.speakers)
     ? parsed.speakers

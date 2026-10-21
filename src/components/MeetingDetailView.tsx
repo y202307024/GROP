@@ -156,14 +156,21 @@ function attendeeNames(meeting: Meeting): string[] {
 }
 
 function topicNames(raw: unknown): string[] {
+  return normalizeTopics(raw).map((t) => t.topic);
+}
+
+/** meetings.topics → { topic, detail }[]. PDF 본문은 시간 대신 이 주제 설명을 씁니다. */
+function normalizeTopics(raw: unknown): { topic: string; detail: string }[] {
   if (!Array.isArray(raw)) return [];
-  const names: string[] = [];
+  const list: { topic: string; detail: string }[] = [];
   for (const item of raw) {
-    const rec = item as { topic?: unknown };
+    const rec = item as { topic?: unknown; detail?: unknown };
     const topic = typeof rec?.topic === 'string' ? rec.topic.replace(/\s+/g, ' ').trim() : '';
-    if (topic && !names.includes(topic)) names.push(topic);
+    const detail = typeof rec?.detail === 'string' ? rec.detail.replace(/\s+/g, ' ').trim() : '';
+    if (!topic || list.some((t) => t.topic === topic)) continue;
+    list.push({ topic, detail });
   }
-  return names;
+  return list;
 }
 
 /**
@@ -605,8 +612,13 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     setAiStep('');
   };
 
+  /**
+   * 회의록 PDF(인쇄).
+   * 시간 목차와 타임라인 블록은 빼고, 핵심 요약 뒤에 주제별 설명을 본문으로 붙입니다.
+   * 주제 데이터가 없는 예전 회의는 타임스탬프만 지운 구간 설명을 대신 씁니다.
+   */
   const downloadSummary = () => {
-    if (!meeting?.summary) return;
+    if (!meeting?.summary && normalizeTopics(meeting?.topics).length === 0) return;
 
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
@@ -618,35 +630,48 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
 
-    const chapterRows = chapters.length > 0
-      ? `<div class="chapters"><div class="chapters-title">🕘 타임라인</div>${chapters
-          .map((c) => `<div class="chapter"><span class="t">${formatTimestamp(c.time)}</span> ${escapeHtml(c.title)}</div>`)
-          .join('')}</div>`
+    const { core, timeline } = splitSummary(meeting?.summary ?? null, chapters);
+    const topics = normalizeTopics(meeting?.topics);
+    // 새 요약은 본문에 논의 내용이 이미 들어 있습니다. 예전 요약만 주제 표를 따로 붙입니다.
+    const sections = core.includes('논의 내용')
+      ? []
+      : topics.length > 0
+      ? topics.map((t) => ({ title: t.topic, body: t.detail }))
+      : timeline
+          .filter((c) => c.title || c.summary)
+          .map((c) => ({ title: c.title, body: c.summary ?? '' }));
+
+    const sectionHtml = sections.length > 0
+      ? `<h2 class="section-title">논의 내용</h2>${sections
+          .map((s) => `<section class="block"><h3>${escapeHtml(s.title)}</h3>${
+            s.body ? `<p>${escapeHtml(s.body)}</p>` : ''
+          }</section>`)
+          .join('')}`
       : '';
 
     printWindow.document.write(`
       <html>
         <head>
           <meta charset="utf-8">
-          <title>${escapeHtml(meeting.title)}_회의록</title>
+          <title>${escapeHtml(meeting?.title ?? '회의록')}_회의록</title>
           <style>
             body { font-family: 'Malgun Gothic', sans-serif; padding: 40px; line-height: 1.8; color: #333; }
             h1 { font-size: 22px; margin-bottom: 6px; color: #111; }
+            h2.section-title { font-size: 16px; margin: 28px 0 12px; color: #111; }
+            h3 { font-size: 15px; margin: 0 0 6px; color: #085041; }
             .date { color: #888; font-size: 13px; margin-bottom: 28px; }
             hr { border: none; border-top: 1px solid #eee; margin-bottom: 24px; }
-            .chapters { margin-bottom: 24px; }
-            .chapters-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
-            .chapter { font-size: 13px; margin-bottom: 4px; }
-            .chapter .t { display: inline-block; min-width: 54px; color: #085041; font-weight: 600; }
             .content { font-size: 14px; white-space: pre-wrap; line-height: 2; }
+            .block { margin: 0 0 18px; }
+            .block p { margin: 0; font-size: 14px; line-height: 1.9; }
           </style>
         </head>
         <body>
-          <h1>${escapeHtml(meeting.title)}</h1>
-          <div class="date">📅 ${formatDate(meeting.date)} · 🕐 ${formatTime(meeting.date)}</div>
+          <h1>${escapeHtml(meeting?.title ?? '회의록')}</h1>
+          <div class="date">📅 ${formatDate(meeting?.date ?? '')} · 🕐 ${formatTime(meeting?.date ?? '')}</div>
           <hr />
-          ${chapterRows}
-          <div class="content">${escapeHtml(meeting.summary)}</div>
+          ${core ? `<div class="content">${escapeHtml(core)}</div>` : ''}
+          ${sectionHtml}
           <script>window.onload = () => { window.print(); }</script>
         </body>
       </html>
