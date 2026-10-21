@@ -347,6 +347,69 @@ function splitSummary(rawSummary: string | null, chapters: MeetingChapter[]): {
   return { core, timeline: chapters.length > 0 ? chapters : parsed };
 }
 
+/** PDF 섹션 헤더. '📋 회의 핵심 요약'처럼 짧은 줄만 헤더로 봅니다. */
+function isPdfSectionHeader(line: string, keyword: string) {
+  const text = line.trim();
+  return text.length > 0 && text.length <= 24 && text.includes(keyword);
+}
+
+/**
+ * PDF용으로 요약 텍스트를 나눕니다.
+ * 핵심 요약 문단, 결정 목록, 논의 내용만 꺼내고 타임라인·다음 할 일은 버립니다.
+ */
+function parseSummaryForPdf(raw: string | null): {
+  overview: string;
+  decisions: string[];
+  discussion: { title: string; body: string }[];
+} {
+  const lines = (raw ?? '').split('\n');
+  let section: 'none' | 'overview' | 'discussion' | 'decisions' | 'skip' = 'none';
+  const overviewLines: string[] = [];
+  const decisions: string[] = [];
+  const discussionLines: string[] = [];
+
+  for (const line of lines) {
+    const text = line.trim();
+    if (isPdfSectionHeader(text, '핵심 요약')) { section = 'overview'; continue; }
+    if (isPdfSectionHeader(text, '타임라인')) { section = 'skip'; continue; }
+    if (isPdfSectionHeader(text, '논의 내용')) { section = 'discussion'; continue; }
+    if (isPdfSectionHeader(text, '결정')) { section = 'decisions'; continue; }
+    if (isPdfSectionHeader(text, '다음 할 일') || isPdfSectionHeader(text, '할 일')) { section = 'skip'; continue; }
+
+    if (section === 'overview') overviewLines.push(line);
+    else if (section === 'decisions') {
+      const item = text.replace(/^[-*•]\s*/, '').trim();
+      if (item) decisions.push(item);
+    } else if (section === 'discussion') discussionLines.push(line);
+  }
+
+  // 논의 내용은 '제목 / 본문 / 빈 줄'로 저장됩니다.
+  const discussion: { title: string; body: string }[] = [];
+  let title = '';
+  let body: string[] = [];
+  const flush = () => {
+    if (!title && body.length === 0) return;
+    discussion.push({ title, body: body.join(' ').trim() });
+    title = '';
+    body = [];
+  };
+  for (const line of discussionLines) {
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    if (!title) title = line.trim();
+    else body.push(line.trim());
+  }
+  flush();
+
+  return {
+    overview: overviewLines.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
+    decisions,
+    discussion: discussion.filter((item) => item.title || item.body),
+  };
+}
+
 /**
  * 회의록 상세 본문 (영상 녹화 + AI 회의록)
  * - 단독 페이지(MeetingDetail)와 AI 요약 탭의 왼쪽 열에서 함께 씁니다.
@@ -614,8 +677,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
 
   /**
    * 회의록 PDF(인쇄).
-   * 시간 목차와 타임라인 블록은 빼고, 핵심 요약 뒤에 주제별 설명을 본문으로 붙입니다.
-   * 주제 데이터가 없는 예전 회의는 타임스탬프만 지운 구간 설명을 대신 씁니다.
+   * 맨 위는 결정 사항, 그 다음 회의 핵심 요약 문단만, 이어서 논의 내용입니다.
+   * 타임라인과 다음 할 일은 인쇄하지 않습니다.
    */
   const downloadSummary = () => {
     if (!meeting?.summary && normalizeTopics(meeting?.topics).length === 0) return;
@@ -630,19 +693,28 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
 
-    const { core, timeline } = splitSummary(meeting?.summary ?? null, chapters);
+    const parsed = parseSummaryForPdf(meeting?.summary ?? null);
+    const { timeline } = splitSummary(meeting?.summary ?? null, chapters);
     const topics = normalizeTopics(meeting?.topics);
-    // 새 요약은 본문에 논의 내용이 이미 들어 있습니다. 예전 요약만 주제 표를 따로 붙입니다.
-    const sections = core.includes('논의 내용')
-      ? []
+    // 본문에 논의 내용이 있으면 그걸 쓰고, 예전 요약은 주제 표나 구간 설명으로 채웁니다.
+    const sections = parsed.discussion.length > 0
+      ? parsed.discussion
       : topics.length > 0
-      ? topics.map((t) => ({ title: t.topic, body: t.detail }))
-      : timeline
-          .filter((c) => c.title || c.summary)
-          .map((c) => ({ title: c.title, body: c.summary ?? '' }));
+        ? topics.map((t) => ({ title: t.topic, body: t.detail }))
+        : timeline
+            .filter((c) => c.title || c.summary)
+            .map((c) => ({ title: c.title, body: c.summary ?? '' }));
 
+    const decisionHtml = parsed.decisions.length > 0
+      ? `<h2 class="section-title">✅ 결정 사항</h2><ul class="decisions">${parsed.decisions
+          .map((item) => `<li>${escapeHtml(item)}</li>`)
+          .join('')}</ul>`
+      : '';
+    const overviewHtml = parsed.overview
+      ? `<h2 class="section-title">📋 회의 핵심 요약</h2><div class="content">${escapeHtml(parsed.overview)}</div>`
+      : '';
     const sectionHtml = sections.length > 0
-      ? `<h2 class="section-title">논의 내용</h2>${sections
+      ? `<h2 class="section-title">📝 논의 내용</h2>${sections
           .map((s) => `<section class="block"><h3>${escapeHtml(s.title)}</h3>${
             s.body ? `<p>${escapeHtml(s.body)}</p>` : ''
           }</section>`)
@@ -658,10 +730,12 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
             body { font-family: 'Malgun Gothic', sans-serif; padding: 40px; line-height: 1.8; color: #333; }
             h1 { font-size: 22px; margin-bottom: 6px; color: #111; }
             h2.section-title { font-size: 16px; margin: 28px 0 12px; color: #111; }
+            h2.section-title:first-of-type { margin-top: 0; }
             h3 { font-size: 15px; margin: 0 0 6px; color: #085041; }
             .date { color: #888; font-size: 13px; margin-bottom: 28px; }
             hr { border: none; border-top: 1px solid #eee; margin-bottom: 24px; }
             .content { font-size: 14px; white-space: pre-wrap; line-height: 2; }
+            .decisions { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.9; }
             .block { margin: 0 0 18px; }
             .block p { margin: 0; font-size: 14px; line-height: 1.9; }
           </style>
@@ -670,7 +744,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
           <h1>${escapeHtml(meeting?.title ?? '회의록')}</h1>
           <div class="date">📅 ${formatDate(meeting?.date ?? '')} · 🕐 ${formatTime(meeting?.date ?? '')}</div>
           <hr />
-          ${core ? `<div class="content">${escapeHtml(core)}</div>` : ''}
+          ${decisionHtml}
+          ${overviewHtml}
           ${sectionHtml}
           <script>window.onload = () => { window.print(); }</script>
         </body>
