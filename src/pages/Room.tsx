@@ -68,6 +68,30 @@ function missingMeetingsColumn(message: string): string | null {
   return null;
 }
 
+/** 새로고침 후에도 이 방이 녹화 중이었는지 기억합니다. 나가기 버튼을 누르면 지웁니다. */
+function recordingFlagKey(groupId: string) {
+  return `grop-recording:${groupId}`;
+}
+
+function rememberRecording(groupId: string | undefined, active: boolean) {
+  if (!groupId) return;
+  try {
+    if (active) sessionStorage.setItem(recordingFlagKey(groupId), '1');
+    else sessionStorage.removeItem(recordingFlagKey(groupId));
+  } catch {
+    // 사생활 모드처럼 저장이 막혀도 녹화 자체는 계속합니다.
+  }
+}
+
+function wasRecording(groupId: string | undefined) {
+  if (!groupId) return false;
+  try {
+    return sessionStorage.getItem(recordingFlagKey(groupId)) === '1';
+  } catch {
+    return false;
+  }
+}
+
 function formatMeetingElapsed(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -137,6 +161,13 @@ function RoomTopHeader({
  * 회의방에 있는 사람 user id를 부모 ref에 모읍니다.
  * 녹화 저장·나가기는 LiveKit 바깥에서 돌아서, 그 시점의 참가자 목록을 직접 못 읽습니다.
  */
+/** 지금 방에 있는 사람 수. 로컬 참가자도 포함하므로 1이면 혼자 남은 것입니다. */
+function ParticipantCountTracker({ countRef }: { countRef: RefObject<number> }) {
+  const participants = useParticipants();
+  countRef.current = participants.length;
+  return null;
+}
+
 function MeetingAttendeesTracker({ attendeeIdsRef }: { attendeeIdsRef: RefObject<string[]> }) {
   const participants = useParticipants();
 
@@ -213,31 +244,75 @@ function MeetingAudioSetup() {
 function RecordingDataSync({
   userId,
   syncRef,
+  isRecordingRef,
   onRemoteStart,
   onRemoteStop,
+  onResume,
 }: {
   userId: string;
   syncRef: RefObject<RecordingSyncHandle | null>;
+  /** 지금 이 클라이언트가 녹화 중인지. 늦게 들어온 사람에게 상태를 알려 줄 때 씁니다. */
+  isRecordingRef: RefObject<boolean>;
   onRemoteStart: () => void;
   onRemoteStop: () => void;
+  /** 새로고침 전에 녹화 중이었으면 다시 시작합니다. */
+  onResume?: () => void;
 }) {
   const room = useRoomContext();
   const onRemoteStartRef = useRef(onRemoteStart);
   const onRemoteStopRef = useRef(onRemoteStop);
+  const onResumeRef = useRef(onResume);
   onRemoteStartRef.current = onRemoteStart;
   onRemoteStopRef.current = onRemoteStop;
+  onResumeRef.current = onResume;
 
   useEffect(() => {
+    const publish = (type: 'recording:start' | 'recording:query', to?: string) => (
+      room.localParticipant.publishData(
+        encodeRecordingSyncMessage({ type, from: userId }),
+        {
+          reliable: true,
+          topic: MEETING_RECORDING_TOPIC,
+          destinationIdentities: to ? [to] : undefined,
+        },
+      )
+    );
+
     const handler = (payload: Uint8Array, _participant?: unknown, _kind?: unknown, topic?: string) => {
       if (topic && topic !== MEETING_RECORDING_TOPIC) return;
       const msg = decodeRecordingSyncMessage(payload);
       if (!msg || msg.from === userId) return;
       if (msg.type === 'recording:start') onRemoteStartRef.current();
       else if (msg.type === 'recording:stop') onRemoteStopRef.current();
+      else if (msg.type === 'recording:query' && isRecordingRef.current) {
+        // 시작 신호는 저장되지 않습니다. 새로 들어온 사람이 물으면 지금 녹화 중일 때만 다시 알려 줍니다.
+        void publish('recording:start', msg.from).catch((err) => {
+          console.warn('녹화 상태 전달 실패:', err);
+        });
+      }
     };
     room.on(RoomEvent.DataReceived, handler);
-    return () => { room.off(RoomEvent.DataReceived, handler); };
-  }, [room, userId]);
+
+    // 입장·재연결 때 이미 녹화 중인지 방에 물어 봅니다.
+    const ask = () => {
+      if (room.state !== 'connected') return;
+      // 새로고침으로 녹화기가 사라져도, 이 탭이 녹화 중이었으면 다시 켭니다.
+      onResumeRef.current?.();
+      if (isRecordingRef.current) return;
+      void publish('recording:query').catch((err) => {
+        console.warn('녹화 상태 요청 실패:', err);
+      });
+    };
+    ask();
+    room.on(RoomEvent.Connected, ask);
+    room.on(RoomEvent.Reconnected, ask);
+
+    return () => {
+      room.off(RoomEvent.DataReceived, handler);
+      room.off(RoomEvent.Connected, ask);
+      room.off(RoomEvent.Reconnected, ask);
+    };
+  }, [room, userId, isRecordingRef]);
 
   useEffect(() => {
     syncRef.current = {
@@ -322,7 +397,9 @@ function RoomContent({
   onToggleRecord,
   onRemoteStartRecording,
   onRemoteStopRecording,
+  onResumeRecording,
   isRecording,
+  isRecordingRef,
   savingRecording,
   canRecord = true,
   canDrawBoard = true,
@@ -346,7 +423,9 @@ function RoomContent({
   onToggleRecord: () => void;
   onRemoteStartRecording: () => void;
   onRemoteStopRecording: () => void;
+  onResumeRecording?: () => void;
   isRecording: boolean;
+  isRecordingRef: RefObject<boolean>;
   savingRecording: boolean;
   canRecord?: boolean;
   canDrawBoard?: boolean;
@@ -551,8 +630,10 @@ function RoomContent({
       <RecordingDataSync
         userId={userId}
         syncRef={recordingSyncRef}
+        isRecordingRef={isRecordingRef}
         onRemoteStart={onRemoteStartRecording}
         onRemoteStop={onRemoteStopRecording}
+        onResume={onResumeRecording}
       />
       <RoomRecordingBridge bridgeRef={recordingBridgeRef} />
       {(isRecording || savingRecording) ? (
@@ -728,6 +809,10 @@ export default function Room() {
   const isRecordingRef = useRef(false);
   /** 이 방에서 녹화가 한 번이라도 켜졌는지. 나갈 때 남은 사람 녹화를 같이 끊을지 판단합니다. */
   const sharedRecordingRef = useRef(false);
+  /** 늦게 들어온 쪽의 녹화 따라하기. 종료 신호가 오면 재시도를 멈춥니다. */
+  const followRecordingRef = useRef(false);
+  /** 지금 방에 연결된 사람 수. 나가기 전에 마지막 참가자인지 판단합니다. */
+  const participantCountRef = useRef(1);
   /** persist 중인지 — 나가기 버튼이 저장을 끊지 않게 합니다. */
   const savingRecordingRef = useRef(false);
   /** 녹화 시작 준비 중(캡처 생성) — 중복 클릭 방지 */
@@ -1103,15 +1188,24 @@ export default function Room() {
     if (discardChunks) recordedChunksRef.current = [];
   };
 
-  const startRecording = async (opts?: { remote?: boolean }) => {
+  const startRecording = async (opts?: { remote?: boolean; attempt?: number }) => {
     // mediaRecorderRef 가 남아 있어도 조용히 return 하지 않습니다. (예전엔 버튼이 안 눌린 것처럼 보임)
     if (isRecordingRef.current || startingRecordingRef.current || savingRecording) return;
+    if (opts?.remote && !followRecordingRef.current) return;
     startingRecordingRef.current = true;
 
     const container = recordingAreaRef.current;
     const canvasEl = canvasBoardRef.current?.getCanvasElement();
     if (!container || !canvasEl || !('captureStream' in canvasEl)) {
       startingRecordingRef.current = false;
+      const attempt = opts?.attempt ?? 0;
+      // 입장 직후에는 캔버스가 아직 없습니다. 녹화 중이라는 답을 받았으면 잠시 뒤 다시 시작합니다.
+      if (opts?.remote && followRecordingRef.current && attempt < 8) {
+        window.setTimeout(() => {
+          void startRecording({ remote: true, attempt: attempt + 1 });
+        }, 400);
+        return;
+      }
       if (!opts?.remote) {
         alert('회의 화면 녹화를 시작할 수 없습니다. 캔버스가 준비된 뒤 다시 시도해 주세요.');
       }
@@ -1178,6 +1272,7 @@ export default function Room() {
       isRecordingRef.current = true;
       sharedRecordingRef.current = true;
       setIsRecording(true);
+      rememberRecording(groupIdRef.current, true);
 
       if (!opts?.remote) {
         recordingSyncRef.current?.broadcastStart();
@@ -1261,7 +1356,8 @@ export default function Room() {
       return;
     }
     if (isRecording) {
-      // 먼저 다른 참가자 녹화를 끊은 뒤에 저장합니다. 안 그러면 남은 사람이 회의를 따로 만듭니다.
+      // 녹화 종료 버튼을 누른 경우에만 모두의 녹화를 끊습니다. 그냥 나가기는 마지막 사람만 종료합니다.
+      rememberRecording(groupIdRef.current, false);
       void (async () => {
         try {
           await recordingSyncRef.current?.broadcastStop();
@@ -1280,20 +1376,17 @@ export default function Room() {
       isRecordingRef.current
       || mediaRecorderRef.current?.state === 'recording'
       || recordedChunksRef.current.length > 0;
-    // 연결이 끊기기 전에 종료 신호를 보냅니다. 이미 끈 뒤에도 한 번 더 보내 남은 사람 녹화가 따로 이어지지 않게 합니다.
-    if (recorderActive || sharedRecordingRef.current) {
-      try {
-        await recordingSyncRef.current?.broadcastStop();
-      } catch (err) {
-        console.warn('녹화 종료 알림 전달 실패:', err);
-      }
-    }
+    // 1명만 남았을 때만 녹화를 끝내고 나갑니다. 다른 사람이 있으면 그 사람들 녹화는 이어집니다.
+    const isLastParticipant = participantCountRef.current <= 1;
 
     setSaving(true);
 
     try {
-      // 녹화 중이면 버리지 않고 회의록에 저장한 뒤 나갑니다.
-      if (recorderActive || savingRecordingRef.current) {
+      if (!isLastParticipant) {
+        // 이 브라우저만 나갑니다. 방에 남은 사람의 녹화 표시는 그대로 둡니다.
+        rememberRecording(id, false);
+      } else if (recorderActive || savingRecordingRef.current) {
+        rememberRecording(id, false);
         if (!savingRecordingRef.current) {
           await stopRecordingAndSave({ save: true });
         } else {
@@ -1377,6 +1470,7 @@ export default function Room() {
         >
           <MicInsecureBanner />
           <RoomTopHeader isRecording={isRecording} openedAtRef={roomOpenedAtRef} />
+          <ParticipantCountTracker countRef={participantCountRef} />
           <MeetingAttendeesTracker attendeeIdsRef={attendeeIdsRef} />
           <RoomContent
             groupId={id}
@@ -1391,9 +1485,22 @@ export default function Room() {
             sessionMeetingIdRef={sessionMeetingIdRef}
             onLeave={handleLeave}
             onToggleRecord={toggleRecording}
-            onRemoteStartRecording={() => { void startRecording({ remote: true }); }}
-            onRemoteStopRecording={() => { void stopRecordingAndSave({ save: false }); }}
+            onRemoteStartRecording={() => {
+              followRecordingRef.current = true;
+              void startRecording({ remote: true });
+            }}
+            onRemoteStopRecording={() => {
+              followRecordingRef.current = false;
+              rememberRecording(id, false);
+              void stopRecordingAndSave({ save: false });
+            }}
+            onResumeRecording={() => {
+              if (!wasRecording(id)) return;
+              followRecordingRef.current = true;
+              void startRecording({ remote: true });
+            }}
             isRecording={isRecording}
+            isRecordingRef={isRecordingRef}
             savingRecording={savingRecording}
             canRecord={allowRecord}
             canDrawBoard={allowDraw}
