@@ -5,6 +5,7 @@ import { addGroupMember, joinGroupByInviteCode } from '../utils/joinGroup';
 import AppShell from '../components/AppShell';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
+import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
 
 function rndCode() {
   const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -25,6 +26,9 @@ type MeetingRow = {
   date: string;
   summary: string | null;
   group_id: string;
+  attendees?: unknown;
+  chat_log?: unknown;
+  created_by?: string | null;
 };
 
 function formatMeetingDate(dateStr: string) {
@@ -97,6 +101,8 @@ export default function MainPage() {
   const [groupName, setGroupName] = useState('');
   const [groups, setGroups] = useState<Group[]>([]);
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
+  const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
+  const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
   /** 소속 그룹 중 가장 가까운 예정 회의 (캘린더 패널용) */
   const [nextMeeting, setNextMeeting] = useState<MeetingRow | null>(null);
   const [inviteInput, setInviteInput] = useState(searchParams.get('code')?.toUpperCase() ?? '');
@@ -139,13 +145,24 @@ export default function MainPage() {
       setNextMeeting(null);
       return;
     }
-    const { data: meetingRows } = await supabase
+    const withPeople = await supabase
       .from('meetings')
-      .select('id, title, date, summary, group_id')
+      .select('id, title, date, summary, group_id, attendees, chat_log, created_by')
       .in('group_id', ids)
       .order('date', { ascending: false })
       .limit(4);
+    const meetingRows = withPeople.error
+      ? (await supabase
+        .from('meetings')
+        .select('id, title, date, summary, group_id')
+        .in('group_id', ids)
+        .order('date', { ascending: false })
+        .limit(4)).data
+      : withPeople.data;
     setMeetings(meetingRows || []);
+    const faces = await loadGroupFaceIndex(ids);
+    setAvatarByUserId(faces.avatarByUserId);
+    setNicknameToIdByGroup(faces.nicknameToIdByGroup);
 
     // 캘린더: 지금 이후 일정 중 가장 가까운 1건
     const nowIso = new Date().toISOString();
@@ -279,11 +296,10 @@ export default function MainPage() {
                 {m.summary ? '완료' : '진행중'}
               </span>
               <span className="date">{formatMeetingDate(m.date)}</span>
-              <span className="attendees">
-                <Icon name="circle-user" />
-                <Icon name="circle-user" />
-                <Icon name="circle-user" />
-              </span>
+              <MeetingAttendeeFaces
+                ids={attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id))}
+                avatarByUserId={avatarByUserId}
+              />
               <span className="ai-icon">
                 {m.summary
                   ? <Icon name="check-circle" className="done" />

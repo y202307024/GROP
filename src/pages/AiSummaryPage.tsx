@@ -4,6 +4,7 @@ import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import MeetingDetailView from '../components/MeetingDetailView';
+import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
 import { readLastMeeting } from '../utils/lastMeeting';
 
 // 우측 회의 목록에 쓸 회의 행 타입 (문서 탭과 동일한 meetings 데이터)
@@ -14,6 +15,9 @@ type MeetingRow = {
   summary: string | null;
   video_url?: string | null;
   group_id: string;
+  attendees?: unknown;
+  chat_log?: unknown;
+  created_by?: string | null;
 };
 
 /** '2026.09.06 10:00AM' 형식으로 회의 날짜를 표시합니다. */
@@ -41,6 +45,8 @@ export default function AiSummaryPage() {
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
   // 왼쪽에 표시할 회의 id. 목록을 누르면 여기가 바뀝니다.
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
+  const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
 
   useEffect(() => {
     let mounted = true;
@@ -68,14 +74,28 @@ export default function AiSummaryPage() {
         return;
       }
 
-      const { data, error } = await supabase
+      const withPeople = await supabase
         .from('meetings')
-        .select('id, title, date, summary, video_url, group_id')
+        .select('id, title, date, summary, video_url, group_id, attendees, chat_log, created_by')
         .in('group_id', ids)
         .order('date', { ascending: false });
+      // 참석자 컬럼이 아직 없는 DB는 목록 자체는 기존 칸만으로 불러옵니다.
+      const fallback = withPeople.error
+        ? await supabase
+          .from('meetings')
+          .select('id, title, date, summary, video_url, group_id')
+          .in('group_id', ids)
+          .order('date', { ascending: false })
+        : null;
+      const data = fallback ? fallback.data : withPeople.data;
+      const error = fallback ? fallback.error : withPeople.error;
       if (error) {
         console.warn('회의록 목록을 불러오지 못했습니다:', error.message);
       }
+      const faces = await loadGroupFaceIndex(ids);
+      if (!mounted) return;
+      setAvatarByUserId(faces.avatarByUserId);
+      setNicknameToIdByGroup(faces.nicknameToIdByGroup);
 
       if (!mounted) return;
       const rows = data ?? [];
@@ -160,11 +180,10 @@ export default function AiSummaryPage() {
                     </div>
                     <div className="meeting-card-row-bottom">
                       <span>{formatMeetingDate(m.date)}</span>
-                      <span className="attendees">
-                        <Icon name="circle-user" />
-                        <Icon name="circle-user" />
-                        <Icon name="circle-user" />
-                      </span>
+                      <MeetingAttendeeFaces
+                        ids={attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id))}
+                        avatarByUserId={avatarByUserId}
+                      />
                       <span className="ai-icon">
                         {hasSummary
                           ? <Icon name="check-circle" className="done" />

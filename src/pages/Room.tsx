@@ -67,23 +67,6 @@ function missingMeetingsColumn(message: string): string | null {
   return null;
 }
 
-/** 참석자 user id를 팀원 목록과 같은 프로필 닉네임으로 바꿉니다. */
-async function nicknamesForUsers(groupId: string, userIds: string[]): Promise<string[]> {
-  if (!groupId || userIds.length === 0) return [];
-  const { data } = await supabase.rpc('get_group_members_with_profiles', { p_group_id: groupId });
-  const byId = new Map<string, string>();
-  for (const row of (data as { user_id?: string; nickname?: string }[]) || []) {
-    const nick = row.nickname?.trim();
-    if (row.user_id && nick) byId.set(row.user_id, nick);
-  }
-  const names: string[] = [];
-  for (const id of userIds) {
-    const nick = byId.get(id);
-    if (nick && !names.includes(nick)) names.push(nick);
-  }
-  return names;
-}
-
 function formatMeetingElapsed(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -797,7 +780,7 @@ export default function Room() {
   });
 
   /**
-   * 회의방 열린 시각, 닫는 시각, 참석자 이름을 회의 행에 남깁니다.
+   * 회의방 열린 시각, 닫는 시각, 참석자 user id를 회의 행에 남깁니다.
    * 컬럼이 아직 없어도 녹화 저장 자체는 막지 않습니다.
    */
   const saveSessionMeta = async (meetingId: string) => {
@@ -807,11 +790,11 @@ export default function Room() {
     for (const msg of chatLogRef.current) {
       if (/^[0-9a-f-]{36}$/i.test(msg.from || '')) ids.add(msg.from);
     }
-    const nicknames = await nicknamesForUsers(groupIdRef.current ?? '', [...ids]);
     const payload: Record<string, unknown> = {
       started_at: new Date(opened).toISOString(),
       ended_at: new Date().toISOString(),
-      attendees: nicknames,
+      // 목록 아이콘은 이 id로 프로필 아바타를 찾습니다.
+      attendees: [...ids],
     };
     try {
       for (let i = 0; i < 4; i += 1) {

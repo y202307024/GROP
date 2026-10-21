@@ -229,6 +229,14 @@
   }
   .attendees svg{ width:18px; height:18px; margin-left:-6px; stroke-width:1.5; color:var(--gray-text); }
   .attendees svg:first-child{ margin-left:0; }
+  .attendees img{
+    width:18px; height:18px; margin-left:-6px;
+    border-radius:50%; object-fit:cover;
+    background:#fff; border:1.5px solid #fff;
+    opacity:1;
+  }
+  .attendees img:first-child{ margin-left:0; }
+  .attendees-more{ margin-left:2px; font-size:11px; color:var(--gray-text); opacity:1; }
   .ai-icon{ display:flex; justify-content:center; }
   .ai-icon svg{ width:16px; height:16px; stroke-width:2; color:var(--done-text); }
   .ai-icon .progress-ring{
