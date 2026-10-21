@@ -14,8 +14,7 @@ import MeetingChatPanel from '../components/MeetingChatPanel';
 import MeetingDrawingTools, { type MeetingDrawAction } from '../components/MeetingDrawingTools';
 import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
-import { getApiBase, isNetlifyBackend } from '../utils/apiBase';
-import { uploadToNetlifyBlobs } from '../utils/netlifyUpload';
+import { getApiBase } from '../utils/apiBase';
 import {
   canChangeBoard as userCanChangeBoard,
   canDraw as userCanDraw,
@@ -36,10 +35,24 @@ import {
 } from '../utils/meetingChat';
 import { syncMeetingAttachmentsDoc, toMeetingAttachments } from '../utils/meetingDocs';
 import { notifyGroupMembers, notifyDocumentUpload } from '../utils/notifications';
-import { addGroupMember } from '../utils/joinGroup';
 import { rememberLastMeeting } from '../utils/lastMeeting';
 import { createMeetingRecordingStream } from '../utils/meetingRecordingCapture';
 import { pickMeetingRecorderMimeType } from '../utils/meetingVideo';
+import {
+  appendRecordingChunk,
+  clearActiveRecording,
+  countRecordingChunks,
+  createLocalRecording,
+  deleteLocalRecording,
+  downloadBlobFile,
+  flushRecordingWrites,
+  getLocalRecording,
+  newRecordingId,
+  noteActiveRecording,
+  patchLocalRecording,
+  syncChunksFromMemory,
+} from '../utils/meetingRecordingStore';
+import { recordingTitleFromDate, uploadBlobAndInsert, uploadStoredRecording } from '../utils/meetingRecordingUpload';
 import { createRecordingBridge, type RecordingBridge } from '../utils/recordingBridge';
 import {
   MEETING_RECORDING_TOPIC,
@@ -981,6 +994,12 @@ export default function Room() {
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const recorderMimeRef = useRef('video/webm');
+  /** IndexedDB에 쌓는 이번 녹화 id. 업로드와 회의록 저장이 끝난 뒤에만 비웁니다. */
+  const activeRecordingIdRef = useRef<string | null>(null);
+  /** 같은 회의 행 id를 조각마다 다시 쓰지 않기 위한 표시입니다. */
+  const mirroredMeetingIdRef = useRef<string | null>(null);
+  const userIdRef = useRef('');
+  const groupNameRef = useRef('');
   const groupIdRef = useRef(id);
   const isRecordingRef = useRef(false);
   /** 이 방에서 녹화가 한 번이라도 켜졌는지. 나갈 때 남은 사람 녹화를 같이 끊을지 판단합니다. */
@@ -1007,6 +1026,37 @@ export default function Room() {
   useEffect(() => {
     groupIdRef.current = id;
   }, [id]);
+
+  userIdRef.current = userId;
+  groupNameRef.current = groupName;
+
+  // 탭이 꺼지기 직전에 회의 행·채팅을 보관분에 남깁니다. 상태는 recording이라 다음 입장에서 업로드를 물어봅니다.
+  useEffect(() => {
+    const snapshot = () => {
+      const recordingId = activeRecordingIdRef.current;
+      if (!recordingId) return;
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state === 'recording') {
+        try {
+          recorder.requestData();
+        } catch {
+          // 마지막 조각을 못 요청해도 이미 들어간 조각은 남습니다.
+        }
+      }
+      void patchLocalRecording(recordingId, {
+        meetingId: sessionMeetingIdRef.current,
+        attachments: toMeetingAttachments(sharedFilesRef.current),
+        chatLog: withAttendeePresence(chatLogRef.current, [
+          ...attendeeIdsRef.current,
+          ...(isUserId(userIdRef.current) ? [userIdRef.current] : []),
+        ]),
+        createdBy: userIdRef.current || null,
+        groupName: groupNameRef.current,
+      }).catch(() => {});
+    };
+    window.addEventListener('pagehide', snapshot);
+    return () => window.removeEventListener('pagehide', snapshot);
+  }, []);
 
   // 스트림을 먼저 끄면 MediaRecorder가 마지막 청크를 못 남기고 끝납니다.
   // stop 이벤트가 난 뒤에 트랙/캡처를 정리합니다.
@@ -1079,14 +1129,45 @@ export default function Room() {
     }
   };
 
-  // 영상 파일은 서버 컴퓨터 디스크에만 둡니다.
-  // meetings.video_url 에는 재생 URL만 저장합니다.
-  const persistMeetingRecording = async (): Promise<{ ok: boolean; error?: string; meetingId?: string }> => {
+  // 영상 파일은 서버 디스크에 올리고, meetings.video_url 에는 재생 URL만 저장합니다.
+  // 올리기 전에 IndexedDB에 남겨 두어, 업로드나 회의록 저장이 실패해도 영상을 잃지 않습니다.
+  const persistMeetingRecording = async (): Promise<{
+    ok: boolean;
+    error?: string;
+    meetingId?: string;
+    /** 브라우저 보관분에 남겼으면 true. 이 경우 오류창 대신 다시 시도 배너를 씁니다. */
+    kept?: boolean;
+    alreadyDone?: boolean;
+  }> => {
     // stop 직후 마지막 청크가 늦게 들어오는 경우를 한 번 더 기다립니다.
     if (recordedChunksRef.current.length === 0) {
       await new Promise((resolve) => setTimeout(resolve, 300));
     }
-    if (recordedChunksRef.current.length === 0) {
+
+    let recordingId = activeRecordingIdRef.current;
+    if (recordingId) {
+      try {
+        await flushRecordingWrites(recordingId);
+      } catch (err) {
+        console.warn('녹화 조각 저장을 끝내지 못했습니다.', err);
+      }
+    }
+
+    let storedCount = 0;
+    if (recordingId) {
+      try {
+        storedCount = await countRecordingChunks(recordingId);
+      } catch (err) {
+        console.warn('브라우저에 보관 중인 녹화 조각을 확인하지 못했습니다.', err);
+      }
+    }
+
+    if (recordedChunksRef.current.length === 0 && storedCount === 0) {
+      if (recordingId) {
+        clearActiveRecording(recordingId);
+        activeRecordingIdRef.current = null;
+        void deleteLocalRecording(recordingId);
+      }
       // 영상 청크는 없지만 첨부가 있으면 문서만이라도 남깁니다.
       const attachments = toMeetingAttachments(sharedFilesRef.current);
       if (attachments.length > 0 || sessionMeetingIdRef.current) {
@@ -1114,151 +1195,109 @@ export default function Room() {
       };
     }
 
-    const now = new Date();
-    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const titleStr = `${now.getFullYear()}년 ${now.getMonth() + 1}월 ${now.getDate()}일 회의`;
-
     const { data: userData } = await supabase.auth.getUser();
-    const blob = new Blob(recordedChunksRef.current, { type: recorderMimeRef.current });
-
-    const formData = new FormData();
-    // 파일보다 먼저 보내야 서버가 groupId/날짜 폴더를 알 수 있습니다.
-    formData.append('groupId', groupIdRef.current ?? '');
-    formData.append('dateStr', dateStr);
-    formData.append('video', blob, 'recording.webm');
-
-    let relativePath: string;
-    try {
-      if (isNetlifyBackend()) {
-        // Netlify 백엔드(preview 시연): 서버 디스크 대신 Netlify Blobs 에 조각으로 올립니다.
-        // 저장 경로는 Express 와 같은 그룹id/날짜/타임스탬프.webm 이라 재생·요약 URL 이 그대로 맞습니다.
-        const rel = `${groupIdRef.current || 'unknown'}/${dateStr}/${Date.now()}.webm`;
-        const uploaded = await uploadToNetlifyBlobs(`videos/${rel}`, blob, {
-          name: 'recording.webm',
-          mime: recorderMimeRef.current,
-        });
-        relativePath = uploaded.path;
-      } else {
-        const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
-        const uploadRes = await fetch(`${getApiBase()}/api/meetings/upload`, {
-          method: 'POST',
-          headers: uploadToken ? { 'x-upload-token': uploadToken } : undefined,
-          body: formData,
-        });
-        if (!uploadRes.ok) {
-          const errBody = await uploadRes.json().catch(() => ({}));
-          throw new Error((errBody as { error?: string }).error || `녹화본 업로드 실패 (${uploadRes.status})`);
-        }
-        relativePath = ((await uploadRes.json()) as { path: string }).path;
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-      return {
-        ok: false,
-        error: `녹화본을 서버 컴퓨터로 전송하지 못했습니다: ${msg}\n\n서버 컴퓨터(백엔드)가 켜져 있고 접속 가능한 상태인지 확인해 주세요.`,
-      };
-    }
-
-    const videoUrl = `${getApiBase()}/videos/${relativePath}`;
-    const attachments = toMeetingAttachments(sharedFilesRef.current);
-    // 채팅 기록은 마이크 없이 진행한 회의도 나중에 AI 요약을 만들 수 있게 해줍니다.
-    const chatLog = withAttendeePresence(chatLogRef.current, [
-      ...attendeeIdsRef.current,
-      ...(isUserId(userId) ? [userId] : []),
-    ]);
     const gid = groupIdRef.current;
     if (!gid) {
       return { ok: false, error: '그룹 정보가 없어 회의록을 저장하지 못했습니다.' };
-    }
-
-    // 멤버 행이 없으면 meetings RLS 때문에 insert가 조용히 실패합니다.
-    if (userData.user?.id) {
-      await addGroupMember(gid, userData.user.id);
-      await supabase.rpc('ensure_group_creator_member', { p_group_id: gid });
     }
 
     const remember = (meetingId: string) => {
       sessionMeetingIdRef.current = meetingId;
       rememberLastMeeting(meetingId);
     };
+    // 채팅 기록은 마이크 없이 진행한 회의도 나중에 AI 요약을 만들 수 있게 해줍니다.
+    const attachments = toMeetingAttachments(sharedFilesRef.current);
+    const chatLog = withAttendeePresence(chatLogRef.current, [
+      ...attendeeIdsRef.current,
+      ...(isUserId(userId) ? [userId] : []),
+    ]);
+    const createdBy = userData.user?.id ?? null;
 
-    const notifySaved = async (meetingId: string) => {
-      await notifyGroupMembers({
-        groupId: gid,
-        type: 'meeting_end',
-        title: `${groupName || '그룹'} 녹화가 종료됐어요`,
-        body: '녹화본이 저장되었습니다.',
-        link: `/ai?meeting=${meetingId}`,
-        excludeSelf: false,
+    try {
+      if (!recordingId) {
+        recordingId = newRecordingId();
+        noteActiveRecording(recordingId);
+        activeRecordingIdRef.current = recordingId;
+        await createLocalRecording({
+          id: recordingId,
+          groupId: gid,
+          mimeType: recorderMimeRef.current,
+          createdBy,
+          groupName,
+        });
+      }
+      // 메모리에 있는 전체를 기준으로 맞춘 뒤에 대기 상태로 바꿉니다.
+      // 이 시점 이후 탭이 꺼져도 다음 접속에서 자동으로 다시 올립니다.
+      if (recordedChunksRef.current.length > 0) {
+        await syncChunksFromMemory(recordingId, recordedChunksRef.current);
+      }
+      const stored = await getLocalRecording(recordingId);
+      await patchLocalRecording(recordingId, {
+        status: 'pending_upload',
+        meetingId: sessionMeetingIdRef.current,
+        title: recordingTitleFromDate(stored?.date ?? ''),
+        attachments,
+        chatLog,
+        createdBy,
+        groupName,
+        mimeType: recorderMimeRef.current || stored?.mimeType,
       });
-    };
-
-    // 파일은 서버에만 두고, DB에는 재생 URL + 회의 중 첨부를 저장합니다.
-    // 이미 파일만으로 만든 문서가 있으면 그 행에 녹화를 이어 붙입니다.
-    const existingId = sessionMeetingIdRef.current;
-
-    if (existingId) {
-      const { error: updateError } = await supabase
-        .from('meetings')
-        .update({
-          video_url: videoUrl,
-          title: titleStr,
-          attachments,
-          chat_log: chatLog,
-        })
-        .eq('id', existingId);
-
-      if (updateError && /attachments|chat_log/i.test(updateError.message)) {
-        const { error: fallbackError } = await supabase
-          .from('meetings')
-          .update({ video_url: videoUrl, title: titleStr })
-          .eq('id', existingId);
-        if (fallbackError) return { ok: false, error: fallbackError.message };
-      } else if (updateError) {
-        return { ok: false, error: updateError.message };
+    } catch (storeErr) {
+      console.warn('녹화를 브라우저에 보관하지 못했습니다. 메모리에 있는 파일만 올립니다.', storeErr);
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const blob = new Blob(recordedChunksRef.current, { type: recorderMimeRef.current || 'video/webm' });
+      const fallback = await uploadBlobAndInsert({
+        blob,
+        groupId: gid,
+        dateStr,
+        mimeType: blob.type || 'video/webm',
+        title: recordingTitleFromDate(dateStr),
+        meetingId: sessionMeetingIdRef.current,
+        attachments,
+        chatLog,
+        createdBy,
+        groupName,
+        startedAt: now.getTime(),
+      });
+      if (fallback.ok) {
+        recordedChunksRef.current = [];
+        if (recordingId) {
+          clearActiveRecording(recordingId);
+          activeRecordingIdRef.current = null;
+          void deleteLocalRecording(recordingId);
+        }
+        remember(fallback.meetingId);
+        await saveSessionMeta(fallback.meetingId);
+        return { ok: true, meetingId: fallback.meetingId };
       }
+      // 보관도 업로드도 못 하면 이번 세션의 메모리에서라도 파일로 남깁니다.
+      if (blob.size > 0) downloadBlobFile(blob, `회의녹화-${dateStr}.webm`);
+      return {
+        ok: false,
+        kept: false,
+        error: blob.size > 0
+          ? `${fallback.error}\n\n브라우저에 보관하지 못해 녹화 파일을 이 컴퓨터로 내려받았습니다.`
+          : fallback.error,
+      };
+    }
 
+    const result = await uploadStoredRecording(recordingId);
+    if (result.ok) {
       recordedChunksRef.current = [];
-      remember(existingId);
-      await saveSessionMeta(existingId);
-      await notifySaved(existingId);
-      return { ok: true, meetingId: existingId };
+      activeRecordingIdRef.current = null;
+      clearActiveRecording(recordingId);
+      if (result.meetingId && !result.alreadyDone) {
+        remember(result.meetingId);
+        await saveSessionMeta(result.meetingId);
+      }
+      return { ok: true, meetingId: result.meetingId, alreadyDone: result.alreadyDone };
     }
 
-    const baseRow = {
-      group_id: gid,
-      title: titleStr,
-      date: now.toISOString(),
-      video_url: videoUrl,
-      created_by: userData.user?.id ?? null,
-    };
-
-    const first = await supabase
-      .from('meetings')
-      .insert({ ...baseRow, attachments, chat_log: chatLog })
-      .select('id')
-      .maybeSingle();
-
-    let insertedId = first.data?.id as string | undefined;
-    if (first.error || !insertedId) {
-      // attachments/chat_log 컬럼이 아직 없으면(마이그레이션 전) 그것들 없이라도 회의록은 저장합니다.
-      const canRetryWithoutAttach = !first.error || /attachments|chat_log/i.test(first.error.message);
-      if (!canRetryWithoutAttach) {
-        return { ok: false, error: first.error.message };
-      }
-      const second = await supabase.from('meetings').insert(baseRow).select('id').maybeSingle();
-      if (second.error || !second.data?.id) {
-        return { ok: false, error: second.error?.message || first.error?.message || '회의록 저장에 실패했습니다.' };
-      }
-      // 바로 위에서 id 존재를 확인했으므로 string 으로 확정합니다.
-      insertedId = second.data.id as string;
-    }
-
-    recordedChunksRef.current = [];
-    remember(insertedId);
-    await saveSessionMeta(insertedId);
-    await notifySaved(insertedId);
-    return { ok: true, meetingId: insertedId };
+    // 실패분은 pending_upload 로 남아 있습니다. 배너의 다시 시도·내 컴퓨터 저장으로 이어집니다.
+    clearActiveRecording(recordingId);
+    activeRecordingIdRef.current = null;
+    return { ok: false, error: result.error, kept: result.kept };
   };
 
   useEffect(() => {
@@ -1353,19 +1392,64 @@ export default function Room() {
     void init();
 
     return () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
+      const recorder = mediaRecorderRef.current;
+      const recordingId = activeRecordingIdRef.current;
+      // 종료 저장이 끝난 뒤에는 ref가 비어 있어 여기로 오지 않습니다.
+      // 녹화 중에 방이 사라지면 조각을 남기고, 다시 열렸을 때 업로드를 물어봅니다.
+      const interrupted = Boolean(
+        recordingId
+        && (isRecordingRef.current || recorder?.state === 'recording'),
+      );
+      if (recorder && recorder.state !== 'inactive') {
+        try {
+          if (recorder.state === 'recording') recorder.requestData();
+        } catch {
+          // 마지막 조각을 못 요청해도 이미 보관된 조각은 남습니다.
+        }
+        try {
+          recorder.stop();
+        } catch {
+          // 이미 멈춘 녹화기는 무시합니다.
+        }
       }
+      if (!interrupted || !recordingId) return;
+      clearActiveRecording(recordingId);
+      void flushRecordingWrites(recordingId);
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('grop-recording-interrupted'));
+      }, 600);
     };
   }, [id, navigate]);
 
   const stopRecordingLocal = async (discardChunks: boolean) => {
+    const recordingId = activeRecordingIdRef.current;
     await stopMediaRecorder();
     await new Promise((resolve) => setTimeout(resolve, 300));
     mediaRecorderRef.current = null;
     isRecordingRef.current = false;
     setIsRecording(false);
-    if (discardChunks) recordedChunksRef.current = [];
+    if (discardChunks) {
+      // 다른 참가자가 녹화를 끈 경우 이 브라우저 사본은 올리지 않습니다.
+      recordedChunksRef.current = [];
+      activeRecordingIdRef.current = null;
+      if (recordingId) {
+        clearActiveRecording(recordingId);
+        try {
+          await flushRecordingWrites(recordingId);
+          await deleteLocalRecording(recordingId);
+        } catch (err) {
+          console.warn('버린 녹화를 브라우저 보관함에서 지우지 못했습니다.', err);
+        }
+      }
+      return;
+    }
+    if (recordingId) {
+      try {
+        await flushRecordingWrites(recordingId);
+      } catch (err) {
+        console.warn('마지막 녹화 조각을 브라우저에 반영하지 못했습니다.', err);
+      }
+    }
   };
 
   const startRecording = async (opts?: { remote?: boolean; attempt?: number }) => {
@@ -1439,9 +1523,37 @@ export default function Room() {
         recorderMimeRef.current = mediaRecorder.mimeType || 'video/webm';
       }
 
+      const recordingId = newRecordingId();
+      noteActiveRecording(recordingId);
+      activeRecordingIdRef.current = recordingId;
+      mirroredMeetingIdRef.current = null;
+      try {
+        await createLocalRecording({
+          id: recordingId,
+          groupId: groupIdRef.current ?? '',
+          mimeType: recorderMimeRef.current,
+          createdBy: userIdRef.current || null,
+          groupName: groupNameRef.current,
+        });
+      } catch (storeErr) {
+        // 보관이 막혀도 이번 녹화는 메모리로 진행합니다. 종료 때 한 번 더 보관을 시도합니다.
+        console.warn('녹화를 브라우저에 보관하지 못했습니다. 이번 녹화는 메모리에만 남습니다.', storeErr);
+        clearActiveRecording(recordingId);
+        activeRecordingIdRef.current = null;
+      }
+
+      const storedId = activeRecordingIdRef.current;
       recordedChunksRef.current = [];
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
+      mediaRecorder.ondataavailable = (event) => {
+        if (!event.data || event.data.size === 0) return;
+        recordedChunksRef.current.push(event.data);
+        if (!storedId) return;
+        void appendRecordingChunk(storedId, event.data);
+        const meetingId = sessionMeetingIdRef.current;
+        if (meetingId && mirroredMeetingIdRef.current !== meetingId) {
+          mirroredMeetingIdRef.current = meetingId;
+          void patchLocalRecording(storedId, { meetingId }).catch(() => {});
+        }
       };
       mediaRecorder.onerror = (ev) => {
         console.error('MediaRecorder 오류:', ev);
@@ -1476,9 +1588,26 @@ export default function Room() {
       recordingCaptureCleanupRef.current = null;
       recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
       recordingStreamRef.current = null;
+      const failedRecorder = mediaRecorderRef.current;
+      if (failedRecorder && failedRecorder.state !== 'inactive') {
+        try { failedRecorder.stop(); } catch { /* 시작에 실패한 녹화기는 멈춰 둡니다. */ }
+      }
+      const failedId = activeRecordingIdRef.current;
       mediaRecorderRef.current = null;
+      activeRecordingIdRef.current = null;
       isRecordingRef.current = false;
       setIsRecording(false);
+      // 조각이 없기 전에 실패한 빈 보관분만 지웁니다. 조각이 있으면 다음 입장에서 업로드를 물어봅니다.
+      if (failedId) {
+        clearActiveRecording(failedId);
+        if (recordedChunksRef.current.length === 0) {
+          void deleteLocalRecording(failedId);
+        } else {
+          window.setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('grop-recording-interrupted'));
+          }, 600);
+        }
+      }
       if (!opts?.remote) {
         alert(err instanceof Error ? err.message : '회의 화면 녹화를 시작하지 못했습니다.');
       }
@@ -1516,8 +1645,11 @@ export default function Room() {
       const result = await persistMeetingRecording();
       if (result.ok) {
         canvasBoardRef.current?.clearBoard();
-        alert('녹화를 종료하고 회의록에 저장했습니다.\nAI 요약 탭에서 바로 확인할 수 있습니다.');
-      } else {
+        // 다른 경로가 먼저 저장을 끝낸 경우에는 배너 안내만 남기고 alert는 겹치지 않습니다.
+        if (!result.alreadyDone) {
+          alert('녹화를 종료하고 회의록에 저장했습니다.\nAI 요약 탭에서 바로 확인할 수 있습니다.');
+        }
+      } else if (!result.kept) {
         alert(`회의록 저장 실패: ${result.error}`);
       }
     } catch (err) {
