@@ -784,8 +784,10 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     const hasSummary = !!meeting.summary;
     // 녹화(마이크 유무 무관) 또는 채팅 기록 중 하나라도 있으면 요약을 만들 수 있습니다.
     const canSummarize = !!meeting.video_url || hasUsableChatLog(meeting.chat_log);
-    // 왼쪽엔 핵심 요약만, 오른쪽(영상 옆)엔 타임라인만 보여줍니다.
+    // 핵심요약 탭은 '회의 핵심 요약' 문단만 보여줍니다. 헤더가 없는 예전 글만 타임라인을 뺀 본문을 씁니다.
     const { core: coreSummary, timeline } = splitSummary(meeting.summary, chapters);
+    const coreOverview = parseSummaryForPdf(meeting.summary).overview;
+    const coreSummaryText = coreOverview ? `📋 회의 핵심 요약\n${coreOverview}` : coreSummary;
     // 발언자별요약 = { speaker, summary }[] (녹취록에 화자 표시가 없어 AI 추정치) — 채팅 기록이 없을 때만 씁니다.
     const speakers = normalizeSpeakers(meeting.speakers);
     // 회의 중 채팅 원문 — '전체 채팅' 탭은 이걸 그대로 보여주고, '발언자별'도 요약 대신
@@ -982,9 +984,9 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                     </p>
                   )
                 ) : (
-                  // 핵심요약: 개요만
+                  // 핵심요약 탭: 회의 핵심 요약 문단만. 논의 내용·결정·할 일은 여기에 넣지 않습니다.
                   <p className="ai-summary-paragraph" style={{ whiteSpace: 'pre-wrap' }}>
-                    <SummaryWithTimestamps text={coreSummary} onSeek={(s) => void seekTo(s)} />
+                    <SummaryWithTimestamps text={coreSummaryText} onSeek={(s) => void seekTo(s)} />
                   </p>
                 )
               ) : (
