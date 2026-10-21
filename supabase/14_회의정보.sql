@@ -22,3 +22,7 @@ alter table public.meetings
 
 alter table public.meetings
   add column if not exists attendees jsonb not null default '[]'::jsonb;
+
+-- 녹화 길이(초). 회의 시간 칸은 이 값을 씁니다.
+alter table public.meetings
+  add column if not exists recording_seconds integer;

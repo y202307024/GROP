@@ -67,6 +67,23 @@ function missingMeetingsColumn(message: string): string | null {
   return null;
 }
 
+/** 참석자 user id를 팀원 목록과 같은 프로필 닉네임으로 바꿉니다. */
+async function nicknamesForUsers(groupId: string, userIds: string[]): Promise<string[]> {
+  if (!groupId || userIds.length === 0) return [];
+  const { data } = await supabase.rpc('get_group_members_with_profiles', { p_group_id: groupId });
+  const byId = new Map<string, string>();
+  for (const row of (data as { user_id?: string; nickname?: string }[]) || []) {
+    const nick = row.nickname?.trim();
+    if (row.user_id && nick) byId.set(row.user_id, nick);
+  }
+  const names: string[] = [];
+  for (const id of userIds) {
+    const nick = byId.get(id);
+    if (nick && !names.includes(nick)) names.push(nick);
+  }
+  return names;
+}
+
 function formatMeetingElapsed(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -133,19 +150,19 @@ function RoomTopHeader({
 }
 
 /**
- * 회의방에 있는 사람 이름을 부모 ref에 모읍니다.
+ * 회의방에 있는 사람 user id를 부모 ref에 모읍니다.
  * 녹화 저장·나가기는 LiveKit 바깥에서 돌아서, 그 시점의 참가자 목록을 직접 못 읽습니다.
  */
-function MeetingAttendeesTracker({ attendeesRef }: { attendeesRef: RefObject<string[]> }) {
+function MeetingAttendeesTracker({ attendeeIdsRef }: { attendeeIdsRef: RefObject<string[]> }) {
   const participants = useParticipants();
 
   useEffect(() => {
-    const names = participants
-      .map((p) => (p.name || '').trim())
-      .filter((name) => name && !/^[0-9a-f-]{36}$/i.test(name));
-    const unique = [...new Set(names)];
-    if (unique.length > 0) attendeesRef.current = unique;
-  }, [participants, attendeesRef]);
+    const ids = participants
+      .map((p) => (p.identity || '').trim())
+      .filter((id) => /^[0-9a-f-]{36}$/i.test(id));
+    const unique = [...new Set(ids)];
+    if (unique.length > 0) attendeeIdsRef.current = unique;
+  }, [participants, attendeeIdsRef]);
 
   return null;
 }
@@ -738,8 +755,8 @@ export default function Room() {
   const sessionMeetingIdRef = useRef<string | null>(null);
   /** LiveKit 연결 시각. 생성 시간의 시작점입니다. */
   const roomOpenedAtRef = useRef<number | null>(null);
-  /** 회의 중 들어왔던 표시 이름. */
-  const attendeesRef = useRef<string[]>([]);
+  /** 회의 중 들어왔던 user id. 저장할 때 닉네임으로 바꿉니다. */
+  const attendeeIdsRef = useRef<string[]>([]);
 
   useEffect(() => {
     groupIdRef.current = id;
@@ -786,19 +803,15 @@ export default function Room() {
   const saveSessionMeta = async (meetingId: string) => {
     const chatStart = chatLogRef.current.find((m) => m.ts > 0)?.ts ?? null;
     const opened = roomOpenedAtRef.current ?? chatStart ?? Date.now();
-    const names = new Set<string>();
-    for (const name of attendeesRef.current) {
-      const trimmed = name.trim();
-      if (trimmed && trimmed !== '익명') names.add(trimmed);
-    }
+    const ids = new Set(attendeeIdsRef.current);
     for (const msg of chatLogRef.current) {
-      const trimmed = (msg.name || '').trim();
-      if (trimmed && trimmed !== '익명' && trimmed !== '참여자') names.add(trimmed);
+      if (/^[0-9a-f-]{36}$/i.test(msg.from || '')) ids.add(msg.from);
     }
+    const nicknames = await nicknamesForUsers(groupIdRef.current ?? '', [...ids]);
     const payload: Record<string, unknown> = {
       started_at: new Date(opened).toISOString(),
       ended_at: new Date().toISOString(),
-      attendees: [...names],
+      attendees: nicknames,
     };
     try {
       for (let i = 0; i < 4; i += 1) {
@@ -1360,7 +1373,7 @@ export default function Room() {
         >
           <MicInsecureBanner />
           <RoomTopHeader isRecording={isRecording} openedAtRef={roomOpenedAtRef} />
-          <MeetingAttendeesTracker attendeesRef={attendeesRef} />
+          <MeetingAttendeesTracker attendeeIdsRef={attendeeIdsRef} />
           <RoomContent
             groupId={id}
             groupName={groupName}

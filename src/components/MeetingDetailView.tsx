@@ -27,9 +27,10 @@ type Meeting = {
   chat_log?: unknown; // 회의 중 채팅 [{ from, name, text, ts }] — 마이크 없이 진행한 회의의 요약 재료
   started_at?: string | null; // 회의방을 연 시각
   ended_at?: string | null; // 회의방을 닫은 시각
-  attendees?: unknown; // 그 회의에 들어온 사람 이름
-  ai_headline?: string | null; // AI가 쓴 회의 날짜 한 줄
+  attendees?: unknown; // 참석자 user id 또는 닉네임
+  created_by?: string | null;
   topic_line?: string | null; // AI가 쓴 회의 주제 한 줄
+  recording_seconds?: number | null; // 녹화 길이(초)
 };
 
 /** meetings.chat_log에 실제 메시지가 있는지(요약 재료로 쓸 수 있는지)만 가볍게 확인 */
@@ -105,6 +106,43 @@ function personNames(raw: unknown): string[] {
     names.push(name);
   }
   return names;
+}
+
+const USER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * 참석자 칸에 넣을 닉네임.
+ * 기록된 user id는 그룹 닉네임으로 바꾸고, 기록이 없으면 그룹 멤버 닉네임을 그대로 씁니다.
+ */
+function nicknamesForMeeting(meeting: Meeting, byId: Map<string, string>): string[] {
+  const picked: string[] = [];
+  const addNick = (userId: string) => {
+    const nick = byId.get(userId)?.trim();
+    if (nick && !picked.includes(nick)) picked.push(nick);
+  };
+  const addText = (raw: string) => {
+    const name = raw.trim();
+    if (!name || name.includes('@') || USER_ID_RE.test(name)) return;
+    if (name === '익명' || name === '참여자' || name === '나' || /^화자\s*\d+$/.test(name)) return;
+    if (!picked.includes(name)) picked.push(name);
+  };
+
+  if (Array.isArray(meeting.attendees)) {
+    for (const item of meeting.attendees) {
+      if (typeof item !== 'string') continue;
+      const value = item.trim();
+      if (USER_ID_RE.test(value)) addNick(value);
+      else addText(value);
+    }
+  }
+  if (Array.isArray(meeting.chat_log)) {
+    for (const msg of meeting.chat_log) {
+      const from = (msg as { from?: unknown }).from;
+      if (typeof from === 'string' && USER_ID_RE.test(from)) addNick(from);
+    }
+  }
+  if (picked.length > 0) return picked;
+  return [...byId.values()].filter((nick) => nick.trim());
 }
 
 /** 저장된 참석자 → 채팅을 친 사람 → 발언자 순으로 이름을 고릅니다. */
@@ -320,6 +358,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   const [summaryTab, setSummaryTab] = useState<'core' | 'timeline'>('core');
   // 회의가 속한 그룹 이름. 정보 카드 맨 위 행에 씁니다.
   const [groupName, setGroupName] = useState('');
+  // 참석자 칸에 쓸 닉네임. 그룹 프로필(없으면 기본 프로필) 닉네임입니다.
+  const [nicknames, setNicknames] = useState<string[]>([]);
 
   // 챕터 타임라인 관련
   const [chapters, setChapters] = useState<MeetingChapter[]>([]);
@@ -357,6 +397,26 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       });
     return () => { cancelled = true; };
   }, [meeting?.group_id]);
+
+  useEffect(() => {
+    const groupId = meeting?.group_id;
+    if (!groupId || !meeting) {
+      setNicknames([]);
+      return;
+    }
+    let cancelled = false;
+    // 팀원 목록과 같은 프로필 닉네임을 가져옵니다. 본인 행만 보이는 테이블을 직접 읽지 않습니다.
+    void supabase.rpc('get_group_members_with_profiles', { p_group_id: groupId }).then(({ data }) => {
+      if (cancelled) return;
+      const byId = new Map<string, string>();
+      for (const row of (data as { user_id?: string; nickname?: string }[]) || []) {
+        const nick = row.nickname?.trim();
+        if (row.user_id && nick) byId.set(row.user_id, nick);
+      }
+      setNicknames(nicknamesForMeeting(meeting, byId));
+    });
+    return () => { cancelled = true; };
+  }, [meeting]);
 
   useEffect(() => {
     if (!meeting?.video_url) {
@@ -411,6 +471,16 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     seekPrimedRef.current = true;
     const resolved = await primeWebmSeeking(video);
     setDuration(resolved);
+    // 회의 시간 칸이 새로고침 뒤에도 녹화 길이를 쓰도록 남겨 둡니다. 컬럼이 없으면 화면 값만 씁니다.
+    if (resolved > 0) {
+      const { error } = await supabase
+        .from('meetings')
+        .update({ recording_seconds: Math.round(resolved) })
+        .eq('id', meetingId);
+      if (error && !missingMeetingsColumn(error.message)) {
+        console.warn('녹화 길이 저장 실패:', error.message);
+      }
+    }
   };
 
   /** 챕터/타임스탬프 클릭 → 해당 시점으로 점프 후 재생 */
@@ -471,8 +541,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       const nextChapters = normalizeChapters(data.chapters, data.duration);
 
       setAiStep('💾 저장 중...');
-      // 없는 컬럼(ai_headline 등)만 빼면서 저장합니다. 요약 본문까지 통째로 버리지 않기 위해서입니다.
-      const headline = cleanLine(data.headline);
+      // 없는 컬럼만 빼면서 저장합니다. 요약 본문까지 통째로 버리지 않기 위해서입니다.
       const topicLine = cleanLine(data.topicLine);
       const payload: Record<string, unknown> = {
         summary: data.summary,
@@ -480,9 +549,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         transcript: data.transcript ?? null,
         topics: data.topics ?? null,
         speakers: data.speakers ?? null,
-        // title에도 남겨 두면, ai_headline 컬럼이 아직 없어도 카드의 회의 날짜가 한 줄로 남습니다.
-        ...(headline ? { ai_headline: headline, title: headline } : {}),
         ...(topicLine ? { topic_line: topicLine } : {}),
+        ...(Number(data.duration) > 0 ? { recording_seconds: Math.round(Number(data.duration)) } : {}),
       };
       const dropped: string[] = [];
       let error: { message: string } | null = null;
@@ -623,12 +691,14 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     // 실제로 그 사람이 쓴 메시지를 전부 모아서 보여줍니다(채팅 기록이 있을 때 더 정확함).
     const chatMessages = normalizeChatLog(meeting.chat_log);
     const chatBySpeaker = groupChatBySpeaker(chatMessages);
-    // 정보 카드. 날짜·주제는 요약이 만든 한 줄, 없으면 기존 제목/주제 이름으로 대체합니다.
-    const dateLine = cleanLine(meeting.ai_headline) || meeting.title;
+    // 회의 날짜는 한줄평 없이 실제 날짜만 보여 줍니다.
+    const dateLine = formatDate(meeting.date);
     const topicLine = cleanLine(meeting.topic_line) || topicNames(meeting.topics).join(', ') || '—';
-    const memberNames = attendeeNames(meeting);
-    const bounds = sessionBounds(meeting, duration);
-    const durationLabel = bounds ? formatMinutesDuring(bounds.endMs - bounds.startMs) : '—';
+    const memberNames = nicknames.length > 0 ? nicknames : attendeeNames(meeting);
+    // 회의 시간은 방 체류 시간이 아니라 녹화 길이입니다.
+    const recordingSec = duration > 0 ? duration : Number(meeting.recording_seconds) || 0;
+    const durationLabel = recordingSec > 0 ? formatMinutesDuring(recordingSec * 1000) : '—';
+    const bounds = sessionBounds(meeting, 0);
     const sessionLabel = formatSessionRange(bounds, meeting.created_at);
 
     return (
