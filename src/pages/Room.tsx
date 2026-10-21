@@ -5,6 +5,7 @@ import {
   LiveKitRoom,
   RoomAudioRenderer,
   useLocalParticipant,
+  useParticipants,
   useRoomContext,
 } from '@livekit/components-react';
 import '@livekit/components-styles';
@@ -57,6 +58,15 @@ type RecordingSyncHandle = {
   broadcastStop: () => void;
 };
 
+/** PostgREST/Postgres가 "없는 컬럼"이라고 할 때만 그 컬럼 이름을 돌려줍니다. */
+function missingMeetingsColumn(message: string): string | null {
+  const postgrest = message.match(/Could not find the '([^']+)' column/);
+  if (postgrest?.[1]) return postgrest[1];
+  const pg = message.match(/column "([^"]+)" of relation "meetings" does not exist/);
+  if (pg?.[1]) return pg[1];
+  return null;
+}
+
 function formatMeetingElapsed(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -80,17 +90,28 @@ function MicInsecureBanner() {
   );
 }
 
-function RoomTopHeader({ isRecording }: { isRecording: boolean }) {
+function RoomTopHeader({
+  isRecording,
+  openedAtRef,
+}: {
+  isRecording: boolean;
+  /** 회의방을 연 시각. 나갈 때 meetings.started_at 으로 남깁니다. */
+  openedAtRef: RefObject<number | null>;
+}) {
   const room = useRoomContext();
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
-    const markStart = () => setStartedAt((prev) => prev ?? Date.now());
+    const markStart = () => {
+      const now = Date.now();
+      setStartedAt((prev) => prev ?? now);
+      if (openedAtRef.current == null) openedAtRef.current = now;
+    };
     if (room.state === 'connected') markStart();
     room.on(RoomEvent.Connected, markStart);
     return () => { room.off(RoomEvent.Connected, markStart); };
-  }, [room]);
+  }, [room, openedAtRef]);
 
   useEffect(() => {
     if (!startedAt) return;
@@ -109,6 +130,24 @@ function RoomTopHeader({ isRecording }: { isRecording: boolean }) {
       </span>
     </header>
   );
+}
+
+/**
+ * 회의방에 있는 사람 이름을 부모 ref에 모읍니다.
+ * 녹화 저장·나가기는 LiveKit 바깥에서 돌아서, 그 시점의 참가자 목록을 직접 못 읽습니다.
+ */
+function MeetingAttendeesTracker({ attendeesRef }: { attendeesRef: RefObject<string[]> }) {
+  const participants = useParticipants();
+
+  useEffect(() => {
+    const names = participants
+      .map((p) => (p.name || '').trim())
+      .filter((name) => name && !/^[0-9a-f-]{36}$/i.test(name));
+    const unique = [...new Set(names)];
+    if (unique.length > 0) attendeesRef.current = unique;
+  }, [participants, attendeesRef]);
+
+  return null;
 }
 
 function MeetingAudioSetup() {
@@ -697,6 +736,10 @@ export default function Room() {
   // 마이크 없는 회의도 채팅 기록으로 AI 요약을 만들 수 있게 합니다.
   const chatLogRef = useRef<MeetingChatMessage[]>([]);
   const sessionMeetingIdRef = useRef<string | null>(null);
+  /** LiveKit 연결 시각. 생성 시간의 시작점입니다. */
+  const roomOpenedAtRef = useRef<number | null>(null);
+  /** 회의 중 들어왔던 표시 이름. */
+  const attendeesRef = useRef<string[]>([]);
 
   useEffect(() => {
     groupIdRef.current = id;
@@ -736,6 +779,44 @@ export default function Room() {
     recorder.stop();
   });
 
+  /**
+   * 회의방 열린 시각, 닫는 시각, 참석자 이름을 회의 행에 남깁니다.
+   * 컬럼이 아직 없어도 녹화 저장 자체는 막지 않습니다.
+   */
+  const saveSessionMeta = async (meetingId: string) => {
+    const chatStart = chatLogRef.current.find((m) => m.ts > 0)?.ts ?? null;
+    const opened = roomOpenedAtRef.current ?? chatStart ?? Date.now();
+    const names = new Set<string>();
+    for (const name of attendeesRef.current) {
+      const trimmed = name.trim();
+      if (trimmed && trimmed !== '익명') names.add(trimmed);
+    }
+    for (const msg of chatLogRef.current) {
+      const trimmed = (msg.name || '').trim();
+      if (trimmed && trimmed !== '익명' && trimmed !== '참여자') names.add(trimmed);
+    }
+    const payload: Record<string, unknown> = {
+      started_at: new Date(opened).toISOString(),
+      ended_at: new Date().toISOString(),
+      attendees: [...names],
+    };
+    try {
+      for (let i = 0; i < 4; i += 1) {
+        const { error } = await supabase.from('meetings').update(payload).eq('id', meetingId);
+        if (!error) return;
+        const col = missingMeetingsColumn(error.message);
+        if (!col || !(col in payload)) {
+          console.warn('회의 시간·참석자 저장 실패:', error.message);
+          return;
+        }
+        delete payload[col];
+        if (Object.keys(payload).length === 0) return;
+      }
+    } catch (err) {
+      console.warn('회의 시간·참석자 저장 실패:', err);
+    }
+  };
+
   // 영상 파일은 서버 컴퓨터 디스크에만 둡니다.
   // meetings.video_url 에는 재생 URL만 저장합니다.
   const persistMeetingRecording = async (): Promise<{ ok: boolean; error?: string; meetingId?: string }> => {
@@ -748,6 +829,7 @@ export default function Room() {
       const attachments = toMeetingAttachments(sharedFilesRef.current);
       if (attachments.length > 0 || sessionMeetingIdRef.current) {
         if (sessionMeetingIdRef.current) {
+          await saveSessionMeta(sessionMeetingIdRef.current);
           return { ok: true };
         }
         const { data: userData } = await supabase.auth.getUser();
@@ -759,6 +841,7 @@ export default function Room() {
         });
         if (result.meetingId) {
           sessionMeetingIdRef.current = result.meetingId;
+          await saveSessionMeta(result.meetingId);
           return { ok: true };
         }
       }
@@ -872,6 +955,7 @@ export default function Room() {
 
       recordedChunksRef.current = [];
       remember(existingId);
+      await saveSessionMeta(existingId);
       await notifySaved(existingId);
       return { ok: true, meetingId: existingId };
     }
@@ -907,6 +991,7 @@ export default function Room() {
 
     recordedChunksRef.current = [];
     remember(insertedId);
+    await saveSessionMeta(insertedId);
     await notifySaved(insertedId);
     return { ok: true, meetingId: insertedId };
   };
@@ -1219,6 +1304,11 @@ export default function Room() {
       console.error('오류:', err);
     }
 
+    if (sessionMeetingIdRef.current) {
+      // 녹화를 먼저 끊었어도, 생성 시간의 끝은 회의방을 닫는 이 시점입니다.
+      await saveSessionMeta(sessionMeetingIdRef.current);
+    }
+
     setSaving(false);
     const lastId = sessionMeetingIdRef.current;
     navigate(lastId ? `/ai?meeting=${lastId}` : `/group/${id}`);
@@ -1269,7 +1359,8 @@ export default function Room() {
           style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}
         >
           <MicInsecureBanner />
-          <RoomTopHeader isRecording={isRecording} />
+          <RoomTopHeader isRecording={isRecording} openedAtRef={roomOpenedAtRef} />
+          <MeetingAttendeesTracker attendeesRef={attendeesRef} />
           <RoomContent
             groupId={id}
             groupName={groupName}

@@ -443,7 +443,8 @@
 .meeting-info-item {
     /* 아이콘 / 라벨(고정폭) / 값 3열 그리드로 값을 세로로 정렬 */
     display: grid;
-    grid-template-columns: 18px 62px 1fr;
+    /* "회의 그룹명"이 줄바꿈되지 않도록 라벨 칸을 넓힙니다. */
+    grid-template-columns: 18px 96px 1fr;
     align-items: start;
     column-gap: 8px;
 
@@ -472,11 +473,18 @@
     line-height: 1.5;
 }
 
+.meeting-info-item > span:first-of-type {
+    white-space: nowrap;
+}
+
 
 .meeting-info-value {
     font-weight: 400;
 
     color: #444444;
+
+    min-width: 0;
+    word-break: keep-all;
 }
 
 

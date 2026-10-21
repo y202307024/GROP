@@ -25,6 +25,11 @@ type Meeting = {
   topics?: unknown; // 주제별 요약 [{ topic, detail }] (현재 UI에서는 표시 안 함, DB엔 계속 저장)
   speakers?: unknown; // 발언자별요약: [{ speaker, summary }] (AI 추정)
   chat_log?: unknown; // 회의 중 채팅 [{ from, name, text, ts }] — 마이크 없이 진행한 회의의 요약 재료
+  started_at?: string | null; // 회의방을 연 시각
+  ended_at?: string | null; // 회의방을 닫은 시각
+  attendees?: unknown; // 그 회의에 들어온 사람 이름
+  ai_headline?: string | null; // AI가 쓴 회의 날짜 한 줄
+  topic_line?: string | null; // AI가 쓴 회의 주제 한 줄
 };
 
 /** meetings.chat_log에 실제 메시지가 있는지(요약 재료로 쓸 수 있는지)만 가볍게 확인 */
@@ -80,6 +85,114 @@ function normalizeSpeakers(raw: unknown): { speaker: string; summary: string }[]
       return { speaker, summary };
     })
     .filter((s) => s.speaker && s.summary);
+}
+
+/** 카드에 넣을 한 줄. 배열·빈 값은 버립니다. */
+function cleanLine(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/** 사람 이름만 남깁니다. 빈 값·익명·"화자 1" 같은 추정 라벨은 참석자로 쓰지 않습니다. */
+function personNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const names: string[] = [];
+  for (const item of raw) {
+    const name = typeof item === 'string' ? item.trim() : '';
+    if (!name || names.includes(name)) continue;
+    if (name === '익명' || name === '참여자' || name === '나') continue;
+    if (/^화자\s*\d+$/.test(name)) continue;
+    names.push(name);
+  }
+  return names;
+}
+
+/** 저장된 참석자 → 채팅을 친 사람 → 발언자 순으로 이름을 고릅니다. */
+function attendeeNames(meeting: Meeting): string[] {
+  const saved = personNames(meeting.attendees);
+  if (saved.length > 0) return saved;
+  const fromChat = personNames(normalizeChatLog(meeting.chat_log).map((m) => m.name));
+  if (fromChat.length > 0) return fromChat;
+  return personNames(normalizeSpeakers(meeting.speakers).map((s) => s.speaker));
+}
+
+function topicNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const names: string[] = [];
+  for (const item of raw) {
+    const rec = item as { topic?: unknown };
+    const topic = typeof rec?.topic === 'string' ? rec.topic.replace(/\s+/g, ' ').trim() : '';
+    if (topic && !names.includes(topic)) names.push(topic);
+  }
+  return names;
+}
+
+/**
+ * 회의가 열린 시각과 닫힌 시각.
+ * 방에 들어오고 나간 시각이 있으면 그걸 쓰고, 예전 회의는 채팅 시각이나 녹화 길이로 추정합니다.
+ */
+function sessionBounds(meeting: Meeting, videoSec: number): { startMs: number; endMs: number } | null {
+  const startSaved = meeting.started_at ? Date.parse(meeting.started_at) : NaN;
+  const endSaved = meeting.ended_at ? Date.parse(meeting.ended_at) : NaN;
+  if (Number.isFinite(startSaved) && Number.isFinite(endSaved) && endSaved >= startSaved) {
+    return { startMs: startSaved, endMs: endSaved };
+  }
+  // 채팅 한 통은 회의 길이로 보기 어렵습니다. 녹화 길이와 비교해 더 긴 쪽을 씁니다.
+  const candidates: { startMs: number; endMs: number }[] = [];
+  const stamps = normalizeChatLog(meeting.chat_log).map((m) => m.ts).filter((ts) => ts > 0);
+  if (stamps.length > 0) {
+    const startMs = Math.min(...stamps);
+    const endMs = Math.max(...stamps);
+    if (endMs > startMs) candidates.push({ startMs, endMs });
+  }
+  const anchor = Date.parse(meeting.created_at || meeting.date || '');
+  if (videoSec > 0 && Number.isFinite(anchor)) {
+    candidates.push({ startMs: anchor - videoSec * 1000, endMs: anchor });
+  }
+  if (candidates.length === 0) return null;
+  return candidates.reduce((best, cur) => (
+    cur.endMs - cur.startMs > best.endMs - best.startMs ? cur : best
+  ));
+}
+
+/** "32분 동안", "1시간 12분 동안". 30초보다 짧으면 분으로 올리기 전에 짧게 표시합니다. */
+function formatMinutesDuring(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 30_000) return '1분 미만';
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `${mins}분 동안`;
+  const hours = Math.floor(mins / 60);
+  const rest = mins % 60;
+  return rest ? `${hours}시간 ${rest}분 동안` : `${hours}시간 동안`;
+}
+
+function formatClockMs(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** 생성 시간: 회의방을 연 시각부터 닫은 시각까지. */
+function formatSessionRange(bounds: { startMs: number; endMs: number } | null, createdAt?: string | null): string {
+  if (!bounds) {
+    if (!createdAt) return '—';
+    const ms = Date.parse(createdAt);
+    return Number.isFinite(ms) ? formatClockMs(ms) : '—';
+  }
+  const start = new Date(bounds.startMs);
+  const end = new Date(bounds.endMs);
+  if (start.toDateString() === end.toDateString()) {
+    return `${formatClockMs(bounds.startMs)} ~ ${formatClockMs(bounds.endMs)}`;
+  }
+  const day = (d: Date) => `${d.getMonth() + 1}/${d.getDate()} ${formatClockMs(d.getTime())}`;
+  return `${day(start)} ~ ${day(end)}`;
+}
+
+/** PostgREST/Postgres가 "없는 컬럼"이라고 할 때만 그 컬럼 이름을 돌려줍니다. */
+function missingMeetingsColumn(message: string): string | null {
+  const postgrest = message.match(/Could not find the '([^']+)' column/);
+  if (postgrest?.[1]) return postgrest[1];
+  const pg = message.match(/column "([^"]+)" of relation "meetings" does not exist/);
+  if (pg?.[1]) return pg[1];
+  return null;
 }
 
 type Props = {
@@ -205,6 +318,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   // ai 목업 레이아웃 전용 상태 (탭 하이라이트 / 대화록 더보기)
   const [videoTab, setVideoTab] = useState<'all' | 'speaker'>('all');
   const [summaryTab, setSummaryTab] = useState<'core' | 'timeline'>('core');
+  // 회의가 속한 그룹 이름. 정보 카드 맨 위 행에 씁니다.
+  const [groupName, setGroupName] = useState('');
 
   // 챕터 타임라인 관련
   const [chapters, setChapters] = useState<MeetingChapter[]>([]);
@@ -224,6 +339,24 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     setLoading(true);
     fetchMeeting();
   }, [meetingId]);
+
+  useEffect(() => {
+    const groupId = meeting?.group_id;
+    if (!groupId) {
+      setGroupName('');
+      return;
+    }
+    let cancelled = false;
+    void supabase
+      .from('groups')
+      .select('name')
+      .eq('id', groupId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setGroupName(data?.name?.trim() || '—');
+      });
+    return () => { cancelled = true; };
+  }, [meeting?.group_id]);
 
   useEffect(() => {
     if (!meeting?.video_url) {
@@ -320,7 +453,12 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       const res = await fetch(`${getApiBase()}/api/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl: meeting.video_url, chatLog: meeting.chat_log ?? null })
+        body: JSON.stringify({
+          videoUrl: meeting.video_url,
+          chatLog: meeting.chat_log ?? null,
+          // 모델이 날짜를 지어내지 않도록, 화면에 쓰는 것과 같은 날짜 문구를 넘깁니다.
+          meetingDateLabel: formatDate(meeting.date),
+        })
       });
 
       if (!res.ok) {
@@ -333,38 +471,40 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       const nextChapters = normalizeChapters(data.chapters, data.duration);
 
       setAiStep('💾 저장 중...');
-      // 새 컬럼(transcript·topics·chapters)이 아직 없는 DB도 있어, 단계적으로 낮춰가며 저장합니다.
-      const upd = (payload: Record<string, unknown>) =>
-        supabase.from('meetings').update(payload).eq('id', meetingId);
-
-      let error = (await upd({
+      // 없는 컬럼(ai_headline 등)만 빼면서 저장합니다. 요약 본문까지 통째로 버리지 않기 위해서입니다.
+      const headline = cleanLine(data.headline);
+      const topicLine = cleanLine(data.topicLine);
+      const payload: Record<string, unknown> = {
         summary: data.summary,
         chapters: nextChapters,
         transcript: data.transcript ?? null,
         topics: data.topics ?? null,
         speakers: data.speakers ?? null,
-      })).error;
-
-      if (error) {
-        // transcript/topics 컬럼이 없을 때 → 요약 + 타임라인까지만
-        error = (await upd({ summary: data.summary, chapters: nextChapters })).error;
-        if (!error) {
-          alert(
-            '요약·타임라인은 저장했어요. 발언자별 요약까지 저장하려면\n' +
-            'supabase/05_회의록_및_영상.sql 의 transcript·topics·speakers 컬럼을 적용하세요.'
-          );
+        // title에도 남겨 두면, ai_headline 컬럼이 아직 없어도 카드의 회의 날짜가 한 줄로 남습니다.
+        ...(headline ? { ai_headline: headline, title: headline } : {}),
+        ...(topicLine ? { topic_line: topicLine } : {}),
+      };
+      const dropped: string[] = [];
+      let error: { message: string } | null = null;
+      for (let i = 0; i < 8; i += 1) {
+        const result = await supabase.from('meetings').update(payload).eq('id', meetingId);
+        if (!result.error) {
+          error = null;
+          break;
         }
+        error = result.error;
+        const col = missingMeetingsColumn(result.error.message);
+        if (!col || !(col in payload)) break;
+        delete payload[col];
+        dropped.push(col);
+        if (Object.keys(payload).length === 0) break;
       }
-      if (error) {
-        // chapters 컬럼도 없을 때 → 요약만
-        error = (await upd({ summary: data.summary })).error;
-        if (!error) {
-          setChapters(nextChapters);
-          alert(
-            '요약만 저장했어요. supabase/05_회의록_및_영상.sql 을 적용하면\n' +
-            '타임라인·발언자별 요약도 저장됩니다.'
-          );
-        }
+      if (!error && dropped.length > 0) {
+        alert(
+          '요약은 저장했어요. 아래 항목은 DB에 컬럼이 없어 빠졌습니다.\n' +
+          `${dropped.join(', ')}\n` +
+          'supabase/14_회의정보.sql 을 적용하면 날짜·주제 한 줄도 남습니다.'
+        );
       }
       if (error) throw new Error(error.message);
 
@@ -483,6 +623,13 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     // 실제로 그 사람이 쓴 메시지를 전부 모아서 보여줍니다(채팅 기록이 있을 때 더 정확함).
     const chatMessages = normalizeChatLog(meeting.chat_log);
     const chatBySpeaker = groupChatBySpeaker(chatMessages);
+    // 정보 카드. 날짜·주제는 요약이 만든 한 줄, 없으면 기존 제목/주제 이름으로 대체합니다.
+    const dateLine = cleanLine(meeting.ai_headline) || meeting.title;
+    const topicLine = cleanLine(meeting.topic_line) || topicNames(meeting.topics).join(', ') || '—';
+    const memberNames = attendeeNames(meeting);
+    const bounds = sessionBounds(meeting, duration);
+    const durationLabel = bounds ? formatMinutesDuring(bounds.endMs - bounds.startMs) : '—';
+    const sessionLabel = formatSessionRange(bounds, meeting.created_at);
 
     return (
       <>
@@ -719,46 +866,46 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
               </div>
             </div>
 
-            {/* 회의 정보 카드 — 실제 회의 데이터 (없는 항목은 '—') */}
+            {/* 회의 정보 카드 — 그룹명, AI 한 줄, 참석자, 진행 시간, 열고 닫은 시각 */}
             <aside className="meeting-info">
               <div className="meeting-info-title">회의 정보</div>
 
               <div className="meeting-info-item">
                 <Icon name="users" />
-                <span>회의명</span>
-                <span className="meeting-info-value">{meeting.title}</span>
+                <span>회의 그룹명</span>
+                <span className="meeting-info-value">{groupName || '—'}</span>
               </div>
 
               <div className="meeting-info-item">
                 <Icon name="clipboard-list" />
+                <span>회의 날짜</span>
+                <span className="meeting-info-value">{dateLine}</span>
+              </div>
+
+              <div className="meeting-info-item">
+                <Icon name="pencil" />
                 <span>회의 주제</span>
-                <span className="meeting-info-value">—</span>
+                <span className="meeting-info-value">{topicLine}</span>
               </div>
 
               <div className="meeting-info-item">
                 <Icon name="circle-user" />
                 <span>참석자</span>
-                <span className="meeting-info-avatars">
-                  <Icon name="circle-user" />
-                  <Icon name="circle-user" />
-                  <Icon name="circle-user" />
+                <span className="meeting-info-value">
+                  {memberNames.length > 0 ? memberNames.join(', ') : '—'}
                 </span>
               </div>
 
               <div className="meeting-info-item">
                 <Icon name="clock" />
                 <span>회의 시간</span>
-                <span className="meeting-info-value">
-                  {formatDate(meeting.date)} {formatTime(meeting.date)}
-                </span>
+                <span className="meeting-info-value">{durationLabel}</span>
               </div>
 
               <div className="meeting-info-item">
                 <Icon name="clock" />
                 <span>생성 시간</span>
-                <span className="meeting-info-value">
-                  {meeting.created_at ? formatTime(meeting.created_at) : '—'}
-                </span>
+                <span className="meeting-info-value">{sessionLabel}</span>
               </div>
             </aside>
           </div>

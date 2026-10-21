@@ -497,7 +497,7 @@ app.get('/api/meeting-docs', (req, res) => {
 // 실제 요약 흐름은 aiSummary.js 에 있고, 여기서는 "영상을 이 서버 디스크에서 어떻게 읽는지"만 정합니다.
 app.post('/api/summarize', async (req, res) => {
   try {
-    const { videoUrl, chatLog } = req.body
+    const { videoUrl, chatLog, meetingDateLabel } = req.body
     const hasChatLog = Array.isArray(chatLog) && chatLog.length > 0
     if ((!videoUrl || typeof videoUrl !== 'string') && !hasChatLog) {
       return res.status(400).json({ error: 'videoUrl 또는 chatLog 중 하나는 필요합니다' })
@@ -534,7 +534,11 @@ app.post('/api/summarize', async (req, res) => {
         }
       : null
 
-    res.json(await summarizeMeeting({ loadVideo, chatLog }))
+    res.json(await summarizeMeeting({
+      loadVideo,
+      chatLog,
+      meetingDateLabel: typeof meetingDateLabel === 'string' ? meetingDateLabel : '',
+    }))
   } catch (err) {
     const message = summaryErrorMessage(err)
     console.error('AI 요약 실패:', message)

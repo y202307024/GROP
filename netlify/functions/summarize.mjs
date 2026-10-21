@@ -57,7 +57,7 @@ export default async (req) => {
   // loadVideo 가 만든 임시 파일은 요약이 끝나면(성공/실패 무관) 지웁니다.
   let tmpPath = null
   try {
-    const { videoUrl, chatLog } = (await req.json().catch(() => ({}))) || {}
+    const { videoUrl, chatLog, meetingDateLabel } = (await req.json().catch(() => ({}))) || {}
     const hasChatLog = Array.isArray(chatLog) && chatLog.length > 0
     if ((!videoUrl || typeof videoUrl !== 'string') && !hasChatLog) {
       return json({ error: 'videoUrl 또는 chatLog 중 하나는 필요합니다' }, 400)
@@ -86,7 +86,11 @@ export default async (req) => {
         }
       : null
 
-    return json(await summarizeMeeting({ loadVideo, chatLog }))
+    return json(await summarizeMeeting({
+      loadVideo,
+      chatLog,
+      meetingDateLabel: typeof meetingDateLabel === 'string' ? meetingDateLabel : '',
+    }))
   } catch (err) {
     const message = summaryErrorMessage(err)
     console.error('AI 요약 실패:', message)

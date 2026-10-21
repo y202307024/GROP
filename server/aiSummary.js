@@ -124,14 +124,25 @@ async function transcribeAudio(audioBuffer, isMp3) {
   throw lastErr
 }
 
+/** 정보 카드에 넣을 한 줄. 줄바꿈·앞뒤 공백을 없애고 길이를 자릅니다. */
+function oneLine(value, max = 80) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
+
 /** JSON 모드가 400이면 일반 텍스트로 한 번 더 요청합니다. */
 /**
  * usedChatFallback: 오디오가 아니라 채팅 기록으로 요약할 때(마이크 없음) true.
  *   채팅 기록에는 이미 실제 이름이 있어 화자를 추측할 필요가 없습니다.
  */
-async function completeMeetingJson(transcriptForLlm, usedChatFallback = false) {
+async function completeMeetingJson(transcriptForLlm, usedChatFallback = false, meetingDateLabel = '') {
   const groq = getGroq()
   const chatModel = getChatModel()
+  // 날짜는 클라이언트가 넘긴 실제 회의 날짜만 씁니다. 없으면 모델이 날짜를 지어내지 않게 합니다.
+  const dateHint = meetingDateLabel
+    ? `회의 날짜는 "${meetingDateLabel}" 입니다. headline에는 이 날짜와 실제 주제를 한 줄로 쓰세요. 다른 날짜를 지어내지 마세요.`
+    : '입력에 회의 날짜가 없으면 headline에 날짜를 지어내지 말고 주제만 한 줄로 쓰세요.'
   const speakerRule = usedChatFallback
     ? '입력에는 이미 각 줄에 실제 이름이 붙어 있습니다(예: "[00:10] 민수: ..."). speakers는 이름을 추측하지 말고 그 이름을 그대로 써서 각자가 한 말을 요약하세요.'
     : '녹취록에는 화자 표시가 없습니다. 기본적으로 화자는 1명("화자 1")이라고 가정하세요. '
@@ -150,6 +161,8 @@ ${inputKindLine}
 
 {
   "overview": "회의 전체를 2~3문장으로 요약 (핵심요약용)",
+  "headline": "회의 날짜와 주제를 담은 제목 한 줄 (40자 이내). 예: 10월 8일 모니터 사양 검토",
+  "topicLine": "이번 회의에서 실제로 다룬 내용을 한 줄로 (40자 이내). headline과 같은 문장을 반복하지 말 것",
   "chapters": [
     { "time": 0, "title": "짧은 소제목 (20자 이내)", "summary": "이 구간에서 다룬 내용 1~2문장" }
   ],
@@ -168,6 +181,9 @@ ${inputKindLine}
 - 챕터는 입력에 실제로 등장한 타임스탬프만 사용하세요. 지어내지 마세요.
 - 챕터는 3~8개가 적당하며, 시간 순으로 정렬하세요.
 - 첫 챕터는 time 0 으로 시작하세요.
+- headline과 topicLine은 각각 한 줄입니다. 줄바꿈·목록·따옴표로 감싸지 마세요.
+- ${dateHint}
+- topicLine은 입력에 실제로 나온 주제만 쓰고, headline의 문장을 그대로 복사하지 마세요.
 - topics는 '시간'이 아니라 '무엇에 대해 이야기했는지' 기준으로 묶으세요. 2~6개가 적당합니다.
 - topics의 detail은 입력에 실제로 나온 내용만 쓰고, 없는 내용을 지어내지 마세요.
 - ${speakerRule}
@@ -383,9 +399,10 @@ function extractAudio(inputPath, inputBuffer) {
  * @param {(() => Promise<{ filePath?: string, buffer?: Buffer }>) | null} options.loadVideo
  *   영상을 읽어오는 함수. 저장 위치(서버 디스크, Netlify Blobs 등)는 호출하는 쪽이 정합니다.
  * @param {Array|null} options.chatLog 회의 채팅 기록
+ * @param {string} [options.meetingDateLabel] 카드 "회의 날짜"에 쓸 실제 날짜 (예: 2026년 10월 8일)
  * @returns {Promise<object>} 클라이언트에 그대로 내려줄 요약 결과
  */
-async function summarizeMeeting({ loadVideo, chatLog }) {
+async function summarizeMeeting({ loadVideo, chatLog, meetingDateLabel = '' }) {
   const hasChatLog = Array.isArray(chatLog) && chatLog.length > 0
   let transcriptForLlm = ''
   let durationSec = 0
@@ -454,7 +471,7 @@ async function summarizeMeeting({ loadVideo, chatLog }) {
 
   // 4. 챕터 + 요약 JSON 생성 (json_object 400이면 일반 응답으로 재시도, 채팅 대체 시 화자 규칙도 다르게)
   console.log('요약/챕터 생성 중...')
-  const parsed = await completeMeetingJson(transcriptForLlm, usedChatFallback)
+  const parsed = await completeMeetingJson(transcriptForLlm, usedChatFallback, String(meetingDateLabel || '').trim())
 
   const chapters = normalizeChapters(parsed.chapters, durationSec)
   const summaryText = buildSummaryText(parsed, chapters)
@@ -471,10 +488,15 @@ async function summarizeMeeting({ loadVideo, chatLog }) {
         .filter((s) => s && typeof s.speaker === 'string' && s.speaker.trim() && String(s.summary || '').trim())
         .map((s) => ({ speaker: String(s.speaker).trim(), summary: String(s.summary).trim() }))
     : []
+  // 정보 카드용 한 줄. 모델이 비우면 주제 이름으로 대체합니다.
+  const headline = oneLine(parsed.headline, 60) || oneLine(topics[0]?.topic, 60)
+  const topicLine = oneLine(parsed.topicLine, 80) || oneLine(topics.map((t) => t.topic).join(', '), 80)
   console.log(`요약 완료! (${usedChatFallback ? '채팅 기록' : '음성'} 기반) 챕터 ${chapters.length}개, 주제 ${topics.length}개, 화자 ${speakers.length}명`)
 
   return {
     success: true,
+    headline,
+    topicLine,
     // 상세요약 = 타임스탬프가 붙은 전체 녹취록(영상 풀내용, 채팅 대체 시 채팅 로그)
     transcript: transcriptForLlm,
     summary: summaryText,
