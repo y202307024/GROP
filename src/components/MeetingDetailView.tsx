@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
+import { chatLogForSummary } from '../utils/liveMeeting';
 import { primeWebmSeeking, resolveMeetingVideoUrl } from '../utils/meetingVideo';
 import {
   findActiveChapterIndex,
@@ -525,7 +526,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           videoUrl: meeting.video_url,
-          chatLog: meeting.chat_log ?? null,
+          chatLog: chatLogForSummary(meeting.chat_log),
           // 모델이 날짜를 지어내지 않도록, 화면에 쓰는 것과 같은 날짜 문구를 넘깁니다.
           meetingDateLabel: formatDate(meeting.date),
         })

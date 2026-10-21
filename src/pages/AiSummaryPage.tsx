@@ -5,6 +5,7 @@ import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import MeetingDetailView from '../components/MeetingDetailView';
 import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
+import { liveIdentitiesFor, useLiveRooms } from '../utils/liveMeeting';
 import { readLastMeeting } from '../utils/lastMeeting';
 
 // 우측 회의 목록에 쓸 회의 행 타입 (문서 탭과 동일한 meetings 데이터)
@@ -47,6 +48,8 @@ export default function AiSummaryPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
   const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
+  // 진행중은 그 회의 방에 사람이 남아 있을 때만입니다. 비면 완료입니다.
+  const liveRooms = useLiveRooms();
 
   useEffect(() => {
     let mounted = true;
@@ -116,6 +119,7 @@ export default function AiSummaryPage() {
     };
 
     void load();
+    const timer = window.setInterval(() => { void load(); }, 5000);
     const onFocus = () => {
       void load();
     };
@@ -123,6 +127,7 @@ export default function AiSummaryPage() {
     document.addEventListener('visibilitychange', onFocus);
     return () => {
       mounted = false;
+      window.clearInterval(timer);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onFocus);
     };
@@ -166,9 +171,14 @@ export default function AiSummaryPage() {
               meetings.map((m) => {
                 const hasSummary = !!m.summary?.trim();
                 const active = m.id === selectedId;
-                // 요약이 없으면 진행 상태에 '내용 없음' 표시 (상세 본문은 '아무 내용이 없습니다')
-                const statusLabel = hasSummary ? '완료' : '내용 없음';
-                const statusClass = hasSummary ? 'done' : 'progress';
+                // 방에 사람이 있으면 진행중, 아무도 없으면 완료입니다. AI 요약 여부는 오른쪽 아이콘입니다.
+                const inRoom = liveRooms.some((room) => room.meetingId === m.id);
+                const statusLabel = inRoom ? '진행중' : '완료';
+                const statusClass = inRoom ? 'progress' : 'done';
+                const faceIds = attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id));
+                for (const id of liveIdentitiesFor(liveRooms, m.id)) {
+                  if (!faceIds.includes(id)) faceIds.push(id);
+                }
                 return (
                   <div
                     className="meeting-card-row"
@@ -185,7 +195,7 @@ export default function AiSummaryPage() {
                     <div className="meeting-card-row-bottom">
                       <span>{formatMeetingDate(m.date)}</span>
                       <MeetingAttendeeFaces
-                        ids={attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id))}
+                        ids={faceIds}
                         avatarByUserId={avatarByUserId}
                       />
                       <span className="ai-icon">

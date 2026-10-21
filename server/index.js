@@ -167,6 +167,73 @@ app.post('/api/oauth-origin', (req, res) => {
   res.json({ origin: rememberOauthOrigin(req.body?.origin) })
 })
 
+function livekitRoomService() {
+  const host = process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || ''
+  const httpHost = host.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:')
+  if (!httpHost || !process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) return null
+  return new RoomServiceClient(httpHost, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET)
+}
+
+function meetingIdFromMetadata(metadata) {
+  try {
+    const parsed = JSON.parse(metadata || '')
+    return typeof parsed?.meetingId === 'string' ? parsed.meetingId : null
+  } catch {
+    return null
+  }
+}
+
+/** 사람이 남아 있는 방. 회의 목록의 진행중/완료와 참석자 아이콘이 이 목록을 봅니다. */
+app.get('/api/live-rooms', async (_req, res) => {
+  const svc = livekitRoomService()
+  if (!svc) return res.status(500).json({ error: 'LiveKit 서버 설정이 없습니다' })
+  try {
+    const rooms = await svc.listRooms()
+    const active = []
+    for (const room of rooms) {
+      if (Number(room.numParticipants) <= 0) continue
+      let identities = []
+      try {
+        const people = await svc.listParticipants(room.name)
+        identities = people.map((person) => person.identity).filter(Boolean)
+      } catch (err) {
+        console.warn('참가자 목록 조회 실패:', room.name, err.message)
+      }
+      active.push({
+        name: room.name,
+        meetingId: meetingIdFromMetadata(room.metadata),
+        identities,
+      })
+    }
+    res.json({ rooms: active })
+  } catch (err) {
+    console.error('진행중 방 조회 실패:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+/** 이 방에 표시할 회의 행을 붙입니다. 이미 있으면 그 행을 그대로 돌려줍니다. */
+app.post('/api/live-room-meeting', async (req, res) => {
+  const roomName = String(req.body?.roomName || '').trim()
+  const meetingId = String(req.body?.meetingId || '').trim()
+  if (!roomName || !meetingId) {
+    return res.status(400).json({ error: 'roomName과 meetingId가 필요합니다' })
+  }
+  const svc = livekitRoomService()
+  if (!svc) return res.status(500).json({ error: 'LiveKit 서버 설정이 없습니다' })
+  try {
+    const rooms = await svc.listRooms([roomName])
+    const current = meetingIdFromMetadata(rooms[0]?.metadata)
+    if (current) return res.json({ meetingId: current })
+    await svc.updateRoomMetadata(roomName, JSON.stringify({ meetingId }))
+    const after = await svc.listRooms([roomName])
+    res.json({ meetingId: meetingIdFromMetadata(after[0]?.metadata) || meetingId })
+  } catch (err) {
+    console.error('회의 행 연결 실패:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 app.post('/api/livekit-token', async (req, res) => {
   try {
     const { roomName, userName, userId } = req.body

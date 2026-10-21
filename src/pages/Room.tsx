@@ -47,6 +47,15 @@ import {
   encodeRecordingSyncMessage,
 } from '../utils/meetingRecordingSync';
 import {
+  ensureLiveMeeting,
+  forgetSessionMeetingId,
+  isUserId,
+  mergeMeetingAttendees,
+  readSessionMeetingId,
+  rememberSessionMeetingId,
+  withAttendeePresence,
+} from '../utils/liveMeeting';
+import {
   getMicrophoneFailureMessage,
   isSecureMediaContext,
   localhostAppUrl,
@@ -92,6 +101,39 @@ function wasRecording(groupId: string | undefined) {
   }
 }
 
+/** 이 탭이 새로고침돼도 회의를 연 시각을 유지합니다. 나가면 지웁니다. */
+function roomOpenedKey(groupId: string) {
+  return `grop-room-opened:${groupId}`;
+}
+
+function rememberRoomOpened(groupId: string | undefined, ms: number) {
+  if (!groupId || !Number.isFinite(ms)) return;
+  try {
+    sessionStorage.setItem(roomOpenedKey(groupId), String(ms));
+  } catch {
+    // 저장이 막혀도 이번 접속의 타이머는 그대로 갑니다.
+  }
+}
+
+function readRoomOpened(groupId: string | undefined): number | null {
+  if (!groupId) return null;
+  try {
+    const ms = Number(sessionStorage.getItem(roomOpenedKey(groupId)));
+    return Number.isFinite(ms) && ms > 0 ? ms : null;
+  } catch {
+    return null;
+  }
+}
+
+function forgetRoomOpened(groupId: string | undefined) {
+  if (!groupId) return;
+  try {
+    sessionStorage.removeItem(roomOpenedKey(groupId));
+  } catch {
+    // 없어도 다음 회의 타이머를 막지 않습니다.
+  }
+}
+
 function formatMeetingElapsed(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -115,28 +157,100 @@ function MicInsecureBanner() {
   );
 }
 
+const MEETING_CLOCK_TOPIC = 'meeting-clock';
+
+type MeetingClockMessage =
+  | { type: 'clock:query'; from: string }
+  | { type: 'clock:start'; from: string; startedAt: number };
+
+function decodeMeetingClock(payload: Uint8Array): MeetingClockMessage | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(payload)) as MeetingClockMessage;
+    if (parsed.type !== 'clock:query' && parsed.type !== 'clock:start') return null;
+    if (typeof parsed.from !== 'string') return null;
+    if (parsed.type === 'clock:start' && !Number.isFinite(parsed.startedAt)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function RoomTopHeader({
   isRecording,
   openedAtRef,
+  groupId,
 }: {
   isRecording: boolean;
   /** 회의방을 연 시각. 나갈 때 meetings.started_at 으로 남깁니다. */
   openedAtRef: RefObject<number | null>;
+  groupId?: string;
 }) {
   const room = useRoomContext();
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
-    const markStart = () => {
+    // 늦게 들어온 사람도 먼저 있던 사람의 시작 시각을 써야 진행 시간이 같아집니다.
+    const adopt = (ms: number) => {
+      if (!Number.isFinite(ms) || ms <= 0) return;
       const now = Date.now();
-      setStartedAt((prev) => prev ?? now);
-      if (openedAtRef.current == null) openedAtRef.current = now;
+      if (ms > now + 10_000) return;
+      const value = Math.min(ms, now);
+      setStartedAt((prev) => (prev == null || value < prev ? value : prev));
+      if (openedAtRef.current == null || value < openedAtRef.current) {
+        openedAtRef.current = value;
+        rememberRoomOpened(groupId, value);
+      }
     };
+
+    const publish = (msg: MeetingClockMessage, to?: string) => (
+      room.localParticipant.publishData(
+        new TextEncoder().encode(JSON.stringify(msg)),
+        {
+          reliable: true,
+          topic: MEETING_CLOCK_TOPIC,
+          destinationIdentities: to ? [to] : undefined,
+        },
+      )
+    );
+
+    const markStart = () => {
+      const stored = readRoomOpened(groupId);
+      if (stored != null) adopt(stored);
+      adopt(Date.now());
+      const from = room.localParticipant.identity;
+      if (!from) return;
+      void publish({ type: 'clock:query', from }).catch((err) => {
+        console.warn('회의 진행 시간 요청 실패:', err);
+      });
+    };
+
+    const onData = (payload: Uint8Array, _participant?: unknown, _kind?: unknown, topic?: string) => {
+      if (topic !== MEETING_CLOCK_TOPIC) return;
+      const msg = decodeMeetingClock(payload);
+      const me = room.localParticipant.identity;
+      if (!msg || !me || msg.from === me) return;
+      if (msg.type === 'clock:start') {
+        adopt(msg.startedAt);
+        return;
+      }
+      const known = openedAtRef.current;
+      if (known == null) return;
+      void publish({ type: 'clock:start', from: me, startedAt: known }, msg.from).catch((err) => {
+        console.warn('회의 진행 시간 전달 실패:', err);
+      });
+    };
+
     if (room.state === 'connected') markStart();
     room.on(RoomEvent.Connected, markStart);
-    return () => { room.off(RoomEvent.Connected, markStart); };
-  }, [room, openedAtRef]);
+    room.on(RoomEvent.Reconnected, markStart);
+    room.on(RoomEvent.DataReceived, onData);
+    return () => {
+      room.off(RoomEvent.Connected, markStart);
+      room.off(RoomEvent.Reconnected, markStart);
+      room.off(RoomEvent.DataReceived, onData);
+    };
+  }, [room, openedAtRef, groupId]);
 
   useEffect(() => {
     if (!startedAt) return;
@@ -165,6 +279,68 @@ function RoomTopHeader({
 function ParticipantCountTracker({ countRef }: { countRef: RefObject<number> }) {
   const participants = useParticipants();
   countRef.current = participants.length;
+  return null;
+}
+
+/**
+ * 방에 사람이 있는 동안 회의 목록에 진행중으로 보일 행을 만들고,
+ * 들어온 사람 id를 그 행에 계속 더합니다.
+ */
+function LiveMeetingPresence({
+  groupId,
+  userId,
+  sessionMeetingIdRef,
+  attendeeIdsRef,
+}: {
+  groupId: string;
+  userId: string;
+  sessionMeetingIdRef: RefObject<string | null>;
+  attendeeIdsRef: RefObject<string[]>;
+}) {
+  const room = useRoomContext();
+  const participants = useParticipants();
+  const identitiesKey = participants.map((person) => person.identity).sort().join('\n');
+
+  useEffect(() => {
+    if (!groupId) return;
+    let cancelled = false;
+
+    const sync = async () => {
+      if (room.state !== 'connected') return;
+      const identities = participants
+        .map((person) => (person.identity || '').trim())
+        .filter(isUserId);
+      const ordered = participants.map((person) => person.identity).filter(Boolean).sort();
+      const me = room.localParticipant.identity;
+      if (!me || ordered.length === 0) return;
+      const meetingId = await ensureLiveMeeting({
+        groupId,
+        userId,
+        attendeeIds: identities,
+        preferredId: sessionMeetingIdRef.current || readSessionMeetingId(groupId),
+        isLeader: ordered[0] === me,
+      });
+      if (cancelled || !meetingId) return;
+      sessionMeetingIdRef.current = meetingId;
+      rememberSessionMeetingId(groupId, meetingId);
+      const known = new Set([...(attendeeIdsRef.current ?? []), ...identities]);
+      if (isUserId(userId)) known.add(userId);
+      attendeeIdsRef.current = [...known];
+      await mergeMeetingAttendees(meetingId, [...known]);
+    };
+
+    void sync();
+    const timer = window.setInterval(() => { void sync(); }, 8000);
+    room.on(RoomEvent.Connected, sync);
+    room.on(RoomEvent.Reconnected, sync);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      room.off(RoomEvent.Connected, sync);
+      room.off(RoomEvent.Reconnected, sync);
+    };
+  }, [room, groupId, userId, identitiesKey, participants, sessionMeetingIdRef, attendeeIdsRef]);
+
   return null;
 }
 
@@ -870,21 +1046,22 @@ export default function Room() {
    * 회의방 열린 시각, 닫는 시각, 참석자 user id를 회의 행에 남깁니다.
    * 컬럼이 아직 없어도 녹화 저장 자체는 막지 않습니다.
    */
-  const saveSessionMeta = async (meetingId: string) => {
+  const saveSessionMeta = async (meetingId: string, opts?: { close?: boolean }) => {
     const chatStart = chatLogRef.current.find((m) => m.ts > 0)?.ts ?? null;
     const opened = roomOpenedAtRef.current ?? chatStart ?? Date.now();
     const ids = new Set(attendeeIdsRef.current);
     // 목록 아이콘은 이 방의 모든 참가자여야 해서, 저장하는 사람도 빠지지 않게 넣습니다.
-    if (/^[0-9a-f-]{36}$/i.test(userId)) ids.add(userId);
+    if (isUserId(userId)) ids.add(userId);
     for (const msg of chatLogRef.current) {
-      if (/^[0-9a-f-]{36}$/i.test(msg.from || '')) ids.add(msg.from);
+      if (isUserId(msg.from || '')) ids.add(msg.from);
     }
+    // 참석자는 덮어쓰지 않고 더합니다. 늦게 저장하는 사람이 앞사람을 지우지 않게 합니다.
+    await mergeMeetingAttendees(meetingId, [...ids]);
     const payload: Record<string, unknown> = {
       started_at: new Date(opened).toISOString(),
-      ended_at: new Date().toISOString(),
-      // 목록 아이콘은 이 id로 프로필 아바타를 찾습니다.
-      attendees: [...ids],
     };
+    // 끝난 시각은 마지막 사람이 나갈 때만 남깁니다. 진행중 여부는 방 인원으로 판단합니다.
+    if (opts?.close) payload.ended_at = new Date().toISOString();
     try {
       for (let i = 0; i < 4; i += 1) {
         const { error } = await supabase.from('meetings').update(payload).eq('id', meetingId);
@@ -985,7 +1162,10 @@ export default function Room() {
     const videoUrl = `${getApiBase()}/videos/${relativePath}`;
     const attachments = toMeetingAttachments(sharedFilesRef.current);
     // 채팅 기록은 마이크 없이 진행한 회의도 나중에 AI 요약을 만들 수 있게 해줍니다.
-    const chatLog = chatLogRef.current;
+    const chatLog = withAttendeePresence(chatLogRef.current, [
+      ...attendeeIdsRef.current,
+      ...(isUserId(userId) ? [userId] : []),
+    ]);
     const gid = groupIdRef.current;
     if (!gid) {
       return { ok: false, error: '그룹 정보가 없어 회의록을 저장하지 못했습니다.' };
@@ -1380,6 +1560,9 @@ export default function Room() {
     const isLastParticipant = participantCountRef.current <= 1;
 
     setSaving(true);
+    // 이 브라우저가 방을 떠나면 다음 회의 타이머·회의 행이 이전 접속을 쓰지 않게 지웁니다.
+    forgetRoomOpened(id);
+    forgetSessionMeetingId(id);
 
     try {
       if (!isLastParticipant) {
@@ -1415,8 +1598,8 @@ export default function Room() {
     }
 
     if (sessionMeetingIdRef.current) {
-      // 녹화를 먼저 끊었어도, 생성 시간의 끝은 회의방을 닫는 이 시점입니다.
-      await saveSessionMeta(sessionMeetingIdRef.current);
+      // 생성 시간의 끝과 완료 표시는 마지막 사람이 나갈 때만 닫습니다.
+      await saveSessionMeta(sessionMeetingIdRef.current, { close: isLastParticipant });
     }
 
     setSaving(false);
@@ -1469,9 +1652,15 @@ export default function Room() {
           style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}
         >
           <MicInsecureBanner />
-          <RoomTopHeader isRecording={isRecording} openedAtRef={roomOpenedAtRef} />
+          <RoomTopHeader isRecording={isRecording} openedAtRef={roomOpenedAtRef} groupId={id} />
           <ParticipantCountTracker countRef={participantCountRef} />
           <MeetingAttendeesTracker attendeeIdsRef={attendeeIdsRef} />
+          <LiveMeetingPresence
+            groupId={id}
+            userId={userId}
+            sessionMeetingIdRef={sessionMeetingIdRef}
+            attendeeIdsRef={attendeeIdsRef}
+          />
           <RoomContent
             groupId={id}
             groupName={groupName}

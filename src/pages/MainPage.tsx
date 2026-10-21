@@ -6,6 +6,7 @@ import AppShell from '../components/AppShell';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
 import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
+import { liveIdentitiesFor, useLiveRooms } from '../utils/liveMeeting';
 
 function rndCode() {
   const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -110,6 +111,8 @@ export default function MainPage() {
   const [joinSuccess, setJoinSuccess] = useState(false);
   const [userId, setUserId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  // 진행중은 AI 요약이 아니라, 그 회의 방에 아직 사람이 있는지로 판단합니다.
+  const liveRooms = useLiveRooms();
 
   useEffect(() => {
     const init = async () => {
@@ -120,6 +123,12 @@ export default function MainPage() {
     };
     init();
   }, []);
+
+  useEffect(() => {
+    if (!userId) return;
+    const timer = window.setInterval(() => { void fetchGroups(userId); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [userId]);
 
   const fetchGroups = async (uid: string) => {
     const { data } = await supabase
@@ -294,19 +303,25 @@ export default function MainPage() {
             <div className="meeting-row">
               <span className="title">아직 회의록이 없어요</span>
             </div>
-          ) : meetings.map((m) => (
+          ) : meetings.map((m) => {
+            const inRoom = liveRooms.some((room) => room.meetingId === m.id);
+            const faceIds = attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id));
+            for (const id of liveIdentitiesFor(liveRooms, m.id)) {
+              if (!faceIds.includes(id)) faceIds.push(id);
+            }
+            return (
             <div
               key={m.id}
               className="meeting-row"
               onClick={() => navigate(`/group/${m.group_id}/meeting/${m.id}`)}
             >
               <span className="title">{m.title || '회의'}</span>
-              <span className={`status-pill ${m.summary ? 'done' : 'progress'}`}>
-                {m.summary ? '완료' : '진행중'}
+              <span className={`status-pill ${inRoom ? 'progress' : 'done'}`}>
+                {inRoom ? '진행중' : '완료'}
               </span>
               <span className="date">{formatMeetingDate(m.date)}</span>
               <MeetingAttendeeFaces
-                ids={attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id))}
+                ids={faceIds}
                 avatarByUserId={avatarByUserId}
               />
               <span className="ai-icon">
@@ -315,7 +330,8 @@ export default function MainPage() {
                   : <Icon name="minus-circle" className="pending" />}
               </span>
             </div>
-          ))}
+            );
+          })}
         </section>
 
         <section className="panel">
