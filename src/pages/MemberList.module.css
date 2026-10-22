@@ -1,4 +1,4 @@
-/* 팀원 목록 — grop/css/member.css */
+/* 멤버 목록 — grop/css/member.css */
 
 .loading {
   padding: 40px;
@@ -98,4 +98,168 @@
   text-align: center;
   padding: 60px;
   color: var(--color-text-faint);
+}
+
+/* =========================================
+   화면 고정 + 목록 안 스크롤
+========================================= */
+
+/* 높이 = 화면 − (.main 위 패딩 28 + 상단바 28 + 간격 26 + 아래 패딩 40 = 122px).
+   전역 .page(grop/css/member.css)의 overflow-y: auto / height: 100%를 덮어씁니다 */
+:global(.page).fixedPage {
+  height: calc(var(--app-h, 100dvh) - 122px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 문서/회의록 페이지와 같은 상단 줄 — 왼쪽 탭 제목 + 오른쪽 "그룹으로" 버튼, 아래 전체 폭 구분선 */
+.docHeader {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-10);
+  margin-bottom: var(--space-10);
+
+  /* 제목 행 아래 전체 폭 구분선(피그마 Line 7, #C6C6C6) — 탭의 margin-bottom:-1px 때문에
+     활성 탭의 초록 밑줄이 이 선 위에 겹쳐 올라갑니다 */
+  border-bottom: 1px solid #c6c6c6;
+}
+
+.tabs {
+  display: flex;
+  align-items: flex-end;
+}
+
+.tab {
+  margin-bottom: -1px;
+  /* 문서 페이지 탭과 같은 padding(좌우 10px / 아래 12px) */
+  padding: 0 10px 12px;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-medium); /* 문서 페이지 탭과 같은 500 */
+  color: var(--color-primary);
+  border-bottom: 2px solid var(--color-primary);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  margin-right: 6px; /* 회의록 페이지 "그룹으로" 버튼과 같은 오른쪽 안쪽 여백 */
+}
+
+/* 돌아가기 — 화살표만 있는 버튼(배경 없음). 아래 구분선과 겹치지 않게 8px 위로 띄웁니다 */
+.backButton {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 8px;
+  padding: 0;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.backButton:hover {
+  color: var(--color-primary-hover);
+}
+
+.backButton svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.2;
+}
+
+/* 흰 카드/테두리/그림자 없이 페이지 배경 위에 행 구분선만 보이게 합니다(문서 목록과 동일).
+   [스크롤 목록 + 하단 요약]으로 나누고, 멤버가 적으면 내용 높이만큼만 차지합니다 */
+.memberCard {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.memberBody {
+  min-height: 0;
+  overflow-y: auto;
+
+  /* 스크롤바가 생기고 사라질 때 열 폭이 흔들리지 않게 자리를 항상 확보 */
+  scrollbar-gutter: stable;
+}
+
+/* 열 비율 — 문서 목록과 같은 결(이름 넓게 / 역할 / 가입일) */
+.memberCard :global(.member-row) {
+  /* 마지막 칸은 "그룹 나가기" 버튼(약 96px)이 들어가도록 고정 폭 */
+  grid-template-columns: 6.5fr 3.9fr 3.9fr 112px;
+}
+
+.memberCard :global(.list-row) {
+  padding: 14px 33px 14px 14px;
+  border-bottom: 1px solid #c6c6c6;
+  font-size: var(--text-md);
+}
+
+/* 헤더: 배경 막대 없이 연한 회색 글자. sticky라 아래 행이 비치지 않게 페이지 배경색으로 칠합니다 */
+.memberBody > :global(.list-head) {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+
+  background: var(--color-bg);
+  border-bottom: none;
+  color: #a2a2a2;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+/* 행 hover 배경은 문서 목록처럼 쓰지 않습니다 */
+.memberCard :global(.list-row:not(.list-head):hover) {
+  background: transparent;
+}
+
+/* 아바타 35px(문서 목록 아이콘과 같은 크기) + 이름과 간격 */
+.memberCard :global(.person-cell) {
+  gap: 22px;
+}
+
+.memberCard :global(.avatar-circle) {
+  width: 35px;
+  height: 35px;
+}
+
+.listFooter {
+  flex-shrink: 0;
+  /* 아래 padding 0: 글자 줄의 아래 끝이 다른 페이지 하단 패널의 아래 끝선(영역 끝에서 45px 위)과 같은 높이에 오게 합니다 */
+  padding: var(--space-7) 20px 0;
+  border-top: 1px solid #f2f2f2;
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+}
+
+/* 내 줄의 "그룹 나가기" 버튼 — 흰 바탕 + 빨간 테두리/글자 */
+.leaveCell {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.leaveButton {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--color-danger);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-danger);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+}
+
+.leaveButton:hover {
+  background: var(--color-danger-soft);
 }

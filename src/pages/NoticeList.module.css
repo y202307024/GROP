@@ -1,0 +1,279 @@
+/**
+ * 공지 전체보기 — 상단 줄/카드/스크롤 영역/하단 요약은 MemberList.module.css 를 그대로 가져다 쓰고,
+ * 여기서는 공지에만 필요한 것(제목 칸, 등록·수정·삭제 버튼, 모달)만 정의합니다.
+ */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  flex: 1;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}
+
+.noticeRow {
+  cursor: pointer;
+}
+
+.titleCell {
+  min-width: 0;
+}
+
+.titleName {
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 제목 줄: [압정] 제목 [고정 배지] — 고정 공지만 압정/배지가 붙습니다 */
+.titleLine {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.pinIcon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
+.pinBadge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-primary-tint);
+  color: var(--color-primary-hover);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+
+/* 고정 공지 행 — 연한 배경으로만 구분(데이터 행 높이는 그대로) */
+.pinnedRow {
+  background: var(--color-primary-subtle);
+}
+
+/* "새 공지 추가" 행 — 아주 연한 초록 배경 + 옅은 테두리, 아이콘은 하이라이트 없이 + 모양만 오른쪽 끝에.
+   .member-row는 4칸 그리드라 한 칸으로 합쳐(grid-column) 글자는 왼쪽, + 는 오른쪽 끝에 둡니다 */
+:global(.list-row).addRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 4px 0;
+  border: 1px solid #dfe8d9;
+  border-radius: 10px;
+  background: #f5f8f3;
+  cursor: pointer;
+}
+
+:global(.list-row).addRow:hover {
+  background: #eef4ea;
+}
+
+.addLabel {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-primary-hover);
+}
+
+.addIcon {
+  width: 16px;
+  height: 16px;
+  color: var(--color-primary-hover);
+}
+
+/* 팝업의 "목록 맨 위에 고정" 선택 */
+.pinOption {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--color-primary-subtle);
+  cursor: pointer;
+}
+
+.pinOption input {
+  margin-top: 2px;
+  accent-color: var(--color-primary);
+}
+
+.pinOptionText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pinOptionTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+}
+
+.pinOptionHint {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+/* 본문 한 줄 미리보기 */
+.titleSub {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-4);
+}
+
+.textButton {
+  border: none;
+  background: transparent;
+  padding: 4px 6px;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+
+.textButton:hover {
+  color: var(--color-primary-hover);
+}
+
+.textButton.danger:hover {
+  color: #d64545;
+}
+
+/* =========================================
+   모달 — 공지 보기 / 등록 / 수정
+========================================= */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  box-sizing: border-box;
+  width: 480px;
+  max-width: calc(100% - 48px);
+  max-height: calc(var(--app-h, 100vh) - 96px);
+  padding: var(--space-10);
+  border-radius: var(--radius-2xl);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.modalTitle {
+  font-size: var(--text-base);
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+  word-break: break-all;
+}
+
+.modalMeta {
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+
+/* 줄바꿈을 그대로 보여주고, 길면 모달 안에서만 스크롤 */
+.modalContent {
+  overflow-y: auto;
+  min-height: 80px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.input,
+.textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.textarea {
+  min-height: 160px;
+  resize: vertical;
+  line-height: var(--leading-normal);
+}
+
+.error {
+  font-size: var(--text-xs);
+  color: #d64545;
+}
+
+.modalFooter {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.primaryButton,
+.secondaryButton {
+  height: 36px;
+  padding: 0 18px;
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+}
+
+.primaryButton {
+  border: none;
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.secondaryButton {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

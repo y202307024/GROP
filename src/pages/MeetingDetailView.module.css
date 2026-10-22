@@ -1,0 +1,550 @@
+/**
+ * MeetingDetailView — AI 요약 탭 왼쪽 열(variant="ai") 전용 스타일
+ * grop/css/ai.css 에서 이 컴포넌트에서만 쓰이는 클래스만 옮겨왔습니다.
+ * (.panel/.section-head/.status-pill/.attendees/.ai-icon 은 main.css 전역 스타일을 그대로 재사용)
+ * 피그마 AI 요약 export의 그림자/라운드 값(shadow-drop, br-15)을 참고해 카드 입체감을 살짝 더했습니다.
+ *
+ * 회의 영상 / AI 요약 결과 두 패널을 화면(AiSummaryPage.module.css의 .aiPage) 높이 안에
+ * 세로 2등분(50:50)으로 딱 맞춰 나눠 갖도록 flex 비율로 잡았습니다 — 내용이 넘치면
+ * 페이지 전체가 아니라 각 패널 안(.aiTranscriptList / .aiSummaryLeftScroll)에서만
+ * 세로 스크롤됩니다. 두 패널 사이 간격은 여기가 아니라 부모 .aiMainColumn의
+ * gap(50px)이 정합니다 — 이 파일에서 값을 안 건드려도 그대로 유지됩니다.
+ * :global(.panel) 로 감싼 건 AiSummaryPage.tsx가 공용 .panel 클래스도 같이 쓰기 때문에,
+ * 그 패딩값을 이 두 섹션에서만 더 좁게 덮어쓰기 위해서입니다.
+ *
+ * flex-basis를 %(고정 비율) 대신 0으로 두고 flex-grow를 똑같이 1씩 줬습니다 — 그래야
+ * 부모(.aiMainColumn) 높이가 얼마든, gap(50px)을 뺀 나머지 공간을 정확히 절반씩
+ * 나눠 갖습니다. useStageScale로 화면 자체가 통째로 스케일되어도 이 비율은 그대로
+ * 유지됩니다.
+ */
+
+/* 영상 패널 — 피그마 높이 499px. 요약 패널(425px)과 499 : 425 비율로 세로 공간을 나눠 가집니다
+   (둘 사이 간격 50px을 뺀 나머지 기준: 영상 54%, 요약 46%) */
+:global(.panel).aiVideoSection {
+  flex: 499 1 0;
+  min-height: 200px;
+
+  display: flex;
+  flex-direction: column;
+
+  /* 피그마(패널 310,98 / 제목 338,127 / 영상 아래 559 / 패널 아래 597): 위 29 · 좌우 28 · 아래 38 */
+  padding: 29px 28px 38px;
+}
+
+/* 요약 패널 — 피그마 높이 425px (영상 패널과 499 : 425). 넘치는 내용은 내부에서만 스크롤됩니다 */
+:global(.panel).aiSummarySection {
+  flex: 425 1 0;
+  min-height: 0;
+
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  /* 피그마(패널 310,647 / 제목 338,675 / 버튼 아래 1049 / 패널 아래 1072): 위 28 · 좌우 28 · 아래 23 */
+  padding: 28px 28px 23px;
+}
+
+/* =========================================
+   회의 영상
+========================================= */
+
+.aiVideoHeader {
+  display: flex;
+  /* 피그마: 제목(127~155)은 위, 탭(135~165, 밑줄 165)은 아래 — 헤더 높이 38px */
+  align-items: flex-start;
+  height: 38px;
+  justify-content: space-between;
+  flex-shrink: 0;
+
+  /* 피그마: 탭 밑줄(165)과 영상 위(196) 사이 31px */
+  margin-bottom: 31px;
+  line-height: 28px;
+
+  /* 피그마 수치 그대로(노트북 해상도를 피그마 기준에 맞춰 사용) — 패널 제목 24px / 600 */
+  font-size: 24px;
+  font-weight: var(--weight-semibold);
+}
+
+/* 탭 스위치 — 피그마(Group 80/81 + Line 4/5)처럼 같은 너비의 탭 2개를 붙여 놓고,
+   각 탭 아래 줄이 탭 너비 전체를 차지합니다(활성=초록, 비활성=회색).
+   요약 패널 탭(.aiSummaryTabs)도 같은 .videoTab 스타일을 써서 두 패널의 탭 모양이 같습니다. */
+.aiVideoTabs {
+  display: flex;
+  gap: 0;
+
+  /* 피그마: 탭 영역 454px(= 두 탭 227px씩)이 패널 오른쪽 끝에 붙어 있음.
+     헤더 폭(패널 - 좌우 padding 56px = 1056px) 기준으로 환산하면 (454 - 28) ÷ 1056 ≈ 40.3%
+     + 오른쪽으로 빼는 패널 padding(var(--space-7)). 요약 탭처럼 두 탭이 이 영역을 반반 채웁니다. */
+  flex: 0 0 calc(40.3% + 28px);
+  align-self: flex-end;
+  /* 아주 좁을 땐 글자 폭 아래로는 줄지 않게 */
+  min-width: max-content;
+}
+
+/* 제목이 탭에 밀려 줄바꿈되지 않게 */
+.aiVideoHeader > span {
+  white-space: nowrap;
+  margin-right: var(--space-6);
+}
+
+/* 영상 패널에서는 탭이 패널 오른쪽 끝에 딱 붙도록(피그마: 오른쪽 여백 0) 패널 padding만큼 밖으로 뺍니다.
+   요약 결과 구역은 오른쪽에 회의 정보가 있어서 이 처리를 하지 않습니다. */
+:global(.panel).aiVideoSection .aiVideoTabs {
+  margin-right: -28px;
+}
+
+.videoTab {
+  /* 탭 2개가 컨테이너를 반반 채움 (영상 탭 영역/요약 탭 줄 공통) */
+  flex: 1 1 0;
+  /* 좁은 패널에서 줄어들더라도 글자 폭(max-content)보다는 작아지지 않게 해서
+     "전체 채팅"이 두 줄로 꺾이지 않게 합니다 */
+  min-width: max-content;
+  white-space: nowrap;
+
+  border: none;
+  background: transparent;
+
+  /* 글자는 탭 가운데, 밑줄은 탭 전체 너비 */
+  text-align: center;
+  /* 피그마: 글자(19px 줄) 아래 11px에 밑줄 */
+  padding: 0 0 11px;
+  line-height: 19px;
+  border-bottom: 1.5px solid var(--color-border-strong);
+
+  /* 피그마: 탭 16px / 700, 비활성 #737373 */
+  font-size: 16px;
+  font-weight: var(--weight-bold);
+
+  color: #737373;
+
+  cursor: pointer;
+
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.videoTabActive {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+.aiVideoBody {
+  display: flex;
+  align-items: stretch;
+
+  flex: 1;
+  min-height: 0;
+
+  /* 영상 · 텍스트 사이 간격과 비율은 피그마 치수(영상 608 / 간격 34 / 텍스트 417,
+     합 1059px)를 % 로 환산: 영상 57.4% · 간격 3.2% · 텍스트 나머지 39.4% */
+  gap: 3.2%;
+}
+
+.aiVideoPlaceholder {
+  flex: 0 0 57.4%;
+
+  /* 고정 px 대신 부모(.aiVideoBody, 화면 높이 비율로 정해진 섹션)에 맞춰 늘어납니다 */
+  height: 100%;
+
+  background: var(--color-primary);
+
+  border-radius: var(--radius-xl);
+
+  box-shadow: var(--shadow-card);
+}
+
+/* 타임라인 = 영상 오른쪽 열. 항목이 많으면 리스트 안에서 세로 스크롤됩니다. */
+.aiTranscript {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+
+  display: flex;
+  flex-direction: column;
+
+  /* 피그마: 마지막 항목(495)과 "전체 채팅 보기" 버튼(518) 사이 */
+  gap: 20px;
+}
+
+.aiTranscriptList {
+  flex: 1;
+
+  min-width: 0;
+  min-height: 0;
+
+  overflow-y: auto;
+
+  display: flex;
+  flex-direction: column;
+
+  /* 피그마: 발언 항목 사이 20px */
+  gap: 20px;
+
+  padding-right: 12px;
+}
+
+.aiTranscriptMeta {
+  display: flex;
+  align-items: center;
+
+  /* 피그마: 아이콘(20) → 시간 11px, 시간 → 이름 약 15px */
+  gap: 11px;
+
+  /* 피그마: 이름 줄(191~210)과 본문(216) 사이 6px */
+  margin-bottom: 6px;
+}
+
+.aiTranscriptMeta img {
+  /* 발언자 프로필 이미지 — 옆 아이콘(20px)과 같은 크기 */
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.aiTranscriptMeta svg {
+  width: 20px;
+  height: 20px;
+
+  flex-shrink: 0;
+
+  color: var(--color-text-muted);
+}
+
+.aiTranscriptTime {
+  /* 피그마: 시간 14px / 400 / #696969 */
+  font-size: 14px;
+  color: #696969;
+  line-height: 16px;
+}
+
+/* 피그마: 본문은 시간 글자 왼쪽 줄(아이콘 20 + 간격 11)에 맞춰 들여씁니다 */
+.aiTranscriptMeta + .aiTranscriptText {
+  padding-left: 31px;
+}
+
+.aiTranscriptSpeaker {
+  /* 피그마: 발언자 이름 16px / 600 / #000 */
+  font-size: 16px;
+  color: #000;
+  font-weight: var(--weight-semibold);
+}
+
+.aiTranscriptText {
+  margin: 0;
+
+  /* 피그마: 발언자별 본문 14px / 400 / #000 */
+  font-size: 14px;
+  color: #000;
+  line-height: 16px;
+}
+
+/* =========================================
+   AI 요약 결과
+========================================= */
+
+.aiSummaryTitle {
+  flex-shrink: 0;
+
+  /* 피그마: 제목(675~705)과 탭(717~) 사이 12px */
+  margin-bottom: 12px;
+  line-height: 30px;
+
+  /* 피그마: "AI 요약 결과" 24px / 600 */
+  font-size: 24px;
+  font-weight: var(--weight-semibold);
+}
+
+/* 탭 줄 — 패널 왼쪽 끝(패널 padding만큼 밖으로)부터 요약 열 오른쪽 끝까지,
+   탭 2개가 정확히 반반(피그마 Group 77/78: 각 318px). 글자는 각 칸 가운데입니다. */
+.aiSummaryTabs {
+  grid-column: 1;
+  grid-row: 1;
+
+  display: flex;
+  margin-left: -28px;
+}
+
+/* videoTab(영상 탭)의 160px 고정폭 대신 칸을 반반 채움 */
+.summaryTab {
+  flex: 1 1 0;
+}
+
+/* 요약 생성 / 수정 버튼 묶음 — 액션 바 왼쪽 끝 (margin-right:auto로 나머지는 오른쪽으로 밀림) */
+.aiSummaryTitleActions {
+  display: flex;
+  /* 버튼 줄이 줄바꿈 없이 한 줄이 되면서 이 묶음이 줄어들어 글자가 두 줄로 꺾였습니다 — 줄어들지 않게 고정 */
+  flex-shrink: 0;
+  gap: var(--space-4);
+
+  margin-right: auto;
+}
+
+.aiSummaryTitleActionBtn {
+  /* 글자 한 줄 유지, 버튼 자체도 찌그러지지 않게 */
+  white-space: nowrap;
+  flex-shrink: 0;
+
+  border: none;
+  border-radius: var(--radius-md);
+
+  padding: var(--space-3) var(--space-6);
+
+  /* 같은 줄의 .aiActionButton(복사/PDF/공유 등, 14px)과 같은 크기 */
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+
+  background: var(--color-primary-subtle);
+  color: var(--color-text);
+
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.aiSummaryTitleActionBtn:hover {
+  background: var(--color-border-subtle);
+}
+
+.aiSummaryTitleActionPrimary {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+/* 비활성화(수정할 요약이 없거나 생성·편집 중) — 흐리게 하고 누를 수 없음을 커서로 알립니다 */
+.aiSummaryTitleActionBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.aiSummaryTitleActionBtn:disabled:hover {
+  background: var(--color-primary-subtle);
+}
+
+.aiSummaryTitleActionPrimary:disabled:hover {
+  background: var(--color-primary);
+}
+
+.aiSummaryTitleActionPrimary:hover {
+  background: var(--color-primary-hover);
+}
+
+.aiSummaryBody {
+  display: grid;
+  /* 요약 | 회의 정보. 피그마 치수(요약 608 / 간격 51 / 정보 400)가 회의 영상 패널의
+     영상 57.4% 비율과 같아서 같은 값을 써 위아래 세로 경계가 맞습니다.
+     행: 1행=탭 줄, 2행=본문(요약 스크롤 · 회의 정보). */
+  grid-template-columns: 57.4% minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  /* 피그마: 요약 열(608) 끝 946 → 회의 정보(995) 시작, 간격 49px ≈ 4.6% */
+  column-gap: 4.6%;
+
+  flex: 1;
+  min-height: 0;
+
+  align-items: stretch;
+}
+
+/* 래퍼 div는 그리드 배치에 끼어들지 않게 하고, 탭/요약 스크롤을 직접 그리드 칸에 배치합니다 */
+.aiSummaryLeft {
+  display: contents;
+}
+
+/* 요약 본문이 길면 액션 버튼을 밀어내지 않고 이 영역 안에서만 스크롤됩니다 */
+.aiSummaryLeftScroll {
+  grid-column: 1;
+  grid-row: 2;
+
+  min-height: 0;
+  overflow-y: auto;
+
+  /* 탭 밑줄(745)과 본문(769) 사이 24px, 본문은 제목보다 11px 안쪽(349) */
+  padding: 23px 0 0 11px;
+}
+
+.aiSummaryParagraph {
+  margin: 0 0 var(--space-6);
+
+  /* 피그마: 핵심요약 본문 16px / 400 / #000 (줄 높이 19px) */
+  font-size: 16px;
+  color: #000;
+  line-height: 19px;
+}
+
+/* 액션 버튼 — 패널 전체 폭 맨 아래 줄, 오른쪽 정렬(피그마: 버튼 사이 20px × 0.703 ≈ 14px).
+   예전엔 왼쪽 열 안에 있어서 폭이 좁아 글자가 줄바꿈됐습니다. */
+.aiActionButtons {
+  display: flex;
+  /* 줄바꿈하지 않습니다 — 요약이 있으면 "수정" 버튼이 더해져 한 줄 폭을 넘으면서 "공유하기"가
+     다음 줄로 내려가 버튼 영역이 두 배 높이가 되고, 그만큼 본문(요약/회의 정보)이 줄어들어
+     패널 UI가 요약 유무에 따라 달라졌습니다. 아래 간격/패딩을 줄여 수정 버튼이 있어도 한 줄에 들어갑니다. */
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  justify-content: flex-end;
+
+  /* 피그마: 버튼 사이 20px, 버튼 줄 오른쪽 끝은 패널 가장자리에서 40px(패널 padding 28 + 12) */
+  gap: 20px;
+
+  padding: 14px 12px 0 0;
+}
+
+.aiActionButton {
+  display: flex;
+  align-items: center;
+
+  /* 버튼 글자가 두 줄로 꺾이거나 버튼이 찌그러지지 않게 */
+  white-space: nowrap;
+  flex-shrink: 0;
+
+  /* 피그마: 높이 44 · 안쪽 10px 15px · 아이콘-글자 간격 10px · 모서리 10px */
+  gap: 10px;
+
+  border: none;
+  border-radius: 10px;
+
+  background: var(--color-surface);
+  color: var(--color-text);
+
+  padding: 10px 15px;
+  line-height: 19px;
+
+  /* 피그마: 하단 버튼 16px / 700 */
+  font-size: 16px;
+  font-weight: var(--weight-bold);
+
+  box-shadow: var(--shadow-card);
+
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.aiActionButton svg {
+  width: 20px;
+  height: 20px;
+}
+
+.aiActionButton:hover {
+  background: var(--color-border-subtle);
+}
+
+.aiActionButton:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.aiActionButton:disabled:hover {
+  background: var(--color-surface);
+}
+
+.aiActionButtonPrimary {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.aiActionButtonPrimary:hover {
+  background: var(--color-primary-hover);
+}
+
+/* =========================================
+   회의 정보
+========================================= */
+
+.meetingInfo {
+  grid-column: 2;
+  grid-row: 2;
+
+  min-width: 0;
+  min-height: 0;
+
+  /* 스크롤바는 보이지 않게(내용이 정말 넘치는 아주 작은 화면에서만 스크롤은 유지) —
+     평소엔 아래 간격을 줄여 한 화면에 다 들어오도록 했습니다 */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.meetingInfo::-webkit-scrollbar {
+  display: none;
+}
+
+.meetingInfoItem {
+  /* 아이콘 / 라벨(고정폭) / 값 3열 그리드로 값을 세로로 정렬 */
+  display: grid;
+  /* 피그마: 아이콘 997(22.65px) / 라벨 1033 / 값 1133 → 라벨 칸 87px에 "회의 주제"(16px 4글자)가
+     한 줄로 들어가고, 줄바꿈은 막습니다 */
+  grid-template-columns: 23px 87px 1fr;
+  align-items: center;
+  column-gap: 13px;
+
+  /* 피그마: 행 간격(아이콘 22.65 기준) 약 12px */
+  margin-bottom: 12px;
+
+  /* 피그마: 정보 라벨 16px / 700 / #000 */
+  font-size: 16px;
+  font-weight: var(--weight-bold);
+  color: #000;
+}
+
+.meetingInfoItem:last-child {
+  margin-bottom: 0;
+}
+
+.meetingInfoItem svg {
+  width: 22px;
+  height: 22px;
+
+  flex-shrink: 0;
+
+  stroke-width: 1.8;
+}
+
+.meetingInfoItem > span {
+  line-height: 19px;
+  white-space: nowrap;
+}
+
+.meetingInfoValue {
+  /* 피그마: 정보 값 14px / 400 / #000 */
+  font-size: 14px;
+  font-weight: var(--weight-normal);
+  line-height: 16px;
+  /* 값은 길면 줄바꿈 허용(라벨만 한 줄 고정) */
+  white-space: normal;
+
+  color: #000;
+}
+
+.meetingInfoAvatars {
+  display: flex;
+  align-items: center;
+
+  /* 피그마: 참석자 아이콘 30px, 겹치지 않고 5px 간격(1133 / 1168 / 1203) */
+  gap: 5px;
+}
+
+.meetingInfoAvatars svg {
+  width: 30px;
+  height: 30px;
+
+  margin-left: 0;
+
+  color: var(--color-text-faint);
+}
+
+.meetingInfoAvatars svg:first-child {
+  margin-left: 0;
+}
+
+/* 실제 프로필 이미지 — 임시 아이콘(svg)과 같은 크기·겹침 */
+.meetingInfoAvatars img {
+  width: 30px;
+  height: 30px;
+  margin-left: 0;
+  box-sizing: border-box;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #e6f4e8;
+}
+
+.meetingInfoAvatars img:first-child {
+  margin-left: 0;
+}

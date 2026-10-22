@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import Icon from './Icon';
 import {
   getMicrophoneExceptionMessage,
   isSecureMediaContext,
@@ -6,8 +7,23 @@ import {
 } from '../utils/microphoneAccess';
 import { isNoneDevice, loadVoiceSettings, NONE_DEVICE_ID, saveVoiceSettings, syncMicrophoneSetting, type VoiceSettings } from '../utils/voiceSettings';
 import s from './VoiceSettingsPanel.module.css';
+import micIcon from '../assets/voice/voice-mic.svg';
+import volumeIcon from '../assets/voice/voice-volume.svg';
+import soundIcon from '../assets/voice/voice-sound.svg';
 
-const BAR_COUNT = 24;
+/**
+ * 시안 SVG(검정 고정)를 CSS 마스크로 그려 글자색(currentColor)을 따라가게 하는 아이콘.
+ * 크기는 호출하는 쪽 클래스(width/height)가 정합니다.
+ */
+function MaskIcon({ src, className }: { src: string; className?: string }) {
+  return (
+    <span
+      className={`${s.maskIcon}${className ? ` ${className}` : ''}`}
+      style={{ '--icon-url': `url(${JSON.stringify(src)})` } as React.CSSProperties}
+      aria-hidden="true"
+    />
+  );
+}
 
 function shortDeviceName(label: string) {
   return label.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, '').trim();
@@ -30,19 +46,23 @@ type Props = {
 /**
  * 마이크/헤드셋 장치와 음량을 고르는 설정
  * localStorage에 저장되며 회의방에서 그대로 사용됩니다.
+ * (피그마 "설정 > 음성" export 반영 — 장치 선택창 바로 아래에 실시간 입력 레벨 미터를 추가했습니다.)
  */
 export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
   const [settings, setSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
   const [testing, setTesting] = useState(false);
-  const [levels, setLevels] = useState<number[]>(() => Array.from({ length: BAR_COUNT }, () => 0));
   const [error, setError] = useState('');
   const testCleanupRef = useRef<(() => void) | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const playbackRef = useRef<HTMLAudioElement | null>(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+
+  /** 마이크 드롭다운 바로 아래의 실시간 입력 레벨 (0~1) — "마이크 테스트"를 누르지 않아도 항상 표시됩니다 */
+  const [liveMicLevel, setLiveMicLevel] = useState(0);
+  const liveMicCleanupRef = useRef<(() => void) | null>(null);
 
   const update = (partial: Partial<VoiceSettings>) => {
     setSettings(saveVoiceSettings(partial));
@@ -87,11 +107,74 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
     testCleanupRef.current = null;
   }, []);
 
+  /**
+   * 마이크를 고르면(없음이 아니면) "마이크 테스트"를 누르지 않아도 조용히(재생 없이) 스트림을 열어
+   * 입력 레벨만 계산합니다. 장치를 바꾸거나 "없음"으로 바꾸면 이전 스트림은 정리합니다.
+   * 권한이 없거나 실패해도 이 미터는 부가 기능이라 조용히 무시합니다 — 에러 안내는 "마이크 테스트"가 맡습니다.
+   */
+  useEffect(() => {
+    liveMicCleanupRef.current?.();
+    liveMicCleanupRef.current = null;
+    setLiveMicLevel(0);
+
+    if (micNone || !isSecureMediaContext() || !navigator.mediaDevices?.getUserMedia) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            ...(settings.micDeviceId ? { deviceId: { exact: settings.micDeviceId } } : {}),
+          },
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.6;
+        source.connect(analyser);
+
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        let frame = 0;
+        const tick = () => {
+          analyser.getByteFrequencyData(data);
+          const avg = data.reduce((sum, value) => sum + value, 0) / data.length / 255;
+          setLiveMicLevel(avg);
+          frame = requestAnimationFrame(tick);
+        };
+        frame = requestAnimationFrame(tick);
+
+        liveMicCleanupRef.current = () => {
+          cancelAnimationFrame(frame);
+          stream.getTracks().forEach((track) => track.stop());
+          void audioContext.close();
+        };
+      } catch {
+        // 조용히 무시 — "마이크 테스트" 버튼을 누르면 그때 실패 이유를 안내합니다.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      liveMicCleanupRef.current?.();
+      liveMicCleanupRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.micDeviceId, micNone]);
+
   const stopTest = () => {
     testCleanupRef.current?.();
     testCleanupRef.current = null;
     setTesting(false);
-    setLevels(Array.from({ length: BAR_COUNT }, () => 0));
   };
 
   const startTest = async () => {
@@ -122,11 +205,7 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
       const gain = audioContext.createGain();
       gain.gain.value = settingsRef.current.micVolume / 100;
       gainNodeRef.current = gain;
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 64;
-      analyser.smoothingTimeConstant = 0.7;
       source.connect(gain);
-      gain.connect(analyser);
 
       const dest = audioContext.createMediaStreamDestination();
       gain.connect(dest);
@@ -139,21 +218,7 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
       playbackRef.current = playback;
       await playback.play().catch(() => {});
 
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      let frame = 0;
-      const tick = () => {
-        analyser.getByteFrequencyData(data);
-        const next = Array.from({ length: BAR_COUNT }, (_, index) => {
-          const sample = data[Math.floor((index / BAR_COUNT) * data.length)] ?? 0;
-          return sample / 255;
-        });
-        setLevels(next);
-        frame = requestAnimationFrame(tick);
-      };
-      frame = requestAnimationFrame(tick);
-
       testCleanupRef.current = () => {
-        cancelAnimationFrame(frame);
         playback.pause();
         playback.srcObject = null;
         playbackRef.current = null;
@@ -169,17 +234,6 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
     }
   };
 
-  const showHelp = () => {
-    alert(
-      '음성 장치가 안 보이거나 소리가 없으면:\n\n' +
-      '1) 주소창 왼쪽 자물쇠에서 마이크를 허용하세요.\n' +
-      '2) Windows 설정 → 소리에서 입력/출력 장치가 켜져 있는지 확인하세요.\n' +
-      '3) 다른 프로그램이 마이크를 독점하면 끄고 새로고침하세요.\n' +
-      '4) 마이크나 헤드셋이 없으면 목록에서 없음을 고르면 됩니다.\n' +
-      '5) 회의방에서는 여기서 저장한 장치·음량이 그대로 적용됩니다.',
-    );
-  };
-
   return (
     <div className={s.root}>
       {hideHeading ? null : <h3>음성</h3>}
@@ -192,26 +246,37 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
         </p>
       )}
 
-      <div className="settings-row">
-        <label htmlFor="voice-mic">마이크</label>
-        <select
-          id="voice-mic"
-          className="settings-field"
-          value={settings.micDeviceId}
-          onChange={(e) => {
-            setError('');
-            if (isNoneDevice(e.target.value)) stopTest();
-            update({ micDeviceId: e.target.value, micManual: true });
-          }}
-        >
-          <option value={NONE_DEVICE_ID}>없음</option>
-          <option value="">Windows 기본 설정</option>
-          {mics.map((device) => (
-            <option key={device.deviceId} value={device.deviceId}>
-              {deviceOptionLabel(device, '마이크')}
-            </option>
-          ))}
-        </select>
+      {/* 마이크 */}
+      <div className={s.deviceGroup}>
+        <label htmlFor="voice-mic" className={s.deviceLabel}>마이크</label>
+        <div className={s.selectRow}>
+          <MaskIcon src={micIcon} className={s.selectIcon} />
+          <select
+            id="voice-mic"
+            className={s.select}
+            value={settings.micDeviceId}
+            onChange={(e) => {
+              setError('');
+              if (isNoneDevice(e.target.value)) stopTest();
+              update({ micDeviceId: e.target.value, micManual: true });
+            }}
+          >
+            <option value={NONE_DEVICE_ID}>없음</option>
+            <option value="">Windows 기본 설정</option>
+            {mics.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {deviceOptionLabel(device, '마이크')}
+              </option>
+            ))}
+          </select>
+          <Icon name="chevron-down" className={s.selectChevron} />
+        </div>
+        {/* 장치를 고르면(없음이 아니면) 항상 살아있는 실시간 입력 레벨 미터 */}
+        {!micNone && (
+          <div className={s.levelTrack} role="status" aria-label="실시간 마이크 입력 레벨">
+            <div className={s.levelFill} style={{ width: `${Math.round(liveMicLevel * 100)}%` }} />
+          </div>
+        )}
       </div>
 
       {micNone ? (
@@ -220,36 +285,51 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
           <span>마이크 없이 회의에 참여합니다. 내 목소리는 나가지 않습니다.</span>
         </div>
       ) : (
-        <div className="settings-row">
-          <label htmlFor="voice-mic-vol">마이크 음량</label>
-          <input
-            id="voice-mic-vol"
-            className={s.slider}
-            type="range"
-            min={0}
-            max={100}
-            value={settings.micVolume}
-            onChange={(e) => update({ micVolume: Number(e.target.value) })}
-          />
+        <div className={s.deviceGroup}>
+          <label htmlFor="voice-mic-vol" className={s.deviceLabel}>마이크 음량</label>
+          <div className={s.sliderRow}>
+            <MaskIcon src={micIcon} className={s.sliderIcon} />
+            <input
+              id="voice-mic-vol"
+              className={s.slider}
+              type="range"
+              min={0}
+              max={100}
+              value={settings.micVolume}
+              onChange={(e) => update({ micVolume: Number(e.target.value) })}
+              style={{ '--fill': `${settings.micVolume}%` } as React.CSSProperties}
+            />
+          </div>
         </div>
       )}
 
-      <div className="settings-row">
-        <label htmlFor="voice-speaker">헤드셋 / 스피커</label>
-        <select
-          id="voice-speaker"
-          className="settings-field"
-          value={settings.speakerDeviceId}
-          onChange={(e) => update({ speakerDeviceId: e.target.value })}
-        >
-          <option value={NONE_DEVICE_ID}>없음</option>
-          <option value="">Windows 기본 설정</option>
-          {speakers.map((device) => (
-            <option key={device.deviceId} value={device.deviceId}>
-              {deviceOptionLabel(device, '헤드셋 / 스피커')}
-            </option>
-          ))}
-        </select>
+      {/* 헤드셋 / 스피커 */}
+      <div className={s.deviceGroup}>
+        <label htmlFor="voice-speaker" className={s.deviceLabel}>헤드셋 / 스피커</label>
+        <div className={s.selectRow}>
+          <MaskIcon src={volumeIcon} className={s.selectIcon} />
+          <select
+            id="voice-speaker"
+            className={s.select}
+            value={settings.speakerDeviceId}
+            onChange={(e) => update({ speakerDeviceId: e.target.value })}
+          >
+            <option value={NONE_DEVICE_ID}>없음</option>
+            <option value="">Windows 기본 설정</option>
+            {speakers.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {deviceOptionLabel(device, '헤드셋 / 스피커')}
+              </option>
+            ))}
+          </select>
+          <Icon name="chevron-down" className={s.selectChevron} />
+        </div>
+        {/* 출력 장치는 실시간으로 잴 신호가 없어서, 아래 스피커 음량 값을 그대로 보여주는 장식용 막대입니다 */}
+        {!speakerNone && (
+          <div className={s.levelTrack} aria-hidden="true">
+            <div className={s.levelFill} style={{ width: `${settings.speakerVolume}%` }} />
+          </div>
+        )}
       </div>
 
       {speakerNone ? (
@@ -258,49 +338,42 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
           <span>헤드셋·스피커 없이 참여합니다. 상대 소리는 들리지 않습니다.</span>
         </div>
       ) : (
-        <div className="settings-row">
-          <label htmlFor="voice-speaker-vol">스피커 음량</label>
-          <input
-            id="voice-speaker-vol"
-            className={s.slider}
-            type="range"
-            min={0}
-            max={100}
-            value={settings.speakerVolume}
-            onChange={(e) => update({ speakerVolume: Number(e.target.value) })}
-          />
+        <div className={s.deviceGroup}>
+          <label htmlFor="voice-speaker-vol" className={s.deviceLabel}>헤드셋 / 스피커 음량</label>
+          <div className={s.sliderRow}>
+            <MaskIcon src={volumeIcon} className={s.sliderIcon} />
+            <input
+              id="voice-speaker-vol"
+              className={s.slider}
+              type="range"
+              min={0}
+              max={100}
+              value={settings.speakerVolume}
+              onChange={(e) => update({ speakerVolume: Number(e.target.value) })}
+              style={{ '--fill': `${settings.speakerVolume}%` } as React.CSSProperties}
+            />
+          </div>
         </div>
       )}
 
-      <div className={s.testRow}>
-        <button
-          type="button"
-          className={testing ? 'danger-button' : 'secondary-button'}
-          disabled={micNone}
-          onClick={() => { void startTest(); }}
-        >
-          {testing ? '테스트 중지' : '마이크 테스트'}
-        </button>
-        <div className={s.meter} aria-hidden="true">
-          {levels.map((level, index) => (
-            <span
-              key={index}
-              className={`${s.bar}${level > 0.08 ? (level > 0.75 ? ` ${s.barHot}` : ` ${s.barOn}`) : ''}`}
-              style={{ height: `${Math.max(12, Math.round(level * 100))}%` }}
-            />
-          ))}
+      {/* 마이크 테스트 버튼 + 도움말 — 피그마엔 버튼 옆 24칸 레벨 미터가 없어서 뺐습니다
+          (입력 소리는 마이크 선택칸 아래의 실시간 막대로 확인할 수 있습니다). */}
+      <div className={s.footer}>
+        <div className={s.testRow}>
+          <button
+            type="button"
+            className={testing ? `${s.testButton} ${s.testButtonActive}` : s.testButton}
+            disabled={micNone}
+            onClick={() => { void startTest(); }}
+          >
+            <MaskIcon src={soundIcon} className={s.testIcon} />
+            {testing ? '테스트 중지' : '마이크 테스트'}
+          </button>
         </div>
+
+        {error ? <p className={s.error}>{error}</p> : null}
+
       </div>
-
-      {error ? <p className={s.error}>{error}</p> : null}
-
-      <p className={s.help}>
-        도움이 필요하신가요?{' '}
-        <button type="button" className={s.helpBtn} onClick={showHelp}>
-          문제 해결 가이드
-        </button>
-        를 확인하세요.
-      </p>
     </div>
   );
 }

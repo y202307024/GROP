@@ -9,6 +9,8 @@ import {
   useRoomContext,
 } from '@livekit/components-react';
 import '@livekit/components-styles';
+import shell from '../styles/meetingShell.module.css';
+import styles from './Room.module.css';
 import CanvasBoard, { type CanvasBoardHandle } from '../CanvasBoard';
 import MeetingChatPanel from '../components/MeetingChatPanel';
 import MeetingDrawingTools, { type MeetingDrawAction } from '../components/MeetingDrawingTools';
@@ -16,21 +18,10 @@ import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import {
-  canChangeBoard as userCanChangeBoard,
-  canDraw as userCanDraw,
-  canRecord as userCanRecord,
-  fetchGroupMeta,
-  fetchMemberPermissions,
-  isGroupOwner,
-  type GroupMeta,
-  type MemberPermissionFlags,
-} from '../utils/groupPermissions';
-import {
   MEETING_FILE_TOPIC,
   decodeMeetingSharedFile,
   encodeMeetingSharedFile,
   uploadMeetingAttachment,
-  type MeetingChatMessage,
   type MeetingSharedFile,
 } from '../utils/meetingChat';
 import { syncMeetingAttachmentsDoc, toMeetingAttachments } from '../utils/meetingDocs';
@@ -65,7 +56,7 @@ function formatMeetingElapsed(seconds: number) {
 function MicInsecureBanner() {
   if (isSecureMediaContext()) return null;
   return (
-    <div className="meeting-recording-banner">
+    <div className={styles.meetingRecordingBanner}>
       지금 주소(<strong>{window.location.host}</strong>)는 HTTP라서 마이크가 차단됩니다.{' '}
       <a href={`https://${window.location.host}${window.location.pathname}${window.location.search}`}>
         https로 다시 열기
@@ -99,9 +90,9 @@ function RoomTopHeader({ isRecording }: { isRecording: boolean }) {
 
   // 그룹명은 우측 사이드바에서 편집 — 헤더는 로고 + 타이머만 둡니다.
   return (
-    <header className="meeting-header">
-      <Link to="/main" className="logo">GROP</Link>
-      <span className={`meeting-title-time${isRecording ? ' is-recording' : ''}`}>
+    <header className={`${shell.meetingHeader} ${styles.roomHeader}`}>
+      <Link to="/main" className={styles.roomLogo}>GROP</Link>
+      <span className={`${styles.meetingTitleTime}${isRecording ? ` ${styles.isRecording}` : ''}`}>
         {startedAt ? formatMeetingElapsed(elapsed) : '00:00:00'}
       </span>
     </header>
@@ -224,29 +215,27 @@ function MeetingCallControls({
   onToggleRecord,
   isRecording,
   savingRecording,
-  canRecord = true,
 }: {
   onLeave: () => void;
   onToggleRecord: () => void;
   isRecording: boolean;
   savingRecording: boolean;
-  canRecord?: boolean;
 }) {
   return (
-    <div className="call-controls">
+    <div className={shell.callControls}>
       <button
         type="button"
-        className={`call-icon-button${isRecording ? ' is-recording' : ''}`}
-        data-tooltip={canRecord ? '녹화' : '녹화 권한 없음'}
+        className={`${styles.callIconButton}${isRecording ? ` ${styles.isRecording}` : ''}`}
+        data-tooltip="녹화"
         aria-label="녹화 시작/종료"
-        disabled={savingRecording || !canRecord}
+        disabled={savingRecording}
         onClick={onToggleRecord}
       >
         <svg viewBox="0 0 24 24" fill={isRecording ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" aria-hidden="true">
           <circle cx="12" cy="12" r="7" />
         </svg>
       </button>
-      <button type="button" className="leave-button" onClick={onLeave}>
+      <button type="button" className={`${shell.leaveButton} ${styles.roomLeaveButton}`} onClick={onLeave}>
         나가기
       </button>
     </div>
@@ -262,7 +251,6 @@ function RoomContent({
   recordingBridgeRef,
   recordingSyncRef,
   sharedFilesRef,
-  chatLogRef,
   sessionMeetingIdRef,
   onLeave,
   onToggleRecord,
@@ -270,10 +258,6 @@ function RoomContent({
   onRemoteStopRecording,
   isRecording,
   savingRecording,
-  canRecord = true,
-  canDrawBoard = true,
-  canChangeBoard = true,
-  canEditGroupName = true,
 }: {
   groupId: string;
   groupName: string;
@@ -284,8 +268,6 @@ function RoomContent({
   recordingSyncRef: RefObject<RecordingSyncHandle | null>;
   /** 부모(녹화 저장)와 공유하는 첨부 목록 ref */
   sharedFilesRef: RefObject<MeetingSharedFile[]>;
-  /** 부모(녹화 저장)와 공유하는 채팅 로그 ref — 마이크 없는 회의의 AI 요약 재료 */
-  chatLogRef: RefObject<MeetingChatMessage[]>;
   /** 이 세션 문서(회의록) id — 파일만 올려도 생기고, 이후 녹화 시 같은 행에 붙입니다 */
   sessionMeetingIdRef: RefObject<string | null>;
   onLeave: () => void;
@@ -294,10 +276,6 @@ function RoomContent({
   onRemoteStopRecording: () => void;
   isRecording: boolean;
   savingRecording: boolean;
-  canRecord?: boolean;
-  canDrawBoard?: boolean;
-  canChangeBoard?: boolean;
-  canEditGroupName?: boolean;
 }) {
   const [drawTool, setDrawTool] = useState<MeetingDrawAction>('hand');
   const [activeShape, setActiveShape] = useState<ExcalidrawTool>('rectangle');
@@ -334,7 +312,7 @@ function RoomContent({
   const { localParticipant } = useLocalParticipant();
 
   const SHAPE_TOOLS: ExcalidrawTool[] = [
-    'rectangle', 'ellipse', 'diamond', 'triangle', 'pentagon', 'hexagon', 'star', 'arrow', 'line', 'elbowArrow', 'curveArrow',
+    'rectangle', 'ellipse', 'diamond', 'triangle', 'pentagon', 'hexagon', 'octagon', 'star', 'arrow', 'line', 'elbowArrow', 'curveArrow',
   ];
 
   // 다른 참가자가 올린 파일을 사이드바 목록에 이어서 붙입니다.
@@ -420,11 +398,6 @@ function RoomContent({
   };
 
   const handlePick = (next: MeetingDrawAction) => {
-    // 판서 권한 없으면 화면 이동만 허용
-    if (!canDrawBoard && next !== 'hand' && next !== 'pan') {
-      alert('방장이 멤버 판서를 허용하지 않았습니다.');
-      return;
-    }
     setDrawTool(next);
     setEraserActive(false);
     setAreaEraseActive(false);
@@ -500,21 +473,18 @@ function RoomContent({
       />
       <RoomRecordingBridge bridgeRef={recordingBridgeRef} />
       {(isRecording || savingRecording) ? (
-        <div className="meeting-recording-banner">
+        <div className={styles.meetingRecordingBanner}>
           {savingRecording ? '회의록 저장 중...' : '회의 화면 녹화 중...'}
         </div>
       ) : null}
-      <main className="meeting-main">
-        <div className="whiteboard">
+      <main className={`${shell.meetingMain} ${styles.roomMain}`}>
+        <div className={`${shell.whiteboard} ${styles.roomWhiteboard}`}>
           <CanvasBoard
             ref={canvasBoardRef}
             embedded
             meetingMode
             gropShell
-            canDraw={canDrawBoard}
-            canChangeBoard={canChangeBoard}
             onToolChange={(tool) => {
-              if (!canDrawBoard) return;
               if (SHAPE_TOOLS.includes(tool)) {
                 setDrawTool('shapes');
                 setActiveShape(tool);
@@ -545,19 +515,13 @@ function RoomContent({
           groupId={groupId}
           groupName={groupName}
           onGroupNameChange={onGroupNameChange}
-          canEditGroupName={canEditGroupName}
           speakerMuted={speakerMuted}
           onSpeakerMutedChange={setSpeakerMuted}
-          chatLogRef={chatLogRef}
         />
       </main>
-      <footer className="bottom-bar">
-        {!canDrawBoard ? (
-          <div style={{ padding: '8px 12px', fontSize: 13, color: '#6b7280' }}>
-            판서 권한이 없습니다. 화면 이동만 가능합니다.
-          </div>
-        ) : null}
+      <footer className={`${shell.bottomBar} ${styles.roomBottomBar}`}>
         <MeetingDrawingTools
+          compact
           active={drawTool}
           onPick={handlePick}
           activeShape={activeShape}
@@ -638,7 +602,6 @@ function RoomContent({
           onToggleRecord={onToggleRecord}
           isRecording={isRecording}
           savingRecording={savingRecording}
-          canRecord={canRecord}
         />
       </footer>
     </>
@@ -648,12 +611,14 @@ function RoomContent({
 export default function Room() {
   const { id } = useParams();
   const navigate = useNavigate();
+  // 개발 전용 미리보기: `npm run dev` 중에 주소 뒤에 ?preview=1 을 붙이면(예: /room/test?preview=1)
+  // 백엔드(토큰 서버)·로그인·LiveKit 연결 없이 회의방 화면 틀만 띄웁니다. 레이아웃/CSS 작업용이라
+  // 참가자·음성·녹화 같은 연결이 필요한 기능은 비어 있고, 배포 빌드(DEV=false)에서는 항상 꺼집니다.
+  const isPreview = import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === '1';
   const [token, setToken] = useState('');
   const [userId, setUserId] = useState('');
-  const [, setUserName] = useState('');
+  const [userName, setUserName] = useState('');
   const [groupName, setGroupName] = useState('');
-  const [groupMeta, setGroupMeta] = useState<GroupMeta | null>(null);
-  const [memberPerms, setMemberPerms] = useState<MemberPermissionFlags | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
@@ -674,9 +639,6 @@ export default function Room() {
   const startingRecordingRef = useRef(false);
   /** 회의 중 첨부 — RoomContent 와 공유 (파일만 올려도 문서 탭에 반영) */
   const sharedFilesRef = useRef<MeetingSharedFile[]>([]);
-  // 회의 중 채팅 전체 — 녹화 저장 시 meetings.chat_log 로 같이 저장해
-  // 마이크 없는 회의도 채팅 기록으로 AI 요약을 만들 수 있게 합니다.
-  const chatLogRef = useRef<MeetingChatMessage[]>([]);
   const sessionMeetingIdRef = useRef<string | null>(null);
 
   // 스트림을 먼저 끄면 MediaRecorder가 마지막 청크를 못 남기고 끝납니다.
@@ -727,6 +689,8 @@ export default function Room() {
         if (sessionMeetingIdRef.current) {
           return { ok: true };
         }
+        const now = new Date();
+        const titleStr = `${now.getFullYear()}년 ${now.getMonth() + 1}월 ${now.getDate()}일 회의`;
         const { data: userData } = await supabase.auth.getUser();
         const result = await syncMeetingAttachmentsDoc({
           meetingId: null,
@@ -780,12 +744,10 @@ export default function Room() {
       };
     }
 
-    // 파일은 서버에만 두고, DB에는 재생 URL + 회의 중 첨부 + 채팅 기록을 저장합니다.
-    // 채팅 기록은 마이크 없이 진행한 회의도 나중에 AI 요약을 만들 수 있게 해줍니다.
+    // 파일은 서버에만 두고, DB에는 재생 URL + 회의 중 첨부를 저장합니다.
     // 이미 파일만으로 만든 문서가 있으면 그 행에 녹화를 이어 붙입니다.
     const videoUrl = `${getApiBase()}/videos/${relativePath}`;
     const attachments = toMeetingAttachments(sharedFilesRef.current);
-    const chatLog = chatLogRef.current;
     const existingId = sessionMeetingIdRef.current;
 
     if (existingId) {
@@ -795,11 +757,10 @@ export default function Room() {
           video_url: videoUrl,
           title: titleStr,
           attachments,
-          chat_log: chatLog,
         })
         .eq('id', existingId);
 
-      if (updateError && /attachments|chat_log/i.test(updateError.message)) {
+      if (updateError && /attachments/i.test(updateError.message)) {
         const { error: fallbackError } = await supabase
           .from('meetings')
           .update({ video_url: videoUrl, title: titleStr })
@@ -820,12 +781,11 @@ export default function Room() {
       video_url: videoUrl,
       created_by: userData.user?.id,
       attachments,
-      chat_log: chatLog,
     });
 
     if (insertError) {
-      // attachments/chat_log 컬럼이 아직 없으면(마이그레이션 전) 그것들 없이라도 회의록은 저장합니다.
-      if (/attachments|chat_log/i.test(insertError.message)) {
+      // attachments 컬럼이 아직 없으면(마이그레이션 전) 첨부 없이라도 회의록은 저장합니다.
+      if (/attachments/i.test(insertError.message)) {
         const { error: fallbackError } = await supabase.from('meetings').insert({
           group_id: groupIdRef.current,
           title: titleStr,
@@ -845,6 +805,14 @@ export default function Room() {
 
   useEffect(() => {
     const init = async () => {
+      // 미리보기 모드: 로그인/토큰 요청을 건너뛰고 바로 화면을 그립니다 (위 isPreview 설명 참고)
+      if (isPreview) {
+        setUserId('preview-user');
+        setUserName('미리보기');
+        setGroupName('미리보기 그룹');
+        setLoading(false);
+        return;
+      }
       try {
         const { data: userData } = await supabase.auth.getUser();
         if (!userData.user) { navigate('/'); return; }
@@ -881,20 +849,12 @@ export default function Room() {
         setUserName(name);
 
         if (id) {
-          const meta = await fetchGroupMeta(id);
-          if (meta) {
-            setGroupMeta(meta);
-            setGroupName(meta.name);
-            const mp = await fetchMemberPermissions(id, userData.user.id);
-            setMemberPerms(mp);
-          } else {
-            const { data: group } = await supabase
-              .from('groups')
-              .select('name')
-              .eq('id', id)
-              .maybeSingle();
-            if (group?.name) setGroupName(group.name);
-          }
+          const { data: group } = await supabase
+            .from('groups')
+            .select('name')
+            .eq('id', id)
+            .maybeSingle();
+          if (group?.name) setGroupName(group.name);
         }
 
         const res = await fetch(`${getApiBase()}/api/livekit-token`, {
@@ -939,7 +899,7 @@ export default function Room() {
         mediaRecorderRef.current.stop();
       }
     };
-  }, [id, navigate]);
+  }, [id, navigate, isPreview]);
 
   const stopRecordingLocal = async (discardChunks: boolean) => {
     await stopMediaRecorder();
@@ -1071,10 +1031,6 @@ export default function Room() {
   };
 
   const toggleRecording = () => {
-    if (!userCanRecord(groupMeta, userId, memberPerms)) {
-      alert('방장이 녹화를 허용하지 않았습니다.');
-      return;
-    }
     if (isRecording) {
       recordingSyncRef.current?.broadcastStop();
       void stopRecordingAndSave({ save: true });
@@ -1114,13 +1070,13 @@ export default function Room() {
 
   if (loading) {
     return (
-      <div className="meeting-loading">연결 중...</div>
+      <div className={shell.meetingLoading}>연결 중...</div>
     );
   }
 
   if (saving) {
     return (
-      <div className="meeting-loading">회의록 저장 중...</div>
+      <div className={shell.meetingLoading}>회의록 저장 중...</div>
     );
   }
 
@@ -1129,18 +1085,13 @@ export default function Room() {
     return null;
   }
 
-  const allowRecord = userCanRecord(groupMeta, userId, memberPerms);
-  const allowDraw = userCanDraw(groupMeta, userId, memberPerms);
-  const allowChangeBoard = userCanChangeBoard(groupMeta, userId, memberPerms);
-  const allowEditName = isGroupOwner(groupMeta, userId);
-
   return (
-    <div className="meeting-page stage">
+    <div className={`meeting-page stage ${styles.roomPage}`}>
       <LiveKitRoom
         token={token}
         serverUrl={import.meta.env.VITE_LIVEKIT_URL}
-        connect={true}
-        audio={isSecureMediaContext() ? voiceCaptureOptions(loadVoiceSettings()) : false}
+        connect={!isPreview}
+        audio={!isPreview && isSecureMediaContext() ? voiceCaptureOptions(loadVoiceSettings()) : false}
         video={false}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
         onMediaDeviceFailure={(failure) => {
@@ -1167,7 +1118,6 @@ export default function Room() {
             recordingBridgeRef={recordingBridgeRef}
             recordingSyncRef={recordingSyncRef}
             sharedFilesRef={sharedFilesRef}
-            chatLogRef={chatLogRef}
             sessionMeetingIdRef={sessionMeetingIdRef}
             onLeave={handleLeave}
             onToggleRecord={toggleRecording}
@@ -1175,10 +1125,6 @@ export default function Room() {
             onRemoteStopRecording={() => { void stopRecordingAndSave({ save: false }); }}
             isRecording={isRecording}
             savingRecording={savingRecording}
-            canRecord={allowRecord}
-            canDrawBoard={allowDraw}
-            canChangeBoard={allowChangeBoard}
-            canEditGroupName={allowEditName}
           />
         </div>
       </LiveKitRoom>

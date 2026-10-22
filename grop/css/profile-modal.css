@@ -33,7 +33,7 @@
 .profile-modal {
     width: 420px;
     max-width: 100%;
-    max-height: 90vh;
+    max-height: calc(90 * var(--app-vh, 1vh));
 
     overflow-y: auto;
 

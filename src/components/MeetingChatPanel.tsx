@@ -1,11 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RoomEvent, type RemoteParticipant } from 'livekit-client';
-import {
-  useLocalParticipant,
-  useParticipants,
-  useRoomContext,
-  useSpeakingParticipants,
-} from '@livekit/components-react';
+import { useLocalParticipant, useParticipants, useRoomContext } from '@livekit/components-react';
+import styles from './MeetingChatPanel.module.css';
 import { supabase } from '../services/supabaseClient';
 import {
   MEETING_CHAT_TOPIC,
@@ -22,17 +18,9 @@ type Props = {
   groupName?: string;
   /** 이름 저장 후 부모(헤더 등) 상태를 맞출 때 사용 */
   onGroupNameChange?: (name: string) => void;
-  /** false면 그룹 이름 인라인 편집 비활성 (방장만 true) */
-  canEditGroupName?: boolean;
   /** 로컬 헤드셋(스피커) 음소거 — RoomAudioRenderer volume과 연동 */
   speakerMuted?: boolean;
   onSpeakerMutedChange?: (muted: boolean) => void;
-  /**
-   * 최신 채팅 목록을 부모(Room)와 공유하는 ref.
-   * 녹화 저장 시 meetings.chat_log 로 함께 저장해, 마이크 없는 회의도
-   * 채팅 기록으로 AI 요약을 만들 수 있게 합니다.
-   */
-  chatLogRef?: RefObject<MeetingChatMessage[]>;
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -103,20 +91,12 @@ export default function MeetingChatPanel({
   groupId: _groupId,
   groupName = '',
   onGroupNameChange,
-  canEditGroupName = true,
   speakerMuted = false,
   onSpeakerMutedChange,
-  chatLogRef,
 }: Props) {
   const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
   const participants = useParticipants();
-  // 마이크 입력으로 말하는 중인 참가자(로컬·원격) — 아바타 초록 테두리용
-  const speakingParticipants = useSpeakingParticipants();
-  const speakingIds = useMemo(
-    () => new Set(speakingParticipants.map((p) => p.identity)),
-    [speakingParticipants],
-  );
   const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   // 원격 참가자만 로컬에서 안 들리게 한 identity 목록
@@ -206,11 +186,6 @@ export default function MeetingChatPanel({
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
 
-  // 부모(Room)가 녹화 저장 시 최신 채팅을 읽어갈 수 있도록 ref에 계속 반영합니다.
-  useEffect(() => {
-    if (chatLogRef) chatLogRef.current = messages;
-  }, [messages, chatLogRef]);
-
   const publishChat = (msg: MeetingChatMessage) => {
     setMessages((prev) => [...prev, msg].slice(-300));
     void localParticipant.publishData(encodeMeetingChatMessage(msg), {
@@ -277,14 +252,14 @@ export default function MeetingChatPanel({
   };
 
   return (
-    <aside className="chat-panel">
-      <div className="side-stack">
-        <section className="participant-card">
-          <div className="group-name-row">
+    <aside className={styles.chatPanel}>
+      <div className={styles.sideStack}>
+        <section className={styles.participantCard}>
+          <div className={styles.groupNameRow}>
             {editingName ? (
               <input
                 ref={nameInputRef}
-                className="group-name-input"
+                className={styles.groupNameInput}
                 value={nameDraft}
                 disabled={savingName}
                 aria-label="그룹 이름"
@@ -301,51 +276,45 @@ export default function MeetingChatPanel({
                   }
                 }}
               />
-            ) : canEditGroupName ? (
+            ) : (
               <button
                 type="button"
-                className="group-name-button"
+                className={styles.groupNameButton}
                 title="이름 변경"
                 onClick={() => setEditingName(true)}
               >
-                <span className="group-name-text">{groupName || '그룹'}</span>
-                <svg className="group-name-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <span className={styles.groupNameText}>{groupName || '그룹'}</span>
+                <svg className={styles.groupNameEdit} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                   <path d="M12 20h9" />
                   <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
                 </svg>
               </button>
-            ) : (
-              <span className="group-name-text">{groupName || '그룹'}</span>
             )}
           </div>
 
-          <ul className="participant-list">
+          <ul className={styles.participantList}>
             {participants.map((p) => {
               const isLocal = p.isLocal;
               const name = readableName(p.name) || (isLocal ? '나' : '참여자');
               const micOn = p.isMicrophoneEnabled;
               const headsetMuted = isLocal ? speakerMuted : Boolean(remoteDeafened[p.identity]);
-              // 발화 중이면 프로필 아바타에 초록 테두리 표시
-              const isSpeaking = speakingIds.has(p.identity);
               return (
-                <li key={p.identity} className="participant-row">
-                  <div className="participant-identity">
-                    <div
-                      className={`participant-avatar${isSpeaking ? ' is-speaking' : ''}`}
-                      title={isSpeaking ? `${name} (말하는 중)` : name}
-                    >
+                <li key={p.identity} className={styles.participantRow}>
+                  <div className={styles.participantIdentity}>
+                    {/* 말하는 중이면 아바타 테두리를 초록으로 (isSpeaking은 LiveKit이 제공) */}
+                    <div className={`${styles.participantAvatar}${p.isSpeaking ? ` ${styles.isSpeaking}` : ''}`} title={name}>
                       {avatarByUserId[p.identity] ? (
                         <img src={getAvatarSrc(avatarByUserId[p.identity])} alt="" />
                       ) : (
                         participantInitial(name)
                       )}
                     </div>
-                    <span className="participant-name">{name}</span>
+                    <span className={styles.participantName}>{name}</span>
                   </div>
-                  <div className="participant-controls">
+                  <div className={styles.participantControls}>
                     <button
                       type="button"
-                      className={`participant-ctrl${headsetMuted ? ' is-off' : ''}`}
+                      className={`${styles.participantCtrl}${headsetMuted ? ` ${styles.isOff}` : ''}`}
                       title={headsetMuted ? '헤드셋 켜기' : '헤드셋 끄기'}
                       aria-label={`${name} 헤드셋`}
                       onClick={() => toggleHeadset(p.identity, isLocal)}
@@ -354,7 +323,7 @@ export default function MeetingChatPanel({
                     </button>
                     <button
                       type="button"
-                      className={`participant-ctrl${!micOn ? ' is-off' : ''}`}
+                      className={`${styles.participantCtrl}${!micOn ? ` ${styles.isOff}` : ''}`}
                       title={isLocal ? (micOn ? '마이크 끄기' : '마이크 켜기') : (micOn ? '말하는 중' : '마이크 꺼짐')}
                       aria-label={`${name} 마이크`}
                       disabled={!isLocal}
@@ -369,20 +338,20 @@ export default function MeetingChatPanel({
           </ul>
         </section>
 
-        <section className="chat-card">
-          <h2 className="chat-section-title">채팅</h2>
+        <section className={styles.chatCard}>
+          <h2 className={styles.chatSectionTitle}>채팅</h2>
 
-          <div className="chat-messages" ref={listRef}>
+          <div className={styles.chatMessages} ref={listRef}>
             {messages.length === 0 ? (
-              <div className="chat-message">아직 채팅이 없어요.</div>
+              <div className={styles.chatMessage}>아직 채팅이 없어요.</div>
             ) : (
               messages.map((m) => {
                 const own = m.from === localParticipant.identity;
                 const sender = senderLabel(m, localParticipant.identity, participants);
                 return (
-                  <div key={m.id} className={`chat-row${own ? ' is-own' : ''}`}>
-                    <span className="chat-sender">{sender} · {formatChatTime(m.ts)}</span>
-                    <div className={`chat-message${own ? ' own-message' : ''}`}>
+                  <div key={m.id} className={`${styles.chatRow}${own ? ` ${styles.isOwn}` : ''}`}>
+                    <span className={styles.chatSender}>{sender} · {formatChatTime(m.ts)}</span>
+                    <div className={`${styles.chatMessage}${own ? ` ${styles.ownMessage}` : ''}`}>
                       {m.text}
                     </div>
                   </div>
@@ -392,7 +361,7 @@ export default function MeetingChatPanel({
           </div>
 
           <form
-            className="chat-input-area"
+            className={styles.chatInputArea}
             onSubmit={(e) => {
               e.preventDefault();
               sendMessage();

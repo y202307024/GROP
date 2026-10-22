@@ -5,7 +5,7 @@
 
 body {
     background: var(--color-bg-soft);
-    font-family: 'Roboto', sans-serif;
+    font-family: var(--font-sans);
 }
 
 

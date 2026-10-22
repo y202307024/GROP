@@ -101,8 +101,6 @@ function findLocalHeader(buf: Uint8Array, filename: string) {
 }
 
 async function inflateRaw(data: Uint8Array) {
-  // BlobPart 타입 호환을 위해 ArrayBuffer로 복사합니다.
-  const copy = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  const stream = new Blob([copy]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }

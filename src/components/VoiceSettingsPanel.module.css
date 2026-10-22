@@ -1,15 +1,22 @@
-/* 설정 카드 안에 들어가는 마이크/헤드셋 조절 UI */
+/**
+ * 설정 카드 안에 들어가는 마이크/헤드셋 조절 UI
+ * 피그마 "설정 > 음성" export를 반영했습니다. 이 컴포넌트는 설정 페이지(넓은 카드)와
+ * GroupSettings(좁은 카드) 양쪽에서 같이 쓰이기 때문에, 피그마의 1440px 고정값을 그대로
+ * 옮기지 않고 %/flex로 만들어서 어느 카드 폭에 들어가도 깨지지 않게 했습니다.
+ * (화면 배율 자체는 .stage의 useStageScale이 이미 처리하므로 여기서는 신경 쓰지 않습니다.)
+ */
 
 .root {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  /* 피그마: 블록(선택칸+막대 / 음량) 사이 약 42px × 0.703 ≈ 30px */
+  gap: 30px;
   min-width: 0;
 }
 
 .warn {
-  margin: 0 0 12px;
-  font-size: 12px;
+  margin: 0 0 var(--space-6);
+  font-size: var(--text-sm);
   line-height: 1.45;
   color: var(--color-danger);
 }
@@ -19,63 +26,252 @@
   font-weight: 700;
 }
 
-.slider {
+/* =========================================
+   장치 선택 (마이크 / 헤드셋·스피커)
+========================================= */
+
+.deviceGroup {
+  display: flex;
+  flex-direction: column;
+  /* 피그마: 라벨 → 선택칸 → 막대 간격 24px × 0.703 ≈ 17px */
+  gap: 17px;
+}
+
+/* 시안 SVG(검정 고정)를 마스크로 그려 글자색을 따라가게 하는 아이콘 공통 */
+.maskIcon {
+  display: inline-block;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask: var(--icon-url) center / 100% 100% no-repeat;
+  mask: var(--icon-url) center / 100% 100% no-repeat;
+}
+
+.deviceLabel {
+  /* 피그마 줄 높이 21px / 글자 18px(≈ 1.17배). 안 정하면 앱 기본 1.6배라 라벨 한 줄이 6px씩 높아집니다 */
+  line-height: 1.17;
+  font-size: var(--text-base); /* 피그마 18px × 0.703 ≈ 13px (계정설정 탭 라벨과 동일) */
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.selectRow {
+  display: flex;
+  align-items: center;
+  /* 피그마: 아이콘 왼쪽 약 19px, 글자 시작은 박스 왼쪽에서 약 55px → 아이콘(22px) 뒤 간격 약 14px */
+  gap: 14px;
   width: 100%;
-  max-width: 360px;
-  accent-color: var(--color-primary);
+  box-sizing: border-box;
+  /* 피그마: 높이 42px × 0.703 ≈ 30px, 테두리 #5E5E5E, 모서리 10px × 0.703 ≈ 7px */
+  min-height: 30px;
+  border: 1px solid var(--color-text-secondary);
+  border-radius: 7px;
+  background: var(--color-surface);
+  padding: 0 14px 0 19px;
+}
+
+.selectIcon {
+  /* 피그마 32px × 0.703 ≈ 22px */
+  width: 22px;
+  height: 22px;
+  color: #000;
+}
+
+.select {
+  flex: 1;
+  min-width: 0;
+
+  border: none;
+  outline: none;
+  background: transparent;
+
+  appearance: none;
+  -webkit-appearance: none;
+
+  font-family: var(--font-sans);
+  /* 피그마 선택칸 글자 16px × 0.703 ≈ 11.25px → text-xs(11px). 라벨(18px)보다 작은 게 시안 비율입니다 */
+  font-size: var(--text-xs);
+  color: var(--color-text);
+
+  /* 긴 장치 이름은 줄바꿈 대신 말줄임 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selectChevron {
+  flex-shrink: 0;
+  /* 피그마 chevron 박스 28.5×16, 선 1.5px #737373 */
+  width: 20px;
+  height: 16px;
+  color: #737373;
+}
+
+/* 실시간 입력 레벨 / 장식용 출력 막대 — 장치 선택창 바로 아래 */
+.levelTrack {
+  /* 피그마: 높이 10px × 0.703 ≈ 7px, 배경 #A2A2A2 */
+  height: 7px;
+  width: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--color-text-faint);
+  overflow: hidden;
+}
+
+.levelFill {
+  height: 100%;
+
+  background: var(--color-primary);
+  border-radius: var(--radius-pill);
+
+  /* 레벨 값이 자주 바뀌므로 아주 짧게만 트랜지션을 줘서 뚝뚝 끊기지 않게 합니다 */
+  transition: width 0.08s linear;
+}
+
+/* =========================================
+   음량 슬라이더
+========================================= */
+
+.sliderRow {
+  display: flex;
+  align-items: center;
+  /* 피그마: 아이콘 → 트랙 약 12px × 0.703 ≈ 8px */
+  gap: 8px;
+  width: 100%;
+  /* 라벨 아래 → 슬라이더 줄(아이콘 윗면) 20px × 0.703 ≈ 14px (deviceGroup gap 17px - 3px) */
+  margin-top: -3px;
+}
+
+.sliderIcon {
+  /* 피그마 24px × 0.703 ≈ 17px */
+  width: 17px;
+  height: 17px;
+  color: #000;
+}
+
+/* 네이티브 range를 피그마의 둥근 트랙+채움 막대 모양으로 다시 스킨합니다.
+   값(--fill)은 인라인 스타일로 넘어오고, 트랙 배경을 그 지점에서 색이 바뀌는
+   그라디언트로 그려서 "채워진 정도"를 표현합니다. */
+.slider {
+  flex: 1;
+  min-width: 0;
+
+  -webkit-appearance: none;
+  appearance: none;
+
+  /* 피그마: 트랙 높이 10px × 0.703 ≈ 7px, 배경 #A2A2A2 / 채움 #667C55 */
+  height: 7px;
+  border-radius: var(--radius-pill);
+
+  background: linear-gradient(
+    to right,
+    var(--color-primary) 0%,
+    var(--color-primary) var(--fill, 50%),
+    var(--color-text-faint) var(--fill, 50%),
+    var(--color-text-faint) 100%
+  );
+
+  outline: none;
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-thumb {
+  /* 피그마엔 손잡이가 없어서 보이지 않게 합니다(트랙을 누르거나 끌어서 조절하는 건 그대로 됩니다) */
+  -webkit-appearance: none;
+  width: 0;
+  height: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.slider::-moz-range-thumb {
+  width: 0;
+  height: 0;
+  border: none;
+  background: transparent;
+}
+
+.slider::-moz-range-track {
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+}
+
+.slider::-moz-range-progress {
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--color-primary);
+}
+
+/* =========================================
+   마이크 테스트 + 24막대 레벨 미터
+========================================= */
+
+.footer {
+  /* 피그마: 마지막 슬라이더 → 테스트 버튼 33px(≈23px), 버튼 → 도움말 25px(≈18px).
+     .root의 gap(30px)이 이미 들어가 있어서 그만큼 당기고, 안쪽 간격을 따로 줍니다. */
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: -7px;
 }
 
 .testRow {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 0 4px;
 }
 
-.meter {
+/* 피그마: 흰 배경 + 1px #7F8D72 테두리, 검정 글씨, 170×46 → 약 119×32, 모서리 10px → 7px */
+.testButton {
   display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 28px;
-  flex: 1;
-  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: 7px;
+  box-sizing: border-box;
+  min-height: 32px;
+  border: 1px solid var(--color-primary-button);
+  border-radius: 7px;
+  padding: 7px 11px;
+  background: var(--color-surface);
+  color: #000;
+  font-size: var(--text-base);
+  font-weight: var(--weight-normal);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition-fast);
 }
 
-.bar {
-  flex: 1;
-  border-radius: 1px;
-  background: #e3e0db;
+/* 피그마 아이콘 24px × 0.703 ≈ 17px */
+.testIcon {
+  width: 17px;
+  height: 17px;
 }
 
-.barOn {
-  background: var(--color-primary);
+.testButton:hover:not(:disabled) {
+  background: var(--color-primary-subtle);
 }
 
-.barHot {
-  background: var(--color-danger);
+.testButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 테스트 중(중지 버튼) 표시 — 피그마엔 없는 상태라 기존처럼 빨간 계열로 구분합니다 */
+.testButtonActive {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.testButtonActive:hover:not(:disabled) {
+  background: var(--color-surface);
+  opacity: 0.85;
 }
 
 .error {
-  margin: 8px 0 0;
-  font-size: 12px;
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-sm);
   color: var(--color-danger);
   white-space: pre-wrap;
-}
-
-.help {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: #888;
-}
-
-.helpBtn {
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--color-primary);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
 }
 
 /* 장치 없는 사용자를 위한 빈 미리보기 창 */
@@ -84,25 +280,25 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-3);
   min-height: 88px;
-  margin: 0 0 12px;
-  padding: 16px 18px;
+  margin: 0 0 var(--space-6);
+  padding: var(--space-8) var(--space-9);
   box-sizing: border-box;
   border: 1px dashed var(--color-border-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--color-primary-subtle);
   text-align: center;
 }
 
 .noneWindow strong {
-  font-size: 16px;
+  font-size: var(--text-xl);
   font-weight: 700;
   color: var(--color-text);
 }
 
 .noneWindow span {
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.45;
   color: var(--color-text-muted);
 }

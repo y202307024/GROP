@@ -1,0 +1,296 @@
+/**
+ * AppShell(사이드바 + 상단바를 가진 앱 껍데기) 전용 스타일.
+ * 원래 grop/css/main.css(사이드바/상단바 부분)와 grop/css/notification.css에
+ * 전역 클래스로 있던 것을 AppShell.tsx 전용 모듈로 옮겼습니다.
+ */
+
+/* .app는 이제 고정 1440x810 .stage가 아니라 부모 .stageFluid(stageFluid.css, 실제
+   뷰포트 높이 + overflow-y:auto)에 들어갑니다. min-height:100%로 그 안을 항상
+   최소한 꽉 채우고, 안(.main)이 더 필요하면(아래 min-width로 폭이 눌릴 때) 그만큼
+   커져서 .stageFluid에서 스크롤/클리핑됩니다.
+
+   단, 그 "잘림"은 창을 일부러 좁힌 경우를 위한 것이라, 모니터 해상도/디스플레이
+   배율 때문에 풀스크린에서도 뷰포트가 1440px(useAppShellScale.ts의 MIN_APP_WIDTH)
+   보다 좁은 경우까지 잘라내지 않도록 --app-shell-scale로 통째로 축소합니다.
+   1440px 이상이면 1이라 지금 모습 그대로입니다. */
+/* 2048 기준 확대: 폭은 항상 1440px 레이아웃으로 두고(useAppShellScale이 창 폭 ÷ 1440 만큼 scale),
+   높이는 확대 후 창 높이에 맞춰 --app-h(= 창 높이 ÷ scale)로 둡니다. */
+.app {
+  width: 1440px;
+  min-height: var(--app-h, 100%);
+  display: flex;
+  transform: scale(var(--app-shell-scale, 1));
+  transform-origin: top left;
+}
+
+/* ---------------- Sidebar ---------------- */
+.sidebar {
+  /* 시안(2048px) 사이드바 ≈ 275px × 0.703 ≈ 192px. 좌우·상단 여백도 시안 값(×0.703) 기준입니다.
+     폭을 줄인 만큼 .main min-width / useAppShellScale의 합계(1440)를 맞춰 둬야 합니다. */
+  width: 192px;
+  flex: none;
+  padding: 37px 30px 32px 32px;
+  border-right: 1.5px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.logo {
+  font-family: var(--font-display);
+  color: var(--color-primary);
+  font-size: 31px;
+  /* 피그마 로고 상자 49px × 0.703 ≈ 34px. 줄 높이를 안 정하면 전체 기본값(1.6)이라 상자가 49.6px로 커져서
+     로고 글자가 약 8px, 메뉴 시작이 약 15px 아래로 밀렸습니다. 메뉴 시작은 피그마 156px × 0.703 ≈ 109.7px */
+  line-height: 1.1;
+  letter-spacing: 2px;
+  margin-bottom: 38.7px;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0 8px 10px;
+  border-radius: 8px;
+  font-family: 'Inter', var(--font-sans);
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--color-text);
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.navItem.active {
+  background: var(--color-border);
+}
+
+.navItem svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  stroke-width: 2;
+}
+/* 시안 SVG(36x36, 검정 고정, 글리프 둘레 여백 큼)를 마스크로 그려 글자색을 따라가게 합니다.
+   기존 선형 아이콘이 20px 박스에서 눈에 보이는 크기와 비슷하도록 박스는 24px로 잡았습니다. */
+.navMaskIcon {
+  width: 25px;
+  height: 25px;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask: var(--icon-url) center / 100% 100% no-repeat;
+  mask: var(--icon-url) center / 100% 100% no-repeat;
+}
+
+/* ---------------- Main area ---------------- */
+.main {
+  flex: 1;
+  /* min-height:0이 없으면 플렉스 아이템은 기본으로 내용물 높이만큼 최소 높이를 가져서,
+     .app보다 내용이 길어지면 .main이 그만큼 커져버립니다. 0으로 풀어줘야 각 페이지의
+     .page(각 pages/*.module.css)가 overflow-y: auto로 필요한 만큼만 스크롤을 맡을 수
+     있습니다 — 이건 예전 .stage 시스템 때부터 쓰던 패턴이라 그대로 뒀습니다. */
+  min-height: 0;
+  padding: 28px 40px 40px;
+
+  /* 예전엔 .stage가 전체를 1440px 폭으로 고정해줘서 여기 min-width가 없어도 됐습니다.
+     .stage를 없앤 지금은, 창이 좁아져도 콘텐츠(대부분 원래 1440px 캔버스 기준으로
+     만들어진 페이지들)가 찌그러지지 않도록 원래 폭(1440 - 사이드바 192px)만큼
+     최소 폭을 줬습니다. 이보다 창이 좁아지면 .main은 그대로 두고, 부모 .stageFluid의
+     overflow-x:hidden이 넘치는 오른쪽을 스크롤바 없이 잘라냅니다(밴드 웹처럼). 각
+     페이지 내부(카드 줄바꿈 등)는 이후에 필요할 때 이 패턴으로 하나씩 손보면 됩니다. */
+  min-width: 1248px;
+
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 20px;
+}
+
+.topbar svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.8;
+}
+
+.iconBtn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* 우상단 프로필 버튼 */
+.profileButton {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.profileButtonAvatar {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  overflow: hidden;
+}
+
+.profileButtonAvatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ---------------- 알림 드롭다운 ----------------
+   피그마 "캘린더 팝업"(2048×1152 캔버스) 기준으로 앱 환산 비율 ×0.703을 적용했습니다.
+   패널 466×332px → 약 328×233px, 모서리 15px → 12px(radius-xl 토큰),
+   글자는 다른 페이지처럼 환산값보다 조금 크게 토큰으로 잡았습니다
+   (제목/알림 24px → 18/16px, 시간 15px → 11px). */
+.notificationWrapper {
+  position: relative;
+}
+
+.notificationDropdown {
+  position: absolute;
+  top: calc(100% + 14px);
+  right: -6px;
+  width: 328px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  /* 피그마 1.48 2.96 5.91 / 0.25 × 0.703 */
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.25);
+  z-index: var(--z-panel);
+  overflow: hidden;
+}
+
+/* hidden 속성일 때 확실히 감춤 */
+.notificationDropdown[hidden] {
+  display: none;
+}
+
+/* 헤더: 피그마 패널 위 → "알림" 글자 28px, 글자 → 구분선까지 합쳐 69px (×0.703 ≈ 20 / 48px),
+   글자 왼쪽 36px(→ 25px), 닫기 아이콘은 오른쪽에서 28px(→ 20px). 구분선은 패널 폭 전체. */
+.notificationDropdownHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* 구분선이 패딩 때문에 안쪽으로 밀려 보이지 않도록, 패딩이 선 길이에
+     영향을 주지 않는 border-box로 고정합니다(헤더/항목 공통) */
+  box-sizing: border-box;
+  width: 100%;
+
+  padding: 20px 20px 8px 25px;
+  font-size: var(--text-2xl);
+  line-height: 20px;
+  font-weight: var(--weight-bold);
+  border-bottom: 1px solid #c6c6c6;
+}
+
+.notificationCloseButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 14px;
+  height: 14px;
+  padding: 0;
+
+  border: none;
+  background: transparent;
+
+  /* 이미지 속 X가 연한 회색이 아니라 본문 텍스트처럼 또렷한 색이라 맞췄습니다 */
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.notificationCloseButton:hover {
+  color: var(--color-text-secondary);
+}
+
+/* 피그마 아이콘 16px × 0.703 ≈ 11px */
+.notificationCloseButton svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* 알림 3개가 보이는 높이(패널 233px − 헤더 48px ≈ 184px), 그 이상은 스크롤 */
+.notificationList {
+  max-height: 184px;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+/* 항목: 피그마 구분선 → 글자 20px(→ 14px), 시간 아래 → 다음 구분선 13px(→ 9px),
+   글자 왼쪽 36px(→ 25px) */
+.notificationItem {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+
+  padding: 14px 20px 9px 25px;
+  cursor: default;
+}
+
+/* 항목 구분선은 피그마처럼 양쪽 28px(→ 20px)씩 안쪽으로 들어간 선입니다 */
+.notificationItem::after {
+  content: '';
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 0;
+  border-bottom: 1px solid #c6c6c6;
+}
+
+.notificationItem:last-child::after {
+  display: none;
+}
+
+.notificationItem:hover {
+  background: var(--color-bg-soft);
+}
+
+/* 피그마 24px/줄 높이 28px → 16px/20px */
+.notificationItemTitle {
+  font-size: var(--text-xl);
+  line-height: 20px;
+  font-weight: var(--weight-normal);
+  color: var(--color-text);
+  margin-bottom: 4px;
+}
+
+/* 피그마 15px/줄 높이 18px → 11px/13px */
+.notificationItemTime {
+  font-size: var(--text-xs);
+  line-height: 13px;
+  color: #a2a2a2;
+}
+
+/* 알림이 없을 때 */
+.notificationEmpty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+}

@@ -1,181 +1,589 @@
-/* 메인(내 그룹) 화면 — grop/css/main.css 그룹 카드·패널 스타일 */
+/**
+ * MainPage(사이드바 안쪽 대시보드 콘텐츠) 전용 CSS 모듈.
+ * ─────────────────────────────────────────────────────────────
+ * 예전엔 grop/css/main.css의 전역 클래스(className="group-card" 같은 plain string)를
+ * 썼는데, 사용자가 보내준 Figma 변환 코드(zip, src/pages/Main.tsx + Main.module.css)를
+ * 기준으로 다시 맞추면서 이 페이지만 CSS 모듈로 옮겼습니다. AppShell(사이드바/상단바)은
+ * 그대로 grop/css/main.css의 .sidebar/.nav/.topbar를 씁니다 — 안 건드렸습니다.
+ *
+ * zip의 Main.tsx/Main.module.css를 그대로 복사하지는 않았습니다 — 거기엔 실제로 동작하지
+ * 않는 부분이 섞여 있었습니다(예: GroupComponent가 만드는 숨김 file input이 카드마다
+ * 똑같은 id="file-520:1284"를 반복해서 html에 중복 id가 생기고, <div src="..."> 처럼
+ * 문법적으로 의미 없는 속성도 있었습니다 — Figma 자동 변환 특유의 잔여물). 대신 그 파일의
+ * 색상/여백/카드 모양 값은 최대한 그대로 옮기고, 마크업은 저희 프로젝트 컨벤션(시맨틱
+ * 태그, 중복 id 없음)에 맞게 새로 짰습니다. 데이터도 하드코딩이 아니라 MainPage.tsx가
+ * 이미 갖고 있던 실제 Supabase 값을 그대로 씁니다.
+ */
 
-.actionGrid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  margin-bottom: 26px;
+/* ---------------- 세로 3분할 레이아웃 ----------------
+   화면엔 일정 / 그룹 카드 / (회의 목록 + 최근 AI 요약), 이렇게 3개 블록을 세로로
+   쌓습니다. 처음엔 grid-template-rows: repeat(3, 1fr)로 세 칸을 똑같은 높이로
+   나눴는데, 참고로 주신 CSS(zip)를 보면 그쪽도 세 영역을 똑같은 비율로 강제로
+   나누지 않고 각자 콘텐츠 크기만큼만 차지하고 있어서, 그 방식에 맞춰 grid(1fr
+   강제 분할) 대신 flex column(각 블록이 자기 내용물 높이만큼만 차지)으로
+   바꿨습니다. 목록이 길어지는 경우를 대비해 패널(.panel)의 overflow-y:auto는
+   그대로 남겨뒀습니다. */
+/* 세로 비율 1:2:3 — 일정 : 그룹 카드 : 회의·AI 요약. 세 칸이 남은 높이를 1/6, 2/6, 3/6씩 나눠 갖습니다.
+   .app이 고정 높이가 아니라(min-height만 있음) flex: 1은 내용 높이로 계산돼서 칸이 안 나뉘므로,
+   다른 페이지처럼 화면 높이에서 상단 영역(.main 패딩 + 상단바 + 간격 = 122px)을 뺀 값을 직접 줍니다. */
+.thirdsLayout {
+  flex: none;
+  /* 122px(위 크롬) + 45px: 하단 패널 끝을 영역 끝에서 45px 위에 둡니다 — 그룹 상세 등 다른 페이지 하단 패널과 같은 끝선 */
+  height: calc(var(--app-h, 100dvh) - 167px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.thirdsSection {
+  min-height: 0;
+}
+/* 하단 패널(회의 목록/AI 요약)은 예전 1:2:3 비율의 마지막 칸(3/6 = 50%) 높이를 그대로 유지하고,
+   날짜 블록과 그룹 카드는 자기 내용 높이만 차지합니다. 남는 높이(= 위 두 블록 사이 + 그룹 카드 아래)는
+   두 군데의 auto margin이 똑같이 나눠 가져서, "날짜/예정 일정 ↔ 그룹 카드" 간격과
+   "그룹 카드 ↔ 하단 패널" 간격이 항상 같은 값이 됩니다(예전엔 칸 높이 비율로 나눠서 두 간격이 달랐습니다). */
+.todayHeader.thirdsSection {
+  flex: none;
+  margin-bottom: auto;
+}
+.groupSection.thirdsSection {
+  flex: none;
+  margin-bottom: auto;
+}
+.dashboardSection.thirdsSection {
+  flex: none;
+  height: 50%;
 }
 
-@media (max-width: 720px) {
-  .actionGrid {
-    grid-template-columns: 1fr;
-  }
+/* ---------------- 오늘의 일정 ---------------- */
+/* 3분할(일정/그룹 카드/회의+AI요약) 사이 간격 — 피그마 원본(2048x1152 캔버스) 수치를
+   "화면 높이 대비 비율"로 환산해서 그대로 적용했습니다(제 임의 값이 아닙니다):
+     · dashboardParent gap 207px ÷ 캔버스 높이 1152px = 17.97% → 일정 아래 간격
+     · frameParent     gap  36px ÷ 캔버스 높이 1152px =  3.13% → 그룹 카드 아래 간격
+   화면 세로 길이에 비례해서 커지고 작아지게 vh 단위로 옮겼습니다. 다만 vh는 "브라우저
+   창 전체 높이" 기준이고 .thirdsLayout은 상단바를 뺀 나머지 영역이라, 실제 체감 비율은
+   원본 캔버스 비율보다 살짝 더 커 보일 수 있습니다. */
+.todayHeader {
+  display: flex;
+  flex-direction: column;
+  /* 일정 칸 아래 큰 여백(17.97vh)은 1:2:3 비율이 대신하므로 뺐습니다. 날짜는 칸 맨 위에 붙입니다 */
+  justify-content: flex-start;
+}
+.todayDate {
+  font-size: 38px;
+  font-weight: 800;
+  color: var(--green, #667c55);
 }
 
-.actionCard {
-  background: var(--color-surface);
-  border-radius: 15px;
-  padding: 22px 24px;
-  box-shadow: var(--shadow-card);
-}
-
-.actionCardHead {
+/* 날짜 아래 바 + 캘린더 아이콘 (+ 예정된 회의, 있을 때만). "오늘의 일정" 라벨은
+   최신 피그마 화면엔 없어서 뺐습니다. */
+.todayMetaRow {
   display: flex;
   align-items: center;
-  gap: var(--space-5);
-  margin-bottom: var(--space-8);
+  gap: 10px;
+  margin-top: 8px;
 }
-
-.actionIcon {
-  width: 52px;
-  height: 52px;
-  border-radius: 10px;
+.todayBar {
+  width: 2px;
+  height: 18px;
+  background: var(--gray-text, #5e5e5e);
+}
+.todayCalendarIcon {
+  width: 20px;
+  height: 20px;
+  color: var(--green, #667c55);
+}
+.upcomingMeetings {
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 22px;
-}
-
-.actionIconGreen,
-.actionIconBlue {
-  background: var(--color-primary);
-  color: #fff;
-  font-family: var(--font-display);
-}
-
-.actionTitle {
-  font-size: 16px;
-  font-weight: 500;
-  color: var(--color-text);
-}
-
-.actionDesc {
-  font-size: 13px;
-  color: var(--color-text-muted);
-}
-
-.actionInput {
-  width: 100%;
-  height: 42px;
-  padding: 0 14px;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 8px;
-  font-size: 15px;
-  background: var(--color-surface);
-  color: var(--color-text);
-  margin-bottom: 10px;
-  outline: none;
-}
-
-.actionInput:focus {
-  border-color: var(--color-primary);
-}
-
-.uppercase {
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.btnGreen,
-.btnBlue {
-  width: 100%;
-  height: 42px;
-  color: #fff;
-  border: none;
-  border-radius: 8px;
+  gap: 10px;
   font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: filter var(--transition-fast);
+  color: var(--gray-text, #5e5e5e);
+}
+.upcomingMeetingItem {
+  white-space: nowrap;
 }
 
-.btnGreen,
-.btnBlue {
-  background: var(--color-primary-button);
-}
-
-.btnGreen:hover,
-.btnBlue:hover {
-  filter: brightness(0.95);
-}
-
-.joinMsg {
-  margin-top: var(--space-6);
-  font-size: var(--text-base);
-}
-
-.joinMsgSuccess {
-  color: var(--color-primary-hover);
-}
-
-.joinMsgError {
-  color: var(--color-danger-text);
-}
-
-.roomsGrid {
+/* ---------------- 최근 그룹 카드 스택 ----------------
+   zip의 cardContainer/union 구조(진한 배지 + 연한 초록 본문 + 두 톤 배경)를 그대로
+   따르되, mask 이미지 오버레이 같은 순수 장식 레이어는 뺐습니다.
+   예전엔 좌우 화살표로 넘기는 가로 스크롤 캐러셀이었는데, 최신 그룹 4개까지만
+   스크롤 없이 고정으로 보여주는 스택으로 바꿨습니다(MainPage.tsx에서
+   groups.slice(0, 4)로 4개까지만 자릅니다) — 그래서 캐러셀 전용이던
+   .chevron/overflow-x:auto 스크롤 관련 규칙은 다 지웠습니다. */
+.groupSection {
   display: flex;
-  gap: 18px;
-  overflow-x: auto;
-  scrollbar-width: none;
+  flex-direction: column;
+  /* 피그마 "최근 그룹" 제목 상자(40px) 아래 y334 → 카드 위 y342 = 8px × 0.703 ≈ 6px(예전 8px) */
+  gap: 6px;
+  /* 그룹 카드 크기는 그대로 — 칸 안에서 위치만 이동합니다(아래 여백 3.13vh는 칸 비율이 대신해서 뺐습니다) */
 }
-
-.roomsGrid::-webkit-scrollbar {
-  display: none;
+.groupSectionTitle {
+  /* 피그마 24px/600 × 0.703 ≈ 17px, 상자 높이 40px ≈ 28px (예전 20px/700, 줄 높이 기본값) */
+  font-weight: 600;
+  font-size: 17px;
+  line-height: 1.65;
+  margin: 0;
 }
+/* 카드 사이 공백(32px) — 피그마 참고 코드(titleWrapperParent/profileHeader)를 보면
+   "제목→카드 목록" 간격(8px)은 좁게, "카드→카드" 간격은 카드 너비의 15% 안팎으로 꽤
+   넉넉하게 잡혀 있습니다. 예전엔 둘 다 비슷한 간격(12px/18px)이라 카드끼리 너무
+   붙어 보였는데, 그 비율에 맞춰 제목 간격은 좁히고 카드 간격은 넓혔습니다. */
+.groupCards {
+  display: flex;
+  gap: 32px;
+}
+/* 카드 배경 — 사용자가 준 group-card.svg(라운드 카드 + 그림자 + 연두색 곡선 도형이
+   전부 그려진 이미지, src/assets/group-card.svg)를 그대로 배경으로 깔고, 그 위에
+   기존 텍스트(배지 글자/그룹명/초대 안내/멤버 아바타/통계)만 얹습니다. svg 안에 이미
+   둥근 모서리·그림자·배경색이 다 들어있어서 CSS론 border-radius만 다시 주고(overflow
+   클리핑용 — svg 자체 모서리와 정확히 맞춰야 해서 같은 15px), box-shadow는 안
+   씁니다. 카드 실제 비율(가변 폭 × min-height 180px)이 svg 원본 비율(395:240)과
+   다를 수 있어서 background-size: 100% 100%로 카드 크기에 맞춰 늘립니다(cover로
+   하면 오른쪽 위 곡선이 잘려서 100% 100%를 썼습니다).
+   overflow: hidden — 배지 글자(.groupCardBadge)가 카드 밖으로 삐져나가던 버그
+   수정: svg 배경으로 바꾸면서 예전에 있던 overflow:hidden이 같이 빠졌었는데,
+   그 상태에서 배지 폰트('Archivo Black'이 없으면 대체 폰트로 렌더링되면서
+   줄 높이 계산이 달라짐)가 64px짜리 배지 영역을 넘어 카드 위로 튀어나왔습니다.
+   다시 넣어서 카드 영역 밖으로는 절대 못 나가게 막았습니다.
 
-.roomCard {
-  flex: 0 0 calc((100% - 54px) / 4);
-  min-width: 160px;
-  background: var(--color-surface);
+   텍스트 위치·크기 (피그마 "디자인팀 그룹" 383×228 기준):
+   카드 이미지(svg)는 395×240 안에 카드(383×228)가 왼쪽 4.36 / 위 2.9만큼 안쪽에 그려져
+   있고, 이 이미지를 카드 박스에 100% 100%로 늘려 깔기 때문에 텍스트도 같은 좌표계
+   (왼쪽 = (4.36 + 시안 x) ÷ 395, 위 = (2.9 + 시안 y) ÷ 240)의 %로 놓으면 카드 크기가
+   바뀌어도 이미지와 같은 비율로 따라갑니다. 글자 크기는 카드 폭 기준 단위
+   cqw(= 카드 폭의 1%)로 시안 px ÷ 395 × 100 으로 환산하고, 너무 작아지지 않게
+   max(최소px, cqw)로 기존 크기를 하한으로 둡니다. */
+.groupCard {
+  position: relative;
+  flex: 0 0 calc((100% - 96px) / 4);
+  /* 시안 SVG(395×240)와 같은 비율로 고정 — 예전엔 min-height: 180px이라 폭이 좁을 때 세로로 늘어나
+     배경 이미지·% 좌표만 늘고 글자(cqw)는 폭만 따라가 어긋났습니다. 그룹 목록 카드(.card)와 같은 방식입니다. */
+  aspect-ratio: 395 / 240;
+  /* cqw 단위 기준(카드 폭). 폭만 격리하므로 카드 크기·배치는 그대로입니다. */
+  container-type: inline-size;
+
+  background-image: url('../assets/group-card.svg');
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
   border-radius: 15px;
-  box-shadow: var(--shadow-card);
-  padding: 20px;
+  overflow: hidden;
+
   cursor: pointer;
   transition: transform 0.15s;
   display: flex;
   flex-direction: column;
-  gap: 26px;
-  min-height: 150px;
 }
-
-.roomCard:hover {
+.groupCard:hover {
   transform: translateY(-2px);
 }
+/* 이니셜 — 시안 "D": Archivo Bold 140px(→ 35.44cqw), 줄 높이 152/140,
+   왼쪽 7.94% / 위 11.21%. (예전엔 Archivo Black 68px — 폰트·크기 모두 시안과 달랐음)
+   'Archivo' 700은 index.html에서 이미 불러옵니다. 한글 이니셜은 대체 폰트로 그려지고,
+   카드 밖으로 넘치는 부분은 .groupCard의 overflow:hidden이 잘라줍니다. */
+.groupCardBadge {
+  position: absolute;
+  left: 7.94%;
+  top: 11.21%;
 
-.roomIcon {
-  width: 52px;
-  height: 52px;
-  background: var(--color-primary);
-  border-radius: 10px;
+  color: var(--green, #667c55);
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: 35.44cqw;
+  line-height: 1.086;
+
+  pointer-events: none;
+}
+/* 그룹명 — 시안: 초록 #667C55, 600. 왼쪽 43.88%(텍스트 칼럼 시작), 위 13.29% */
+.groupCardName {
+  position: absolute;
+  left: 43.88%;
+  top: 13.29%;
+  width: 51%;
+
+  color: var(--green, #667c55);
+  font-size: max(18px, 6.08cqw);
+  font-weight: 600;
+  line-height: 1.17;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 초대코드 — 시안: 연한 회색 #A2A2A2, 500. 위 27.88% */
+.groupCardInvite {
+  position: absolute;
+  left: 43.88%;
+  top: 27.88%;
+  width: 51%;
+
+  color: #a2a2a2;
+  font-size: max(13px, 4.05cqw);
+  font-weight: 500;
+  line-height: 1.19;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 참석자 아바타 — 시안: 30px 원(→ 7.59cqw), 서로 안 겹치고 간격 5px(→ 1.27cqw),
+   흰 테두리 2px, 배경 #E6F4E8. 위 47.67% / 왼쪽 44.64% (예전엔 22px에 겹쳐 쌓고 흰 배경) */
+.groupCardMembers {
+  position: absolute;
+  left: 44.64%;
+  top: 47.67%;
+  display: flex;
+  align-items: center;
+  gap: 1.27cqw;
+}
+.groupCardMembers svg,
+.groupCardMembers img {
+  box-sizing: border-box;
+  width: max(20px, 7.59cqw);
+  height: max(20px, 7.59cqw);
+  flex-shrink: 0;
+  color: var(--green, #667c55);
+  background: #e6f4e8;
+  border: max(1.5px, 0.5cqw) solid #ffffff;
+  border-radius: 50%;
+  object-fit: cover; /* 프로필 이미지가 원 안에 꽉 차게 */
+}
+/* "+2" — 시안: 22px(→ 5.6cqw), 500, 검정 50% */
+.groupCardMore {
+  margin-left: 0.8cqw;
+  color: #000000;
+  opacity: 0.5;
+  font-size: max(15px, 5.6cqw);
+  font-weight: 500;
+}
+/* 회의·문서 수 — 시안: 400, 초록, 위 77.5%, 항목 사이 20px(→ 5.06cqw),
+   각 항목 앞에 20px 문서 아이콘(→ 5.06cqw)과 글자 사이 10px(→ 2.53cqw) */
+.groupCardStats {
+  position: absolute;
+  left: 43.88%;
+  top: 77.5%;
+  display: flex;
+  align-items: center;
+  gap: 5.06cqw;
+
+  color: var(--green, #667c55);
+  font-size: max(13px, 4.05cqw);
+  font-weight: 400;
+  line-height: 1.19;
+  white-space: nowrap;
+}
+.groupCardStat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.53cqw;
+}
+.groupCardStat svg {
+  width: max(14px, 5.06cqw);
+  height: max(14px, 5.06cqw);
+  flex-shrink: 0;
+}
+
+/* ---------------- 회의 목록 / 최근 AI 요약 ----------------
+   zip의 rectangleGroup(회의 한 건 = 흰 배경 + 테두리 + 그림자가 있는 독립된 박스)
+   구조를 그대로 따라서, 예전의 "표 한 줄씩" 스타일에서 "행마다 카드로 분리"로
+   바꿨습니다. 회의 목록/최근 AI 요약을 .thirdsLayout의 한 칸 안에 2열로 나란히
+   두기 위한 컨테이너입니다.
+   참고로 받은 최신본(contentWrapper/projectCard)은 "회의 목록"·"최근 AI 요약"
+   제목+전체보기 링크를 각 패널 안이 아니라 패널 위 공용 헤더 한 줄로 몰아뒀길래,
+   dashboardSection(제목줄+패널줄을 감싸는 바깥 wrapper)과 dashboardHead(제목줄,
+   패널과 같은 1.1fr/1fr 비율)를 새로 추가하고 .sectionHead는 그 안으로 옮겼습니다. */
+.dashboardSection {
+  display: flex;
+  flex-direction: column;
+  /* 피그마: 제목 상자(높이 40px, 글자 24px) 아래 끝 y655 → 패널 위 y668 = 13px × 0.703 ≈ 9px.
+     (제목 상자 높이 28px = h2 line-height 1.65 × 17px 를 아래 .sectionHead h2에서 맞춰 둡니다) */
+  gap: 9px;
+}
+/* 제목 줄 아래 남은 높이를 패널 줄이 모두 차지합니다 */
+.dashboardSection > .dashboardRow {
+  flex: 1;
+  min-height: 0;
+}
+/* 회의 목록 패널 ↔ AI 요약 패널 사이 공백(32px) — 참고 코드(summaryTitleWrapper)에선
+   이 두 패널 사이 간격이 패널 너비 대비 꽤 큰 편(기존 20px은 상대적으로 좁아 보임).
+   제목 줄(dashboardHead)과 패널 줄(dashboardRow)은 같은 2열 그리드라 간격을
+   똑같이 맞춰야 두 줄의 칼럼이 서로 어긋나지 않습니다. */
+.dashboardHead {
+  display: grid;
+  /* 피그마 패널 폭 813 : 815 ≈ 1:1, 패널 사이 65px × 0.703 ≈ 46px (예전 1.1:1 / 32px) */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 46px;
+}
+.dashboardRow {
+  display: grid;
+  /* 피그마 패널 폭 813 : 815 ≈ 1:1, 패널 사이 65px × 0.703 ≈ 46px (예전 1.1:1 / 32px) */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 46px;
+  align-items: stretch;
+}
+.panel {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  /* 피그마 15px × 0.703 ≈ 10.5px (예전 15px) */
+  border-radius: 10.5px;
+  box-shadow: var(--card-shadow, 0 3px 8px rgba(0, 0, 0, 0.12));
+  /* 피그마: 카드 좌우 → 행/카드까지 약 21px × 0.703 ≈ 15px, 아래 약 27px × 0.703 ≈ 19px */
+  padding: 22px 15px 19px;
+  /* 패널 높이 — 예전엔 zip의 배경 레이어(.child3/.aiChild, display:none) 높이
+     314px를 그대로 고정값으로 썼는데, 그 역시 2048x1152 캔버스 기준이라 화면
+     비율로 다시 환산했습니다: 314.4px ÷ 캔버스 높이 1152px = 27.29% → 27.29vh.
+     회의 목록은 fetchGroups에서 .limit(4), 최근 AI 요약은 .slice(0, 3)으로 최신
+     건수만 잘라서 보여주고 그 이상은 "전체 보기"로 다른 페이지에서 보게 되어 있어서
+     보통은 4개/3개가 꽉 채우는 정도지만, vh 값이라 화면이 아주 낮으면 내용이 패널
+     높이보다 커질 수 있어 overflow는 hidden 대신 auto로 둬서 그 경우엔 패널 안에서
+     스크롤되게(잘려서 안 보이는 대신) 했습니다.
+     → 이제는 스크롤을 없앴습니다(overflow: hidden). 고정 px 높이의 카드 4개가 vh 높이
+     패널보다 커서 스크롤이 생기던 거라, 카드 높이를 고정하지 않고 패널 남은 높이를
+     카드 수만큼 나눠 갖게(.meetingCard/.summaryCard의 flex: 1) 바꿨습니다. */
+  /* 높이는 고정값(27.29vh) 대신 칸(.dashboardRow가 stretch)이 정해 줍니다 — 칸이 높아지면
+     패널이 커지면 카드도 같이 커집니다 */
+  min-height: 0;
+  overflow: hidden;
+}
+/* margin-bottom을 안 쓰는 이유: 이제 .sectionHead는 패널 안이 아니라 .dashboardHead
+   그리드의 셀이라, 아래 패널과의 간격은 부모 .dashboardSection의 gap이 만듭니다
+   — 여기 margin까지 더하면 간격이 두 번 겹칩니다. */
+.sectionHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.sectionHead h2 {
+  /* 피그마 24px/600 × 0.703 ≈ 17px (예전 19px/700) — 설정 페이지 제목(17px)과도 맞춤 */
+  font-weight: 600;
+  font-size: 17px;
+  /* 피그마 제목 상자 높이 40px × 0.703 ≈ 28px — 설정 페이지 제목과 같은 줄 높이(1.65)입니다 */
+  line-height: 1.65;
+  margin: 0;
+}
+/* 칼럼 사이 공백(14px) — 참고 코드(rectangleGroup)는 한 행 안에서 칸 사이 간격이
+   행의 좌우 패딩(14px)과 비슷한 크기라, 기존 8px(패딩의 절반 수준)보다 좀 더
+   넓혀서 칸이 덜 붙어 보이게 맞췄습니다. */
+.meetingCols {
+  /* 날짜 칸을 넓혔습니다(1.4fr→1.8fr, 제목 2fr→1.6fr) — "2026.10.07 03:34PM"이 한 줄에
+     들어가야 행 높이가 늘어나지 않습니다(피그마도 날짜는 한 줄). 아래 .meetingCard와 같은 값 */
+  display: grid;
+  grid-template-columns: 165fr 150fr 162fr 196fr 94fr;
+  /* 칼럼 위치는 피그마 행(772px) 안의 글자 위치(제목 5 · 상태 ~245 · 날짜 ~401 · 참석자 ~580 · AI ~745)에
+     맞춰 fr 비율로 환산했습니다. 칸 사이 gap은 0(칸 안에서 가운데 정렬) */
+  gap: 0;
+  /* 피그마 머리글 아래 구분선(Line 4): 머리글 y675 → 선 y713 → 첫 행 y728 ≈ 11 → 32px, 선 아래 10px */
+  /* 글자 상자 높이 37px × 0.703 ≈ 26px(line-height), 패널 위 → 글자 7px ≈ 5px, 글자 상자 → 선 약 1px.
+     선은 패널 왼쪽 끝~오른쪽 끝을 가로지릅니다(피그마 Line 4: x310, 폭 813 = 패널 폭) — 그래서 이 줄은 패널
+     좌우 padding 없이 전체 폭이고, 행과 같은 시작 위치(15 + 4)로 안쪽 padding을 줍니다 */
+  padding: 5px 19px 0;
+  line-height: 26px;
+  /* 선 → 첫 행 15px × 0.703 ≈ 10.5px */
+  margin-bottom: 10.5px;
+  border-bottom: 1px solid var(--gray-divider, #e3e0db);
+  flex-shrink: 0;
+  color: #000;
+  opacity: 0.5;
+  font-weight: 500;
+  /* 피그마 16px × 0.703 ≈ 11.25px (예전 13px) */
+  font-size: 11.25px;
+}
+.meetingCols span:not(:first-child) {
+  text-align: center;
+}
+.meetingList {
+  display: flex;
+  flex-direction: column;
+  /* 피그마 행 사이 20px × 0.703 ≈ 14px (예전 10px) */
+  gap: 14px;
+  /* 행 좌우: 피그마 패널 가장자리 → 행 21px × 0.703 ≈ 15px(패널 padding을 0으로 두고 여기서 줍니다) */
+  margin: 0 15px;
+  /* 패널의 남은 높이를 차지하고, 카드들이 그 안에서 높이를 나눠 갖습니다(넘치지 않게) */
+  flex: 1;
+  min-height: 0;
+}
+/* zip의 .rectangleGroup — white bg + 옅은 흰 테두리 + 그림자로 행 하나를 카드처럼 분리.
+   zip에 min-height: 47px로 박혀있던 값 그대로 — 회의 제목이 짧든 길든, 참석자가
+   있든 없든 행 높이가 흔들리지 않게 고정합니다. */
+.meetingCard {
+  display: grid;
+  grid-template-columns: 165fr 150fr 162fr 196fr 94fr;
+  align-items: center;
+  gap: 0;
+  /* 세로 패딩은 0 — 높이는 아래 flex가 정합니다. 카드 4개가 패널 남은 높이를 똑같이
+     나눠 갖고(flex: 1 1 0), 패널이 넉넉할 땐 원래 높이(47px)까지만 커집니다. */
+  padding: 0 4px;
+  /* 카드 5장이 패널 남은 높이를 똑같이 나눠 가집니다(장수는 MainPage.tsx의 MEETING_VISIBLE) */
+  flex: 1 1 0;
+  min-height: 0;
+
+  background: #fff;
+  border: 1.5px solid var(--gray-divider, #e3e0db);
+  /* 피그마 행 radius 10px × 0.703 ≈ 7px */
+  border-radius: 7px;
+  box-shadow: 1.5px 3px 6px rgba(0, 0, 0, 0.08);
+
+  cursor: pointer;
+}
+.meetingCard:hover {
+  border-color: var(--green, #667c55);
+}
+.title {
+  font-weight: 500;
+  font-size: 14px;
+  /* 긴 제목은 줄바꿈 대신 말줄임 — 줄바꿈되면 행 높이가 늘어납니다 */
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.date {
+  text-align: center;
+  /* 피그마 16px × 0.703 ≈ 11.25px (예전 13px) */
+  font-size: 11.25px;
+  /* 날짜와 시간이 두 줄로 꺾이지 않게(피그마도 한 줄) */
+  white-space: nowrap;
+}
+.statusPill {
+  /* 피그마 pill 29px × 0.703 ≈ 20px, radius 5 → 3.5px, 글자 16 → 11.25px */
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  padding: 0 10px;
+  border-radius: 3.5px;
+  font-size: 11.25px;
+}
+.statusPillDone {
+  background: var(--done-bg, #e6f4e8);
+  color: var(--done-text, #427a2a);
+}
+.statusPillProgress {
+  background: var(--progress-bg, #dce1f5);
+  color: var(--progress-text, #2a4f7a);
+}
+.attendees {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
-  font-family: var(--font-display);
-  font-size: 22px;
+  gap: 2px;
+  font-size: 11.25px;
+  opacity: 0.7;
 }
-
-.roomName {
-  font-weight: 500;
-  font-size: 16px;
-  color: var(--color-text);
+.attendees svg {
+  /* 피그마 27.5px × 0.703 ≈ 19px */
+  width: 19px;
+  height: 19px;
+  margin-left: -6px;
+  stroke-width: 1.5;
+  color: var(--gray-text, #5e5e5e);
 }
-
-.roomMeta {
-  font-size: 12px;
-  color: var(--color-text-muted);
+.attendees svg:first-child {
+  margin-left: 0;
 }
-
-.roomAdd {
-  color: var(--color-text-disabled);
-  align-items: center;
+/* 실제 프로필 이미지 — 임시 아이콘(svg)과 같은 크기·겹침으로 그려 줄 높이가 변하지 않게 합니다 */
+.attendees img {
+  /* 피그마 27.5px × 0.703 ≈ 19px */
+  width: 19px;
+  height: 19px;
+  margin-left: -6px;
+  box-sizing: border-box;
+  border: 1.5px solid #ffffff;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #e6f4e8;
+}
+.attendees img:first-child {
+  margin-left: 0;
+}
+.aiIcon {
+  display: flex;
   justify-content: center;
-  gap: 14px;
+}
+.aiIcon img {
+  /* 시안 20px × 0.703 ≈ 14px */
+  width: 14px;
+  height: 14px;
+  display: block;
 }
 
-.roomAdd .roomIcon {
-  background: #e3e0db;
-  color: var(--color-text-muted);
-  font-family: inherit;
+/* AI 요약 카드 — zip의 GroupComponent(흰 반투명 배경 + 흰 테두리 + 그림자)를 참고했지만,
+   그 컴포넌트 자체는 카드마다 중복되는 숨김 file input(id 충돌 버그)을 갖고 있어서
+   그대로 옮기지 않고 필요한 시각 스타일만 가져왔습니다. */
+.summaryList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 회의 목록과 같은 방식 — 패널 남은 높이를 카드들이 나눠 갖습니다 */
+  flex: 1;
+  min-height: 0;
+}
+/* zip의 .groupDiv/.rectangleParent2도 같은 min-height: 47px — 요약 카드도 회의
+   카드와 똑같이 고정합니다. */
+.summaryCard {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  /* 카드 4장이 패널 남은 높이를 똑같이 나눠 가집니다(장수는 MainPage.tsx의 SUMMARY_VISIBLE) */
+  flex: 1 1 0;
+  min-height: 0;
+  /* 피그마: 카드 왼쪽 → 아이콘 20px ≈ 14px, 오른쪽 pill까지 약 19px ≈ 13px. 위·아래는 글자 묶음(34px)이
+     카드 높이(53px) 안에서 가운데 정렬되어 각각 약 9.5px */
+  padding: 0 13px 0 14px;
+
+  background: #fff;
+  border: 1.5px solid var(--gray-divider, #e3e0db);
+  /* 피그마 15px × 0.703 ≈ 10.5px (예전 12px) */
+  border-radius: 10.5px;
+  box-shadow: 1.5px 3px 6px rgba(0, 0, 0, 0.08);
+}
+.docIcon {
+  /* 시안 SVG는 41×41 박스 안에 글리프가 가운데 작게(약 27×34) 들어 있어, 박스를 32px로 잡으면
+     눈에 보이는 문서 모양이 예전 26px 선형 아이콘과 비슷한 크기가 됩니다 */
+  /* 피그마 아이콘 박스 40px × 0.703 ≈ 28px (예전 32px) */
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: block;
+  /* 피그마 아이콘 오른쪽 끝 → 제목 시작 44.9px × 0.703 ≈ 31.6px (flex gap 14px에 17px을 더합니다) */
+  margin-right: 17px;
+}
+.content {
+  flex: 1;
+  min-width: 0;
+}
+.topRow {
+  display: flex;
+  align-items: baseline;
+  /* 피그마 제목 상자 끝 → 날짜 6px × 0.703 ≈ 4px (예전 10px) */
+  gap: 4px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.summaryTitle {
+  font-weight: 500;
+  /* 피그마 20px × 0.703 ≈ 14px (예전 15px), 상자 높이 23.15px → line-height 1.16 */
+  font-size: 14px;
+  line-height: 1.16;
+}
+.summaryDate {
+  /* 피그마 16px × 0.703 ≈ 11.25px (예전 12px) */
+  font-size: 11.25px;
+  color: var(--gray-text, #5e5e5e);
+}
+.desc {
+  /* 피그마 16px × 0.703 ≈ 11.25px (예전 13px) */
+  font-size: 11.25px;
+  /* 상자 높이 19.12px ÷ 16px → line-height 1.2 */
+  line-height: 1.2;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 회의 목록 패널 — 머리글 구분선이 패널 폭 전체를 가로지르고(피그마 Line 4) 위 0 / 아래 20px(마지막 행 → 패널 끝
+   28.8px × 0.703)만 padding을 갖습니다. 좌우 inset은 머리글/행이 각자 갖습니다. .panel 뒤에 둬서 덮어씁니다 */
+.meetingPanel {
+  padding: 0 0 20px;
 }
