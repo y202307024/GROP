@@ -516,7 +516,39 @@
 .ai-meeting-list-panel {
     max-height: calc(100vh - 68px);
 
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+
+    overflow: hidden;
+}
+
+.ai-meeting-list-panel .section-head {
+    align-items: center;
+}
+
+/* 회의 목록 오른쪽 위. 선택한 회의의 영상과 요약을 지웁니다. */
+.ai-list-delete {
+    border: none;
+    background: transparent;
+
+    width: 28px;
+    height: 28px;
+    padding: 0;
+
+    font-size: 22px;
+    line-height: 1;
+    color: #666666;
+
+    cursor: pointer;
+}
+
+.ai-list-delete:hover:not(:disabled) {
+    color: #c0392b;
+}
+
+.ai-list-delete:disabled {
+    opacity: 0.35;
+    cursor: default;
 }
 
 
@@ -546,6 +578,37 @@
     flex-direction: column;
 
     gap: 12px;
+
+    min-height: 0;
+    overflow-y: auto;
+}
+
+/* 마이너스·체크 아이콘 바로 왼쪽의 영상 용량 */
+.ai-summary-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+
+    margin-left: auto;
+}
+
+.ai-video-size {
+    font-size: 12px;
+    font-weight: 600;
+    color: #555555;
+    white-space: nowrap;
+}
+
+/* 오른쪽 아래. 목록을 내려도 패널 바닥에 바로 보입니다. */
+.ai-storage-total {
+    flex: none;
+    align-self: flex-end;
+
+    margin-top: 12px;
+
+    font-size: 13px;
+    font-weight: 700;
+    color: #333333;
 }
 
 

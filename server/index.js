@@ -12,7 +12,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 const os = require('os')
 const path = require('path')
 const { pipeline } = require('stream/promises')
-const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3')
+const { S3Client, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand } = require('@aws-sdk/client-s3')
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner')
 const { startOauthFallback, rememberOauthOrigin, getOauthOrigin } = require('./oauthFallback')
 // AI 요약(오디오 추출 → Whisper → LLM) 로직은 Netlify 함수와 함께 쓰려고 별도 모듈로 분리했습니다.
@@ -461,6 +461,27 @@ app.post('/api/meetings/upload-r2', checkUploadToken, uploadMeetingVideo.single(
   }
 })
 
+/** 예전 디스크 영상 주소에서 이 서버 폴더 안의 파일만 고릅니다. 폴더 밖은 null입니다. */
+function meetingVideoDiskPath(raw) {
+  if (typeof raw !== 'string') return null
+  let rel = raw.trim()
+  if (!rel) return null
+  const marker = '/videos/'
+  const idx = rel.indexOf(marker)
+  if (idx >= 0) {
+    try {
+      rel = decodeURIComponent(rel.slice(idx + marker.length).split('?')[0] ?? '')
+    } catch {
+      return null
+    }
+  }
+  rel = rel.replace(/^\/+/, '')
+  if (!rel || rel.includes('..') || rel.includes('\\') || rel.includes('\0')) return null
+  const full = path.resolve(MEETING_VIDEOS_DIR, rel)
+  if (full !== MEETING_VIDEOS_DIR && !full.startsWith(MEETING_VIDEOS_DIR + path.sep)) return null
+  return full
+}
+
 // 재생용 GET 주소. 키는 meeting-videos/ 아래만 허용합니다.
 app.get('/api/meetings/video-url', async (req, res) => {
   try {
@@ -476,6 +497,60 @@ app.get('/api/meetings/video-url', async (req, res) => {
   } catch (err) {
     console.error('재생 주소 발급 실패:', err.message)
     res.status(err.statusCode || 500).json({ error: err.message || '재생 주소를 만들지 못했습니다' })
+  }
+})
+
+// 요약 화면의 전체 용량. meeting-videos/ 아래 파일 크기만 모읍니다.
+app.get('/api/meetings/storage', checkUploadToken, async (req, res) => {
+  try {
+    const client = getR2Client()
+    let token
+    let totalBytes = 0
+    const files = []
+    do {
+      const listed = await client.send(new ListObjectsV2Command({
+        Bucket: process.env.R2_BUCKET,
+        Prefix: 'meeting-videos/',
+        ContinuationToken: token,
+      }))
+      for (const item of listed.Contents || []) {
+        if (!item.Key) continue
+        const size = item.Size || 0
+        totalBytes += size
+        files.push({ key: item.Key, size })
+      }
+      token = listed.IsTruncated ? listed.NextContinuationToken : undefined
+    } while (token)
+    res.json({ totalBytes, files })
+  } catch (err) {
+    console.error('녹화 용량 조회 실패:', err.message)
+    res.status(err.statusCode || 500).json({ error: err.message || '용량을 읽지 못했습니다' })
+  }
+})
+
+// 요약 화면의 삭제. R2 원본과 예전 디스크 파일을 지웁니다. 회의 행은 클라이언트가 비웁니다.
+app.delete('/api/meetings/video', checkUploadToken, async (req, res) => {
+  const key = normalizeMeetingVideoKey(typeof req.query.key === 'string' ? req.query.key : '')
+  const diskPath = meetingVideoDiskPath(typeof req.query.path === 'string' ? req.query.path : '')
+  if (!key && !diskPath) return res.status(400).json({ error: '지울 영상이 없습니다' })
+
+  try {
+    if (key) {
+      const client = getR2Client()
+      await client.send(new DeleteObjectCommand({
+        Bucket: process.env.R2_BUCKET,
+        Key: key,
+      }))
+      console.log('회의 녹화 R2 삭제:', key)
+    }
+    if (diskPath && fs.existsSync(diskPath)) {
+      fs.unlinkSync(diskPath)
+      console.log('회의 녹화 디스크 삭제:', diskPath)
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('회의 녹화 삭제 실패:', err.message)
+    res.status(err.statusCode || 500).json({ error: err.message || '영상을 지우지 못했습니다' })
   }
 })
 

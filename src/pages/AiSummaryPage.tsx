@@ -7,7 +7,8 @@ import MeetingDetailView from '../components/MeetingDetailView';
 import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
 import { liveIdentitiesFor, useLiveRooms } from '../utils/liveMeeting';
 import { readLastMeeting } from '../utils/lastMeeting';
-import { meetingVideoStatusLabel } from '../utils/meetingVideo';
+import { getApiBase } from '../utils/apiBase';
+import { meetingHasStoredVideo, meetingVideoStatusLabel } from '../utils/meetingVideo';
 
 // 우측 회의 목록에 쓸 회의 행 타입 (문서 탭과 동일한 meetings 데이터)
 type MeetingRow = {
@@ -18,11 +19,26 @@ type MeetingRow = {
   video_url?: string | null;
   video_key?: string | null;
   video_status?: string | null;
+  video_size_bytes?: number | null;
   group_id: string;
   attendees?: unknown;
   chat_log?: unknown;
   created_by?: string | null;
 };
+
+/** 목록과 전체 용량에 바로 보일 짧은 크기 문자열입니다. 없으면 null입니다. */
+function formatVideoSize(bytes: number | null | undefined): string | null {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) return null;
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 10 ? 0 : 1;
+  return `${value.toFixed(digits)} ${units[unit]}`;
+}
 
 /** '2026.09.06 10:00AM' 형식으로 회의 날짜를 표시합니다. */
 function formatMeetingDate(dateStr: string) {
@@ -49,6 +65,12 @@ export default function AiSummaryPage() {
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
   // 왼쪽에 표시할 회의 id. 목록을 누르면 여기가 바뀝니다.
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 영상·요약을 지운 뒤 왼쪽 화면을 다시 불러옵니다.
+  const [detailVersion, setDetailVersion] = useState(0);
+  // R2에 있는 실제 파일 크기. 목록 칸에 크기가 없어도 용량을 바로 채웁니다.
+  const [storageBytes, setStorageBytes] = useState<number | null>(null);
+  const [sizeByKey, setSizeByKey] = useState<Record<string, number>>({});
+  const [storageTick, setStorageTick] = useState(0);
   const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
   const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
   // 진행중은 그 회의 방에 사람이 남아 있을 때만입니다. 비면 완료입니다.
@@ -83,7 +105,7 @@ export default function AiSummaryPage() {
       // attendees 칸이 없어도 created_by 는 남겨야 참석자 아이콘이 전부 비지 않습니다.
       // 맨 위는 R2 상태 칸을 포함합니다. SQL 적용 전이면 아래 예전 칸으로 내려갑니다.
       const meetingColumns = [
-        'id, title, date, summary, video_url, video_key, video_status, group_id, attendees, chat_log, created_by',
+        'id, title, date, summary, video_url, video_key, video_status, video_size_bytes, group_id, attendees, chat_log, created_by',
         'id, title, date, summary, video_url, group_id, attendees, chat_log, created_by',
         'id, title, date, summary, video_url, group_id, chat_log, created_by',
         'id, title, date, summary, video_url, group_id, created_by',
@@ -99,7 +121,7 @@ export default function AiSummaryPage() {
           data = res.data as unknown as MeetingRow[] | null;
           break;
         }
-        if (!/attendees|chat_log|video_key|video_status/i.test(res.error.message)) {
+        if (!/attendees|chat_log|video_key|video_status|video_size_bytes/i.test(res.error.message)) {
           console.warn('회의록 목록을 불러오지 못했습니다:', res.error.message);
           break;
         }
@@ -138,13 +160,107 @@ export default function AiSummaryPage() {
     };
   }, [navigate, searchParams]);
 
+  useEffect(() => {
+    let alive = true;
+    const loadStorage = async () => {
+      try {
+        const res = await fetch(`${getApiBase()}/api/meetings/storage`);
+        if (!res.ok || !alive) return;
+        const data = await res.json() as { totalBytes?: number; files?: { key: string; size: number }[] };
+        if (!alive) return;
+        setStorageBytes(typeof data.totalBytes === 'number' ? data.totalBytes : 0);
+        const next: Record<string, number> = {};
+        for (const file of data.files ?? []) next[file.key] = file.size;
+        setSizeByKey(next);
+      } catch {
+        // 용량 API가 아직 없으면 회의 행에 저장된 크기로만 보여 줍니다.
+      }
+    };
+    void loadStorage();
+    return () => {
+      alive = false;
+    };
+  }, [storageTick]);
+
+  const selected = meetings.find((row) => row.id === selectedId) ?? null;
+  const totalBytes = meetings.reduce((sum, row) => {
+    return sum + (typeof row.video_size_bytes === 'number' && row.video_size_bytes > 0 ? row.video_size_bytes : 0);
+  }, 0);
+  const totalLabel = formatVideoSize(storageBytes ?? totalBytes) ?? '0B';
+
+  /** 선택한 회의의 영상 파일과 AI 요약을 지웁니다. 목록의 회의 행은 남깁니다. */
+  const deleteSelectedVideoAndSummary = async () => {
+    if (!selected) return;
+    if (!window.confirm('정말 삭제하시겠습니까?')) return;
+
+    const hasFile = meetingHasStoredVideo(selected);
+    if (hasFile) {
+      const params = new URLSearchParams();
+      if (selected.video_key) params.set('key', selected.video_key);
+      if (selected.video_url) params.set('path', selected.video_url);
+      const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
+      const headers: Record<string, string> = {};
+      if (uploadToken) headers['x-upload-token'] = uploadToken;
+      try {
+        const res = await fetch(`${getApiBase()}/api/meetings/video?${params}`, { method: 'DELETE', headers });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          alert((body as { error?: string }).error || '영상을 저장소에서 지우지 못했습니다.');
+          return;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '네트워크 오류';
+        alert(`영상을 저장소에서 지우지 못했습니다. (${msg})`);
+        return;
+      }
+    }
+
+    // 없는 칸은 빼면서 요약과 영상 칸을 비웁니다. 회의 행 자체는 목록에 남깁니다.
+    const payload: Record<string, null> = {
+      summary: null,
+      video_url: null,
+      video_key: null,
+      video_status: null,
+      video_size_bytes: null,
+      chapters: null,
+      speakers: null,
+      transcript: null,
+    };
+    let error: { message: string } | null = null;
+    for (let i = 0; i < 8; i += 1) {
+      const result = await supabase.from('meetings').update(payload).eq('id', selected.id);
+      if (!result.error) {
+        error = null;
+        break;
+      }
+      error = result.error;
+      const missing = result.error.message.match(/Could not find the '([^']+)' column/)?.[1]
+        ?? result.error.message.match(/column "([^"]+)" of relation "meetings" does not exist/)?.[1];
+      if (!missing || !(missing in payload)) break;
+      delete payload[missing];
+      if (Object.keys(payload).length === 0) break;
+    }
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setMeetings((prev) => prev.map((row) => (
+      row.id === selected.id
+        ? { ...row, summary: null, video_url: null, video_key: null, video_status: null, video_size_bytes: null }
+        : row
+    )));
+    setDetailVersion((version) => version + 1);
+    setStorageTick((tick) => tick + 1);
+  };
+
   return (
     <AppShell activePage="ai">
       <div className="ai-page">
         {/* 좌측: 선택한 회의의 영상 + AI 회의록 */}
         <div className="ai-main-column">
           {selectedId ? (
-            <MeetingDetailView key={selectedId} meetingId={selectedId} variant="ai" />
+            <MeetingDetailView key={`${selectedId}-${detailVersion}`} meetingId={selectedId} variant="ai" />
           ) : (
             <div className="panel" style={{ padding: 40, color: '#888' }}>
               왼쪽에 표시할 회의록이 없어요. 회의방에서 녹화를 저장하면 여기에 나타납니다.
@@ -156,6 +272,17 @@ export default function AiSummaryPage() {
         <section className="panel ai-meeting-list-panel">
           <div className="section-head">
             <h2>회의 목록</h2>
+            {/* 오른쪽 위. 지금 선택한 회의의 영상 파일과 AI 요약만 지웁니다. */}
+            <button
+              type="button"
+              className="ai-list-delete"
+              aria-label="영상 및 요약 삭제"
+              title="영상 및 요약 삭제"
+              disabled={!selected}
+              onClick={() => { void deleteSelectedVideoAndSummary(); }}
+            >
+              ×
+            </button>
           </div>
 
           <div className="ai-meeting-list-head">
@@ -181,6 +308,9 @@ export default function AiSummaryPage() {
                 const statusLabel = inRoom ? '진행중' : '완료';
                 const statusClass = inRoom ? 'progress' : 'done';
                 const videoLabel = meetingVideoStatusLabel(m.video_status);
+                const sizeLabel = formatVideoSize(
+                  (m.video_key && sizeByKey[m.video_key]) || m.video_size_bytes,
+                );
                 const faceIds = attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id));
                 for (const id of liveIdentitiesFor(liveRooms, m.id)) {
                   if (!faceIds.includes(id)) faceIds.push(id);
@@ -209,10 +339,14 @@ export default function AiSummaryPage() {
                         ids={faceIds}
                         avatarByUserId={avatarByUserId}
                       />
-                      <span className="ai-icon">
-                        {hasSummary
-                          ? <Icon name="check-circle" className="done" />
-                          : <Icon name="minus-circle" className="pending" />}
+                      <span className="ai-summary-mark">
+                        {/* 마이너스·체크 바로 왼쪽. 이 영상 파일이 차지하는 용량입니다. */}
+                        {sizeLabel ? <span className="ai-video-size">{sizeLabel}</span> : null}
+                        <span className="ai-icon">
+                          {hasSummary
+                            ? <Icon name="check-circle" className="done" />
+                            : <Icon name="minus-circle" className="pending" />}
+                        </span>
                       </span>
                     </div>
                   </div>
@@ -220,6 +354,8 @@ export default function AiSummaryPage() {
               })
             )}
           </div>
+          {/* 목록을 스크롤해도 오른쪽 아래에 바로 보이도록 패널 바닥에 고정합니다. */}
+          <div className="ai-storage-total">전체 용량 {totalLabel}</div>
         </section>
       </div>
     </AppShell>
