@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
@@ -107,11 +107,11 @@ export default function AiSummaryPage() {
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
   // 왼쪽에 표시할 회의 id. 목록을 누르면 여기가 바뀝니다.
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // 영상·요약을 지운 뒤 왼쪽 화면을 다시 불러옵니다.
-  const [detailVersion, setDetailVersion] = useState(0);
   // R2에 있는 실제 파일 크기. 목록 칸에 크기가 없어도 용량을 바로 채웁니다.
   const [storageBytes, setStorageBytes] = useState<number | null>(null);
   const [sizeByKey, setSizeByKey] = useState<Record<string, number>>({});
+  // 지운 회의는 5초 새로고침이 다시 넣지 않습니다.
+  const removedIds = useRef(new Set<string>());
   const [storageTick, setStorageTick] = useState(0);
   const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
   const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
@@ -176,7 +176,7 @@ export default function AiSummaryPage() {
       setNicknameToIdByGroup(faces.nicknameToIdByGroup);
 
       if (!mounted || data === null) return;
-      const rows = data;
+      const rows = data.filter((row) => !removedIds.current.has(row.id));
       setMeetings(rows);
 
       // 5초마다 목록만 새로고칩니다. 주소의 회의로 다시 바꾸면 보고 있던 화면이 자꾸 바뀝니다.
@@ -210,20 +210,28 @@ export default function AiSummaryPage() {
   useEffect(() => {
     let alive = true;
     const loadStorage = async () => {
-      try {
-        const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
-        const headers: Record<string, string> = {};
-        if (uploadToken) headers['x-upload-token'] = uploadToken;
-        const res = await fetch(`${getApiBase()}/api/meetings/storage`, { headers });
-        if (!res.ok || !alive) return;
-        const data = await res.json() as { totalBytes?: number; files?: { key: string; size: number }[] };
-        if (!alive) return;
-        setStorageBytes(typeof data.totalBytes === 'number' ? data.totalBytes : 0);
-        const next: Record<string, number> = {};
-        for (const file of data.files ?? []) next[file.key] = file.size;
-        setSizeByKey(next);
-      } catch {
-        // 용량 API가 아직 없으면 회의 행에 저장된 크기로만 보여 줍니다.
+      const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
+      const headers: Record<string, string> = {};
+      if (uploadToken) headers['x-upload-token'] = uploadToken;
+      // 서버 용량 주소가 없어도, 이 사이트가 파일 크기를 주면 체크 왼쪽에 바로 씁니다.
+      const bases = [window.location.origin.replace(/\/$/, '')];
+      const api = getApiBase();
+      if (!bases.includes(api)) bases.push(api);
+      for (const base of bases) {
+        try {
+          const res = await fetch(`${base}/api/meetings/storage`, { headers });
+          const type = res.headers.get('content-type') || '';
+          if (!res.ok || !type.includes('json') || !alive) continue;
+          const data = await res.json() as { totalBytes?: number; files?: { key: string; size: number }[] };
+          if (!alive) return;
+          setStorageBytes(typeof data.totalBytes === 'number' ? data.totalBytes : 0);
+          const next: Record<string, number> = {};
+          for (const file of data.files ?? []) next[file.key] = file.size;
+          setSizeByKey(next);
+          return;
+        } catch {
+          // 다음 주소에서 용량을 찾습니다.
+        }
       }
     };
     void loadStorage();
@@ -234,12 +242,12 @@ export default function AiSummaryPage() {
 
   const totalBytes = meetings.reduce((sum, row) => sum + (asBytes(row.video_size_bytes) ?? 0), 0);
 
-  /** 그 회의의 영상 파일과 AI 요약을 지웁니다. 목록의 회의 행은 남깁니다. */
-  const deleteVideoAndSummary = async (meeting: MeetingRow) => {
+  /** 체크·마이너스·X 로 그 회의 카드, 영상, 요약, 챕터를 지웁니다. */
+  const deleteMeetingCard = async (meeting: MeetingRow) => {
     if (!window.confirm('정말 삭제하시겠습니까?')) return;
 
-    const hasFile = meetingHasStoredVideo(meeting);
-    if (hasFile) {
+    // 영상 주소가 아직 없어도 챕터와 회의 카드는 이어서 지웁니다.
+    if (meetingHasStoredVideo(meeting)) {
       const params = new URLSearchParams();
       if (meeting.video_key) params.set('key', meeting.video_key);
       if (meeting.video_url) params.set('path', meeting.video_url);
@@ -247,20 +255,23 @@ export default function AiSummaryPage() {
       const headers: Record<string, string> = {};
       if (uploadToken) headers['x-upload-token'] = uploadToken;
       try {
-        const res = await fetch(`${getApiBase()}/api/meetings/video?${params}`, { method: 'DELETE', headers });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          alert((body as { error?: string }).error || '영상을 저장소에서 지우지 못했습니다.');
-          return;
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : '네트워크 오류';
-        alert(`영상을 저장소에서 지우지 못했습니다. (${msg})`);
-        return;
+        await fetch(`${getApiBase()}/api/meetings/video?${params}`, { method: 'DELETE', headers });
+      } catch {
+        // 파일 서버가 꺼져 있어도 목록의 회의와 챕터는 지웁니다.
       }
     }
 
-    // 없는 칸은 빼면서 요약과 영상 칸을 비웁니다. 회의 행 자체는 목록에 남깁니다.
+    const removed = await supabase.from('meetings').delete().eq('id', meeting.id).select('id');
+    if (!removed.error && (removed.data?.length ?? 0) > 0) {
+      removedIds.current.add(meeting.id);
+      const rest = meetings.filter((row) => row.id !== meeting.id);
+      setMeetings(rest);
+      setSelectedId((current) => (current === meeting.id ? rest[0]?.id ?? null : current));
+      setStorageTick((tick) => tick + 1);
+      return;
+    }
+
+    // 행 삭제가 막혀 있으면 챕터·요약·영상 칸을 비워 화면에 남지 않게 합니다.
     const payload: Record<string, null> = {
       summary: null,
       video_url: null,
@@ -290,12 +301,10 @@ export default function AiSummaryPage() {
       return;
     }
 
-    setMeetings((prev) => prev.map((row) => (
-      row.id === meeting.id
-        ? { ...row, summary: null, video_url: null, video_key: null, video_status: null, video_size_bytes: null }
-        : row
-    )));
-    if (selectedId === meeting.id) setDetailVersion((version) => version + 1);
+    removedIds.current.add(meeting.id);
+    const rest = meetings.filter((row) => row.id !== meeting.id);
+    setMeetings(rest);
+    setSelectedId((current) => (current === meeting.id ? rest[0]?.id ?? null : current));
     setStorageTick((tick) => tick + 1);
   };
 
@@ -311,7 +320,7 @@ export default function AiSummaryPage() {
         {/* 좌측: 선택한 회의의 영상 + AI 회의록 */}
         <div className="ai-main-column">
           {selectedId ? (
-            <MeetingDetailView key={`${selectedId}-${detailVersion}`} meetingId={selectedId} variant="ai" />
+            <MeetingDetailView key={selectedId} meetingId={selectedId} variant="ai" />
           ) : (
             <div className="panel" style={{ padding: 40, color: '#888' }}>
               왼쪽에 표시할 회의록이 없어요. 회의방에서 녹화를 저장하면 여기에 나타납니다.
@@ -379,7 +388,7 @@ export default function AiSummaryPage() {
                           title="영상 및 요약 삭제"
                           onClick={(event) => {
                             event.stopPropagation();
-                            void deleteVideoAndSummary(m);
+                            void deleteMeetingCard(m);
                           }}
                         >
                           ×
@@ -395,11 +404,21 @@ export default function AiSummaryPage() {
                       <span className="ai-summary-mark">
                         {/* 마이너스·체크 바로 왼쪽. 이 영상 파일이 차지하는 용량입니다. */}
                         {sizeLabel ? <span className="ai-video-size">{sizeLabel}</span> : null}
-                        <span className="ai-icon">
+                        {/* 체크·마이너스를 누르면 이 회의 카드와 챕터를 지웁니다. */}
+                        <button
+                          type="button"
+                          className="ai-icon"
+                          aria-label="이 회의와 챕터 삭제"
+                          title="이 회의와 챕터 삭제"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void deleteMeetingCard(m);
+                          }}
+                        >
                           {hasSummary
                             ? <Icon name="check-circle" className="done" />
                             : <Icon name="minus-circle" className="pending" />}
-                        </span>
+                        </button>
                       </span>
                     </div>
                   </div>

@@ -78,6 +78,12 @@ for update to authenticated
 using (public.is_group_member(group_id))
 with check (public.is_group_member(group_id));
 
+-- 같은 그룹 멤버가 회의 카드와 챕터를 목록에서 지울 수 있습니다.
+drop policy if exists "meetings_delete_member" on public.meetings;
+create policy "meetings_delete_member" on public.meetings
+for delete to authenticated
+using (public.is_group_member(group_id));
+
 -- ── 녹화 영상 저장소 ────────────────────────────────────────
 -- 비공개 버킷입니다. 재생은 앱이 signed URL 을 발급해서 씁니다.
 insert into storage.buckets (id, name, public)

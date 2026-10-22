@@ -568,6 +568,15 @@
     margin-left: auto;
 }
 
+button.ai-icon {
+    border: none;
+    background: transparent;
+    padding: 0;
+
+    cursor: pointer;
+    color: inherit;
+}
+
 .ai-video-size {
     font-size: 12px;
     font-weight: 600;

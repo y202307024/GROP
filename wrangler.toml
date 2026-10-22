@@ -1,8 +1,17 @@
 # Vite 빌드 결과(dist)를 Cloudflare Workers 정적 사이트로 배포합니다.
 # 없는 주소는 index.html 로 보내 새로고침해도 React Router 화면이 열리게 합니다.
+# /api/meetings/storage 만 워커가 먼저 받아 영상 파일 크기를 돌려줍니다.
 name = "grop"
+main = "worker/index.js"
 compatibility_date = "2026-10-22"
 
 [assets]
 directory = "./dist"
+binding = "ASSETS"
 not_found_handling = "single-page-application"
+run_worker_first = [ "/api/meetings/storage" ]
+
+# 비밀키 없이 버킷 목록만 읽습니다. 브라우저 번들에는 키가 들어가지 않습니다.
+[[r2_buckets]]
+binding = "MEETING_VIDEOS"
+bucket_name = "grop-meeting-videos"
