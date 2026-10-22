@@ -1,0 +1,8 @@
+# Vite 빌드 결과(dist)를 Cloudflare Workers 정적 사이트로 배포합니다.
+# 없는 주소는 index.html 로 보내 새로고침해도 React Router 화면이 열리게 합니다.
+name = "grop"
+compatibility_date = "2026-10-22"
+
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
