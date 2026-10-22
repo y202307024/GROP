@@ -562,7 +562,8 @@
 .ai-summary-mark {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    flex: none;
+    gap: 4px;
 
     margin-left: auto;
 }

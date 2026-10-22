@@ -26,9 +26,16 @@ type MeetingRow = {
   created_by?: string | null;
 };
 
+/** DB bigint는 문자열로 올 수 있어서, 용량으로 쓸 수 있는 숫자만 고릅니다. */
+function asBytes(value: unknown): number | null {
+  const bytes = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isFinite(bytes) || bytes <= 0) return null;
+  return bytes;
+}
+
 /** 목록과 전체 용량에 바로 보일 짧은 크기 문자열입니다. 없으면 null입니다. */
 function formatVideoSize(bytes: number | null | undefined): string | null {
-  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) return null;
+  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return null;
   const units = ['B', 'KB', 'MB', 'GB'];
   let value = bytes;
   let unit = 0;
@@ -38,6 +45,41 @@ function formatVideoSize(bytes: number | null | undefined): string | null {
   }
   const digits = unit === 0 || value >= 10 ? 0 : 1;
   return `${value.toFixed(digits)} ${units[unit]}`;
+}
+
+/** 영상 키의 날짜 칸(YYYY-MM-DD)과 맞출 회의의 지역 날짜입니다. */
+function meetingDayKey(dateStr: string): string | null {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return null;
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * 이 카드 체크 왼쪽에 쓸 영상 바이트.
+ * 저장된 키가 그 파일이고, 키가 없으면 같은 그룹·같은 날짜의 파일을 그 회의 영상으로 봅니다.
+ */
+function meetingVideoBytes(
+  meeting: MeetingRow,
+  rows: MeetingRow[],
+  sizeByKey: Record<string, number>,
+): number | null {
+  const keyed = meeting.video_key ? asBytes(sizeByKey[meeting.video_key]) : null;
+  if (keyed) return keyed;
+  const saved = asBytes(meeting.video_size_bytes);
+  if (saved) return saved;
+
+  const day = meetingDayKey(meeting.date);
+  if (!meeting.group_id || !day) return null;
+  const claimed = new Set(rows.map((row) => row.video_key).filter((key): key is string => !!key));
+  const prefix = `meeting-videos/${meeting.group_id}/${day}/`;
+  let sum = 0;
+  for (const [key, size] of Object.entries(sizeByKey)) {
+    if (claimed.has(key) || !key.startsWith(prefix)) continue;
+    sum += asBytes(size) ?? 0;
+  }
+  return sum > 0 ? sum : null;
 }
 
 /** '2026.09.06 10:00AM' 형식으로 회의 날짜를 표시합니다. */
@@ -106,6 +148,8 @@ export default function AiSummaryPage() {
       // 맨 위는 R2 상태 칸을 포함합니다. SQL 적용 전이면 아래 예전 칸으로 내려갑니다.
       const meetingColumns = [
         'id, title, date, summary, video_url, video_key, video_status, video_size_bytes, group_id, attendees, chat_log, created_by',
+        // 용량 칸만 없어도 영상 키는 남겨야 체크 왼쪽 크기를 파일과 맞출 수 있습니다.
+        'id, title, date, summary, video_url, video_key, video_status, group_id, attendees, chat_log, created_by',
         'id, title, date, summary, video_url, group_id, attendees, chat_log, created_by',
         'id, title, date, summary, video_url, group_id, chat_log, created_by',
         'id, title, date, summary, video_url, group_id, created_by',
@@ -131,16 +175,17 @@ export default function AiSummaryPage() {
       setAvatarByUserId(faces.avatarByUserId);
       setNicknameToIdByGroup(faces.nicknameToIdByGroup);
 
-      if (!mounted) return;
-      const rows = data ?? [];
+      if (!mounted || data === null) return;
+      const rows = data;
       setMeetings(rows);
 
-      // 방금 녹화 저장한 회의가 있으면 그걸 엽니다. 이미 다른 행을 보고 있으면 유지합니다.
-      const wanted = searchParams.get('meeting') || readLastMeeting();
+      // 5초마다 목록만 새로고칩니다. 주소의 회의로 다시 바꾸면 보고 있던 화면이 자꾸 바뀝니다.
       setSelectedId((prev) => {
-        if (searchParams.get('meeting') && rows.some((r) => r.id === wanted)) return wanted;
-        if (prev && rows.some((r) => r.id === prev)) return prev;
-        if (wanted && rows.some((r) => r.id === wanted)) return wanted;
+        if (prev && rows.some((row) => row.id === prev)) return prev;
+        const fromUrl = searchParams.get('meeting');
+        if (fromUrl && rows.some((row) => row.id === fromUrl)) return fromUrl;
+        const last = readLastMeeting();
+        if (last && rows.some((row) => row.id === last)) return last;
         return rows[0]?.id ?? null;
       });
     };
@@ -148,6 +193,8 @@ export default function AiSummaryPage() {
     void load();
     const timer = window.setInterval(() => { void load(); }, 5000);
     const onFocus = () => {
+      // 탭이 가려진 동안에는 다시 고르지 않습니다. 돌아왔을 때만 목록을 갱신합니다.
+      if (document.visibilityState === 'hidden') return;
       void load();
     };
     window.addEventListener('focus', onFocus);
@@ -164,7 +211,10 @@ export default function AiSummaryPage() {
     let alive = true;
     const loadStorage = async () => {
       try {
-        const res = await fetch(`${getApiBase()}/api/meetings/storage`);
+        const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
+        const headers: Record<string, string> = {};
+        if (uploadToken) headers['x-upload-token'] = uploadToken;
+        const res = await fetch(`${getApiBase()}/api/meetings/storage`, { headers });
         if (!res.ok || !alive) return;
         const data = await res.json() as { totalBytes?: number; files?: { key: string; size: number }[] };
         if (!alive) return;
@@ -182,9 +232,7 @@ export default function AiSummaryPage() {
     };
   }, [storageTick]);
 
-  const totalBytes = meetings.reduce((sum, row) => {
-    return sum + (typeof row.video_size_bytes === 'number' && row.video_size_bytes > 0 ? row.video_size_bytes : 0);
-  }, 0);
+  const totalBytes = meetings.reduce((sum, row) => sum + (asBytes(row.video_size_bytes) ?? 0), 0);
 
   /** 그 회의의 영상 파일과 AI 요약을 지웁니다. 목록의 회의 행은 남깁니다. */
   const deleteVideoAndSummary = async (meeting: MeetingRow) => {
@@ -300,9 +348,7 @@ export default function AiSummaryPage() {
                 const statusLabel = inRoom ? '진행중' : '완료';
                 const statusClass = inRoom ? 'progress' : 'done';
                 const videoLabel = meetingVideoStatusLabel(m.video_status);
-                const sizeLabel = formatVideoSize(
-                  (m.video_key && sizeByKey[m.video_key]) || m.video_size_bytes,
-                );
+                const sizeLabel = formatVideoSize(meetingVideoBytes(m, meetings, sizeByKey));
                 const faceIds = attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id));
                 for (const id of liveIdentitiesFor(liveRooms, m.id)) {
                   if (!faceIds.includes(id)) faceIds.push(id);
