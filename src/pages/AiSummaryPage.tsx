@@ -182,22 +182,19 @@ export default function AiSummaryPage() {
     };
   }, [storageTick]);
 
-  const selected = meetings.find((row) => row.id === selectedId) ?? null;
   const totalBytes = meetings.reduce((sum, row) => {
     return sum + (typeof row.video_size_bytes === 'number' && row.video_size_bytes > 0 ? row.video_size_bytes : 0);
   }, 0);
-  const totalLabel = formatVideoSize(storageBytes ?? totalBytes) ?? '0B';
 
-  /** 선택한 회의의 영상 파일과 AI 요약을 지웁니다. 목록의 회의 행은 남깁니다. */
-  const deleteSelectedVideoAndSummary = async () => {
-    if (!selected) return;
+  /** 그 회의의 영상 파일과 AI 요약을 지웁니다. 목록의 회의 행은 남깁니다. */
+  const deleteVideoAndSummary = async (meeting: MeetingRow) => {
     if (!window.confirm('정말 삭제하시겠습니까?')) return;
 
-    const hasFile = meetingHasStoredVideo(selected);
+    const hasFile = meetingHasStoredVideo(meeting);
     if (hasFile) {
       const params = new URLSearchParams();
-      if (selected.video_key) params.set('key', selected.video_key);
-      if (selected.video_url) params.set('path', selected.video_url);
+      if (meeting.video_key) params.set('key', meeting.video_key);
+      if (meeting.video_url) params.set('path', meeting.video_url);
       const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
       const headers: Record<string, string> = {};
       if (uploadToken) headers['x-upload-token'] = uploadToken;
@@ -228,7 +225,7 @@ export default function AiSummaryPage() {
     };
     let error: { message: string } | null = null;
     for (let i = 0; i < 8; i += 1) {
-      const result = await supabase.from('meetings').update(payload).eq('id', selected.id);
+      const result = await supabase.from('meetings').update(payload).eq('id', meeting.id);
       if (!result.error) {
         error = null;
         break;
@@ -246,13 +243,19 @@ export default function AiSummaryPage() {
     }
 
     setMeetings((prev) => prev.map((row) => (
-      row.id === selected.id
+      row.id === meeting.id
         ? { ...row, summary: null, video_url: null, video_key: null, video_status: null, video_size_bytes: null }
         : row
     )));
-    setDetailVersion((version) => version + 1);
+    if (selectedId === meeting.id) setDetailVersion((version) => version + 1);
     setStorageTick((tick) => tick + 1);
   };
+
+  // 기본 포함 10GB 안에서 사용량과 남은 양을 막대로 보여 줍니다.
+  const includedBytes = 10 * 1024 * 1024 * 1024;
+  const usedBytes = storageBytes ?? totalBytes;
+  const remainingBytes = Math.max(0, includedBytes - usedBytes);
+  const usedPercent = Math.min(100, (usedBytes / includedBytes) * 100);
 
   return (
     <AppShell activePage="ai">
@@ -272,17 +275,6 @@ export default function AiSummaryPage() {
         <section className="panel ai-meeting-list-panel">
           <div className="section-head">
             <h2>회의 목록</h2>
-            {/* 오른쪽 위. 지금 선택한 회의의 영상 파일과 AI 요약만 지웁니다. */}
-            <button
-              type="button"
-              className="ai-list-delete"
-              aria-label="영상 및 요약 삭제"
-              title="영상 및 요약 삭제"
-              disabled={!selected}
-              onClick={() => { void deleteSelectedVideoAndSummary(); }}
-            >
-              ×
-            </button>
           </div>
 
           <div className="ai-meeting-list-head">
@@ -329,8 +321,23 @@ export default function AiSummaryPage() {
                           <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 600, color: '#888' }}>{videoLabel}</span>
                         ) : null}
                       </span>
-                      <span className={`status-pill ${statusClass}`}>
-                        {statusLabel}
+                      <span className="meeting-card-row-actions">
+                        <span className={`status-pill ${statusClass}`}>
+                          {statusLabel}
+                        </span>
+                        {/* 카드에 마우스를 올렸을 때만 오른쪽 위에 보입니다. */}
+                        <button
+                          type="button"
+                          className="ai-card-delete"
+                          aria-label="영상 및 요약 삭제"
+                          title="영상 및 요약 삭제"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void deleteVideoAndSummary(m);
+                          }}
+                        >
+                          ×
+                        </button>
                       </span>
                     </div>
                     <div className="meeting-card-row-bottom">
@@ -354,8 +361,16 @@ export default function AiSummaryPage() {
               })
             )}
           </div>
-          {/* 목록을 스크롤해도 오른쪽 아래에 바로 보이도록 패널 바닥에 고정합니다. */}
-          <div className="ai-storage-total">전체 용량 {totalLabel}</div>
+          {/* 목록 아래 막대. 스크롤해도 패널 바닥에 사용량과 남은 용량이 바로 보입니다. */}
+          <div className="ai-storage-total">
+            <div className="ai-storage-bar" aria-hidden="true">
+              <div className="ai-storage-bar-used" style={{ width: `${usedPercent}%` }} />
+            </div>
+            <div className="ai-storage-labels">
+              <span>사용 {formatVideoSize(usedBytes) ?? '0B'}</span>
+              <span>남음 {formatVideoSize(remainingBytes) ?? '0B'}</span>
+            </div>
+          </div>
         </section>
       </div>
     </AppShell>

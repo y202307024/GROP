@@ -526,31 +526,6 @@
     align-items: center;
 }
 
-/* 회의 목록 오른쪽 위. 선택한 회의의 영상과 요약을 지웁니다. */
-.ai-list-delete {
-    border: none;
-    background: transparent;
-
-    width: 28px;
-    height: 28px;
-    padding: 0;
-
-    font-size: 22px;
-    line-height: 1;
-    color: #666666;
-
-    cursor: pointer;
-}
-
-.ai-list-delete:hover:not(:disabled) {
-    color: #c0392b;
-}
-
-.ai-list-delete:disabled {
-    opacity: 0.35;
-    cursor: default;
-}
-
 
 /* 회의 목록 컬럼 헤더 (제목 / 상태 / 참석자 / AI 요약) */
 .ai-meeting-list-head {
@@ -599,20 +574,43 @@
     white-space: nowrap;
 }
 
-/* 오른쪽 아래. 목록을 내려도 패널 바닥에 바로 보입니다. */
+/* 목록 아래 막대. 사용량과 남은 용량이 패널 바닥에 바로 보입니다. */
 .ai-storage-total {
     flex: none;
-    align-self: flex-end;
 
     margin-top: 12px;
+}
 
-    font-size: 13px;
-    font-weight: 700;
-    color: #333333;
+.ai-storage-bar {
+    height: 4px;
+
+    background: #ececec;
+    border-radius: 999px;
+
+    overflow: hidden;
+}
+
+.ai-storage-bar-used {
+    height: 100%;
+
+    background: var(--color-primary, #c4a484);
+}
+
+.ai-storage-labels {
+    display: flex;
+    justify-content: space-between;
+
+    margin-top: 6px;
+
+    font-size: 12px;
+    font-weight: 600;
+    color: #555555;
 }
 
 
 .meeting-card-row {
+    position: relative;
+
     background: #ffffff;
 
     border: 1px solid #f2f2f2;
@@ -623,6 +621,43 @@
     padding: 12px 14px;
 
     cursor: pointer;
+}
+
+.meeting-card-row-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* 카드에 마우스를 올렸을 때만 오른쪽 위에 나옵니다. */
+.ai-card-delete {
+    border: none;
+    background: transparent;
+
+    width: 0;
+    height: 22px;
+    padding: 0;
+
+    overflow: hidden;
+
+    font-size: 20px;
+    line-height: 1;
+    color: #666666;
+
+    cursor: pointer;
+    pointer-events: none;
+}
+
+.meeting-card-row:hover .ai-card-delete {
+    width: 22px;
+
+    overflow: visible;
+
+    pointer-events: auto;
+}
+
+.ai-card-delete:hover {
+    color: #c0392b;
 }
 
 .meeting-card-row:hover {
