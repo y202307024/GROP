@@ -1,6 +1,6 @@
 /**
  * IndexedDB에 남겨 둔 회의 녹화를 올립니다.
- * 서버는 R2에 올릴 임시 주소만 발급하고, 파일은 브라우저가 R2로 직접 PUT 합니다.
+ * 파일은 서버가 받아 R2에 넣습니다. 브라우저가 R2로 직접 보내면 전송이 끊깁니다.
  * 파일 업로드와 meetings 반영이 모두 끝난 뒤에만 브라우저 보관분을 지웁니다.
  */
 import { supabase } from '../services/supabaseClient';
@@ -69,7 +69,7 @@ export function recordingTitleFromDate(dateStr: string) {
 
 function uploadError(err: unknown) {
   const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-  return `녹화본을 저장소로 전송하지 못했습니다: ${msg}\n\n서버가 켜져 있고, R2 설정과 버킷 CORS가 맞는지 확인해 주세요.`;
+  return `녹화본을 저장소로 전송하지 못했습니다: ${msg}\n\n서버가 켜져 있고 R2 설정이 맞는지 확인해 주세요.`;
 }
 
 /** meetings에 넣을 영상 칸. R2는 키와 상태, 시연용 Blobs는 예전 재생 주소입니다. */
@@ -108,52 +108,37 @@ async function storeVideoFile(input: SaveInput): Promise<StoredVideo> {
   }
 
   const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  // Content-Type은 브라우저가 경계 문자열을 붙여야 해서 여기서 지정하지 않습니다.
+  const headers: Record<string, string> = {};
   if (uploadToken) headers['x-upload-token'] = uploadToken;
 
-  // 서버는 파일을 받지 않습니다. 15분짜리 PUT 주소와 객체 키만 받습니다.
-  let ticketRes: Response;
+  // 브라우저가 R2로 직접 올리면 전송이 끊깁니다. 파일은 서버가 받아 R2에 넣습니다.
+  const form = new FormData();
+  form.append('video', input.blob, 'recording.webm');
+  form.append('groupId', input.groupId);
+  form.append('dateStr', input.dateStr);
+  form.append('mimeType', input.mimeType || 'video/webm');
+
+  let uploadRes: Response;
   try {
-    ticketRes = await fetch(`${getApiBase()}/api/meetings/upload-url`, {
+    uploadRes = await fetch(`${getApiBase()}/api/meetings/upload-r2`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        groupId: input.groupId,
-        dateStr: input.dateStr,
-        mimeType: input.mimeType || 'video/webm',
-        size: input.blob.size,
-      }),
+      body: form,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : '네트워크 오류';
-    throw new Error(`업로드 주소를 받지 못했습니다. 서버가 켜져 있는지 확인해 주세요. (${msg})`);
+    throw new Error(`녹화본을 서버에 보내지 못했습니다. 서버가 켜져 있는지 확인해 주세요. (${msg})`);
   }
-  if (!ticketRes.ok) {
-    const errBody = await ticketRes.json().catch(() => ({}));
-    throw new Error((errBody as { error?: string }).error || `업로드 주소 발급 실패 (${ticketRes.status})`);
+  if (!uploadRes.ok) {
+    const errBody = await uploadRes.json().catch(() => ({}));
+    throw new Error((errBody as { error?: string }).error || `저장소 업로드 실패 (${uploadRes.status})`);
   }
-  const ticket = (await ticketRes.json()) as { uploadUrl?: string; key?: string; contentType?: string };
-  if (!ticket.uploadUrl || !ticket.key) {
-    throw new Error('업로드 주소 응답이 올바르지 않습니다');
+  const saved = (await uploadRes.json()) as { key?: string; sizeBytes?: number };
+  if (!saved.key) {
+    throw new Error('저장소 업로드 응답이 올바르지 않습니다');
   }
-
-  // 서명에 넣은 Content-Type과 같아야 해서, 녹화물 코덱 문자열이 아니라 서버가 돌려준 값을 씁니다.
-  const contentType = ticket.contentType || 'video/webm';
-  let putRes: Response;
-  try {
-    putRes = await fetch(ticket.uploadUrl, {
-      method: 'PUT',
-      headers: { 'Content-Type': contentType },
-      body: input.blob,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : '네트워크 오류';
-    throw new Error(`저장소에 영상을 올리지 못했습니다. R2 버킷 CORS에서 이 화면 주소의 PUT을 허용했는지 확인해 주세요. (${msg})`);
-  }
-  if (!putRes.ok) {
-    throw new Error(`저장소 업로드 실패 (HTTP ${putRes.status})`);
-  }
-  return { kind: 'r2', videoKey: ticket.key, sizeBytes: input.blob.size };
+  return { kind: 'r2', videoKey: saved.key, sizeBytes: saved.sizeBytes || input.blob.size };
 }
 
 async function rememberStartedAt(meetingId: string, startedAt: number | undefined) {

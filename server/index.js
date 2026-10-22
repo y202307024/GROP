@@ -390,7 +390,7 @@ app.post('/api/livekit-remove-participant', async (req, res) => {
   }
 })
 
-// 새 녹화는 서버가 파일을 받지 않습니다. PUT 주소만 15분짜리로 발급하고 브라우저는 R2에 직접 올립니다.
+// 예전 직접 업로드용 주소. 브라우저는 더 이상 이 주소로 PUT하지 않고 /api/meetings/upload-r2 로 보냅니다.
 app.post('/api/meetings/upload-url', checkUploadToken, async (req, res) => {
   try {
     const groupId = req.body?.groupId
@@ -422,6 +422,42 @@ app.post('/api/meetings/upload-url', checkUploadToken, async (req, res) => {
   } catch (err) {
     console.error('업로드 주소 발급 실패:', err.message)
     res.status(err.statusCode || 500).json({ error: err.message || '업로드 주소를 만들지 못했습니다' })
+  }
+})
+
+// 브라우저는 파일을 이 서버로 보냅니다. 서버가 R2에 넣은 뒤 임시 파일은 지웁니다.
+// 브라우저가 R2로 직접 PUT하면 Failed to fetch로 끊겨 녹화가 저장되지 않았습니다.
+app.post('/api/meetings/upload-r2', checkUploadToken, uploadMeetingVideo.single('video'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: '업로드된 파일이 없습니다' })
+  }
+
+  const groupId = req.body?.groupId
+  const dateStr = req.body?.dateStr
+  // 키에 그대로 들어가므로 폴더명으로 쓸 수 없는 값은 디스크에 남기지 않고 거절합니다.
+  if (!isSafePathSegment(groupId) || !isSafePathSegment(dateStr)) {
+    try { fs.unlinkSync(req.file.path) } catch { /* 거절된 임시 파일은 남기지 않습니다 */ }
+    return res.status(400).json({ error: 'groupId와 날짜가 올바르지 않습니다' })
+  }
+
+  const contentType = meetingUploadContentType(req.body?.mimeType || req.file.mimetype)
+  const key = `meeting-videos/${groupId}/${dateStr}/${Date.now()}.webm`
+  try {
+    const client = getR2Client()
+    await client.send(new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+      Body: fs.createReadStream(req.file.path),
+      ContentType: contentType,
+      ContentLength: req.file.size,
+    }))
+    console.log('회의 녹화 R2 저장 완료:', key)
+    res.json({ key, contentType, sizeBytes: req.file.size })
+  } catch (err) {
+    console.error('서버 경유 R2 업로드 실패:', err.message)
+    res.status(err.statusCode || 500).json({ error: err.message || '저장소에 영상을 올리지 못했습니다' })
+  } finally {
+    try { fs.unlinkSync(req.file.path) } catch { /* 임시 파일 삭제는 실패해도 응답은 이미 끝났습니다 */ }
   }
 })
 
