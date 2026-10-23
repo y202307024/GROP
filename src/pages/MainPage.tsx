@@ -9,6 +9,8 @@ import { addGroupMember, joinGroupByInviteCode } from '../utils/joinGroup';
 import AppShell from '../components/AppShell';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
+import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
+import { liveIdentitiesFor, useLiveRooms } from '../utils/liveMeeting';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
@@ -82,6 +84,8 @@ export default function MainPage() {
   const [joinSuccess, setJoinSuccess] = useState(false);
   const [userId, setUserId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
+  const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
   // 진행중은 AI 요약이 아니라, 그 회의 방에 아직 사람이 있는지로 판단합니다.
   const liveRooms = useLiveRooms();
 
@@ -330,31 +334,30 @@ export default function MainPage() {
                 구분선(hr)만 있었는데, 지금은 각 회의가 자기 카드를 갖습니다. */}
             <div className={styles.meetingList}>
               {/* 데이터가 없을 땐 안내 문구 없이 빈 패널만 보여주고, 회의가 생기면 행이 추가됩니다. */}
-              {meetings.slice(0, MEETING_VISIBLE).map((m) => (
+              {meetings.slice(0, MEETING_VISIBLE).map((m) => {
+                const inRoom = liveRooms.some((room) => room.meetingId === m.id);
+                const faceIds = attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id));
+                for (const id of liveIdentitiesFor(liveRooms, m.id)) {
+                  if (!faceIds.includes(id)) faceIds.push(id);
+                }
+                return (
                 <div
                   key={m.id}
                   className={styles.meetingCard}
                   onClick={() => navigate(`/group/${m.group_id}/meeting/${m.id}`)}
                 >
                   <span className={styles.title}>{m.title || '회의'}</span>
-                  <span className={`${styles.statusPill} ${m.summary ? styles.statusPillDone : styles.statusPillProgress}`}>
-                    {m.summary ? '완료' : '진행중'}
+                  <span className={`${styles.statusPill} ${inRoom ? styles.statusPillProgress : styles.statusPillDone}`}>
+                    {inRoom ? '진행중' : '완료'}
                   </span>
                   <span className={styles.date}>{formatMeetingDate(m.date)}</span>
-                  {/* 회의별 참석자 기록이 없어서, 그 회의가 속한 그룹의 그룹원(최대 3명)을 보여줍니다.
-                      아직 못 불러왔으면 기존 임시 아이콘 3개로 대신합니다 */}
-                  <span className={styles.attendees}>
-                    {memberAvatars[m.group_id]
-                      ? memberAvatars[m.group_id].slice(0, 3).map((member) => (
-                          <img key={member.user_id} src={getAvatarSrc(member.avatar)} alt="" />
-                        ))
-                      : [0, 1, 2].map((i) => <Icon key={i} name="circle-user" />)}
-                  </span>
+                  <MeetingAttendeeFaces ids={faceIds} avatarByUserId={avatarByUserId} />
                   <span className={styles.aiIcon}>
                     <img src={m.summary ? aiCheckDone : aiCheckPending} alt={m.summary ? '요약 완료' : '요약 미완'} />
                   </span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 

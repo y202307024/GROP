@@ -167,6 +167,7 @@ export default function CanvasPage() {
       <header className={shell.meetingHeader}>
         <Link to="/main" className="logo">GROP</Link>
         <span className={shell.meetingTitle}>{groupName || '캔버스'}</span>
+        <NotificationBell />
       </header>
 
       <main className={shell.meetingMain}>

@@ -4,8 +4,13 @@ import styles from './MeetingDetailView.module.css';
 import a from './MeetingDetailAi.module.css';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
-import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
-import { primeWebmSeeking, resolveMeetingVideoUrl } from '../utils/meetingVideo';
+import { chatLogForSummary } from '../utils/liveMeeting';
+import {
+  meetingHasStoredVideo,
+  meetingVideoStatusLabel,
+  primeWebmSeeking,
+  resolveMeetingVideoUrl,
+} from '../utils/meetingVideo';
 import {
   findActiveChapterIndex,
   formatTimestamp,
@@ -31,6 +36,13 @@ type Meeting = {
   transcript?: string | null; // [MM:SS] 붙은 전체 녹취록 (현재 UI에서는 표시 안 함, DB엔 계속 저장)
   topics?: unknown; // 주제별 요약 [{ topic, detail }] (현재 UI에서는 표시 안 함, DB엔 계속 저장)
   speakers?: unknown; // 발언자별요약: [{ speaker, summary }] (AI 추정)
+  chat_log?: unknown; // 회의 중 채팅 [{ from, name, text, ts }] — 마이크 없이 진행한 회의의 요약 재료
+  started_at?: string | null; // 회의방을 연 시각
+  ended_at?: string | null; // 회의방을 닫은 시각
+  attendees?: unknown; // 참석자 user id 또는 닉네임
+  created_by?: string | null;
+  topic_line?: string | null; // AI가 쓴 회의 주제 한 줄
+  recording_seconds?: number | null; // 녹화 길이(초)
 };
 
 /** 선택된 회의가 없을 때(AI 요약 탭에 회의록이 하나도 없을 때) 쓰는 빈 회의 placeholder */
@@ -61,6 +73,61 @@ function personNames(raw: unknown): string[] {
     names.push(name);
   }
   return names;
+}
+
+/** meetings.chat_log에 실제 메시지가 있는지(요약 재료로 쓸 수 있는지)만 가볍게 확인 */
+function hasUsableChatLog(raw: unknown): boolean {
+  return Array.isArray(raw) && raw.some((m) => m && typeof (m as { text?: unknown }).text === 'string' && (m as { text: string }).text.trim());
+}
+
+type ChatLogMessage = { name: string; text: string; ts: number };
+
+/** meetings.chat_log(신뢰 못 할 형태) → 시간순 메시지 배열 */
+function normalizeChatLog(raw: unknown): ChatLogMessage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((m) => {
+      const rec = m as Record<string, unknown>;
+      const name = typeof rec?.name === 'string' && rec.name.trim() ? rec.name.trim() : '참여자';
+      const text = typeof rec?.text === 'string' ? rec.text.trim() : '';
+      const ts = Number(rec?.ts) || 0;
+      return { name, text, ts };
+    })
+    .filter((m) => m.text)
+    .sort((a, b) => a.ts - b.ts);
+}
+
+/** 채팅 메시지를 보낸 사람별로 모아, 그 사람이 한 말 전체를 이어 붙입니다(요약 아님). */
+function groupChatBySpeaker(messages: ChatLogMessage[]): { speaker: string; text: string }[] {
+  const order: string[] = [];
+  const byName = new Map<string, string[]>();
+  for (const m of messages) {
+    if (!byName.has(m.name)) {
+      byName.set(m.name, []);
+      order.push(m.name);
+    }
+    byName.get(m.name)!.push(m.text);
+  }
+  return order.map((name) => ({ speaker: name, text: byName.get(name)!.join('\n') }));
+}
+
+/** 채팅 메시지 전송 시각(ms) → "HH:MM" */
+function formatClockTime(ts: number) {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** meetings.speakers → { speaker, summary }[] 로 정규화 */
+function normalizeSpeakers(raw: unknown): { speaker: string; summary: string }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((s) => {
+      const rec = s as Record<string, unknown>;
+      const speaker = typeof rec?.speaker === 'string' ? rec.speaker.trim() : '';
+      const summary = typeof rec?.summary === 'string' ? rec.summary.trim() : '';
+      return { speaker, summary };
+    })
+    .filter((s) => s.speaker && s.summary);
 }
 
 const USER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -378,10 +445,12 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   const [aiStep, setAiStep] = useState('');
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState('');
+  const [groupName, setGroupName] = useState('');
+  const [nicknames, setNicknames] = useState<string[]>([]);
   // ai 목업 레이아웃 전용 상태 (탭 하이라이트 / 대화록 더보기)
   // 큰 탭(요약 생성 / 회의 영상), 영상 탭의 대화내역 탭(타임라인 / 채팅), 요약 미리보기 탭(핵심 / 시간대별)
   const [mainTab, setMainTab] = useState<'summary' | 'video'>('summary');
-  const [chatTab, setChatTab] = useState<'timeline' | 'chat'>('timeline');
+  const [chatTab, setChatTab] = useState<'timeline' | 'chat' | 'speaker'>('timeline');
   const [summaryTab, setSummaryTab] = useState<'core' | 'timeline'>('core');
   // 요약 탭에서 [MM:SS]/구간을 눌렀을 때: 영상 탭으로 넘어간 뒤 영상이 준비되면 그 시점으로 이동하려고 기억해 둡니다
   const pendingSeekRef = useRef<number | null>(null);
@@ -392,8 +461,6 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   const [duration, setDuration] = useState(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const seekPrimedRef = useRef(false);
-  // "참석자"/발언자 자리에 그릴 실제 그룹원 프로필 이미지(이 회의가 속한 그룹 기준)
-  const memberAvatars = useGroupMemberAvatars(meeting?.group_id ? [meeting.group_id] : []);
 
   const activeIndex = findActiveChapterIndex(chapters, currentTime);
 
@@ -557,22 +624,32 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
 
   // AI 요약 생성 (챕터 포함)
   const generateAiSummary = async () => {
-    if (!meeting?.video_url) {
-      alert('녹화 파일이 없어요!');
+    if (!meeting) return;
+    const chatAvailable = hasUsableChatLog(meeting.chat_log);
+    const hasVideo = meetingHasStoredVideo(meeting);
+    if (!hasVideo && !chatAvailable) {
+      alert('녹화 파일도, 채팅 기록도 없어요!');
       return;
     }
 
     setAiLoading(true);
 
     try {
-      setAiStep('🎙️ 음성 변환 중...');
-      // 브라우저는 https://localhost:5173/videos/... 로 재생하지만,
-      // 서버는 mkcert 인증서를 못 믿어서 그 주소로 다시 받으면 실패합니다.
-      // DB에 저장된 경로(또는 /videos/ 상대경로)를 그대로 넘기면 서버가 디스크에서 읽습니다.
+      setAiStep(hasVideo ? '🎙️ 음성 변환 중...' : '💬 채팅 기록 정리 중...');
+      // R2 영상이면 videoKey만 넘깁니다. 서버가 원본을 내려받아 음성만 추출합니다.
+      // 예전 영상은 video_url을 그대로 넘기고, 서버가 디스크에서 읽습니다.
+      // 마이크 음성이 없는 회의(no-mic)에 대비해 채팅 기록도 함께 보내면,
+      // 서버가 음성에서 텍스트를 못 뽑았을 때 채팅으로 대신 요약합니다.
+      const videoKey = meeting.video_key?.trim();
       const res = await fetch(`${getApiBase()}/api/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl: meeting.video_url })
+        body: JSON.stringify({
+          ...(videoKey ? { videoKey } : { videoUrl: meeting.video_url }),
+          chatLog: chatLogForSummary(meeting.chat_log),
+          // 모델이 날짜를 지어내지 않도록, 화면에 쓰는 것과 같은 날짜 문구를 넘깁니다.
+          meetingDateLabel: formatDate(meeting.date),
+        })
       });
 
       if (!res.ok) {
@@ -621,6 +698,16 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       if (error) throw new Error(error.message);
 
       await fetchMeeting();
+      if (meeting?.group_id) {
+        await notifyGroupMembers({
+          groupId: meeting.group_id,
+          type: 'ai_summary',
+          title: `${meeting.title || '회의'} AI 요약이 완료됐어요`,
+          body: 'AI 요약이 준비되었습니다.',
+          link: `/ai?meeting=${meeting.id}`,
+          excludeSelf: false,
+        });
+      }
       alert(
         nextChapters.length > 0
           ? `AI 요약 완성! 타임라인 ${nextChapters.length}개가 만들어졌어요 🎉`
@@ -743,7 +830,12 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     // 요약 본문은 '핵심 요약'과 '시간대별(타임라인)'로 나눠 탭마다 보여줍니다.
     const { core: coreSummary, timeline } = splitSummary(m.summary, chapters);
     const hasTranscript = !!m.transcript?.trim();
-    const groupMembers = m.group_id ? memberAvatars[m.group_id] : undefined;
+    const memberNames = nicknames.length > 0 ? nicknames : attendeeNames(m);
+    const videoStatusLabel = meetingVideoStatusLabel(m.video_status);
+    // 회의 시간은 방 체류 시간이 아니라 녹화 길이입니다.
+    const recordingSec = duration > 0 ? duration : Number(m.recording_seconds) || 0;
+    const durationLabel = recordingSec > 0 ? formatMinutesDuring(recordingSec * 1000) : '—';
+    const sessionLabel = formatSessionRange(sessionBounds(m, 0), m.created_at);
 
     /** '2026.09.06 11:30 AM' — 제목 아래 줄에 쓰는 날짜 */
     const metaDate = (() => {
@@ -759,7 +851,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
      * 회의 주제 — AI 요약(핵심 요약)의 첫 문장을 그대로 씁니다. 별도 "주제" 컬럼이 없고,
      * 요약 맨 윗줄의 "📋 회의 핵심 요약" 같은 제목 줄은 건너뜁니다.
      */
-    const topic = (() => {
+    const topic = cleanLine(m.topic_line) || topicNames(m.topics).join(', ') || (() => {
       const line = coreSummary
         .split('\n')
         .map((l) => l.trim())
@@ -778,10 +870,19 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       link.click();
       URL.revokeObjectURL(url);
     };
-    // 회의 채팅 기록 — 화면 구성만 먼저 해 둔 자리입니다. 채팅은 지금 LiveKit 실시간 메시지라 DB에 저장되지 않으므로
-    // 저장 테이블이 생기면 여기서 불러온 값을 넣으면 됩니다(채팅 탭 목록·"채팅 기록" 카드 다운로드가 이 배열 하나로 동작).
-    const chatMessages: { id: string; sender: string; time: string; text: string }[] = [];
+    // 회의 채팅 기록 — meetings.chat_log(마이크 없이 진행한 회의도 요약 재료로 쓰는 그 기록)를 그대로 보여줍니다.
+    const rawChatMessages = normalizeChatLog(m.chat_log);
+    const chatMessages = rawChatMessages.map((msg, i) => ({
+      id: `${msg.ts}-${i}`,
+      sender: msg.name,
+      time: formatClockTime(msg.ts),
+      text: msg.text,
+    }));
     const hasChat = chatMessages.length > 0;
+    // 발언자별 탭: 채팅 기록이 있으면 그 사람이 실제로 쓴 메시지를 모아 보여주고,
+    // 없으면(음성만 있는 회의) AI가 추정한 화자별 요약으로 대신합니다.
+    const chatBySpeaker = groupChatBySpeaker(rawChatMessages);
+    const speakers = normalizeSpeakers(m.speakers);
     const baseName = (m.title || '회의').replace(/[\\/:*?"<>|]/g, '_');
     const downloadTranscript = () => hasTranscript && downloadText(`${baseName}_음성텍스트.txt`, m.transcript ?? '');
     const downloadChat = () =>
@@ -859,14 +960,23 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
           <h1 className={a.headTitle}>{m.title?.trim() || (meeting ? '회의' : '선택된 회의가 없어요')}</h1>
           <div className={a.headMeta}>
             <span className={a.metaItem}>
+              <Icon name="users" />
+              {groupName || '—'}
+            </span>
+            <span className={a.metaDivider} />
+            <span className={a.metaItem}>
               <Icon name="calendar" />
               {metaDate}
             </span>
             <span className={a.metaDivider} />
             <span className={a.metaItem}>
               <Icon name="users" />
-              {/* 회의별 참석 기록이 없어 그 그룹의 그룹원 수로 보여줍니다 */}
-              참석자 {groupMembers ? `${groupMembers.length}명` : '—'}
+              참석자 {memberNames.length > 0 ? memberNames.join(', ') : '—'}
+            </span>
+            <span className={a.metaDivider} />
+            <span className={a.metaItem}>
+              <Icon name="clock" />
+              {durationLabel} ({sessionLabel})
             </span>
           </div>
         </div>
@@ -1025,7 +1135,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                 />
               ) : (
                 <div className={`${a.video} ${a.videoEmpty}`}>
-                  {m.video_url ? playbackError || '녹화 파일 불러오는 중...' : '녹화 파일이 없어요'}
+                  {m.video_url ? playbackError || videoStatusLabel || '녹화 파일 불러오는 중...' : '녹화 파일이 없어요'}
                 </div>
               )}
 
@@ -1058,6 +1168,13 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                 >
                   채팅
                 </button>
+                <button
+                  type="button"
+                  className={`${styles.videoTab}${chatTab === 'speaker' ? ` ${styles.videoTabActive}` : ''}`}
+                  onClick={() => setChatTab('speaker')}
+                >
+                  발언자별
+                </button>
               </div>
 
               <div className={a.previewBody}>
@@ -1085,7 +1202,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                         : '아직 타임라인이 없어요. AI 요약을 생성하면 구간별 내용이 여기에 표시됩니다.'}
                     </p>
                   )
-                ) : (
+                ) : chatTab === 'chat' ? (
                   hasChat ? (
                     chatMessages.map((c) => (
                       <div key={c.id} className={a.chatItem}>
@@ -1099,6 +1216,32 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                   ) : (
                     <p className={`${a.paragraph} ${a.muted}`}>저장된 채팅 기록이 없어요.</p>
                   )
+                ) : (
+                  chatBySpeaker.length > 0 ? (
+                    chatBySpeaker.map((s, i) => (
+                      <div key={i} className={a.chatItem}>
+                        <div className={a.chatMeta}>
+                          <span className={a.chatSender}>{s.speaker}</span>
+                        </div>
+                        <p className={a.chatBubble} style={{ whiteSpace: 'pre-wrap' }}>{s.text}</p>
+                      </div>
+                    ))
+                  ) : speakers.length > 0 ? (
+                    speakers.map((s, i) => (
+                      <div key={i} className={a.chatItem}>
+                        <div className={a.chatMeta}>
+                          <span className={a.chatSender}>{s.speaker}</span>
+                        </div>
+                        <p className={a.chatBubble}>{s.summary}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className={`${a.paragraph} ${a.muted}`}>
+                      {hasSummary
+                        ? '발언자별로 보여줄 채팅이나 화자 구분 정보가 없어요.'
+                        : 'AI 요약을 생성하면 발언자별 내용이 여기에 표시됩니다.'}
+                    </p>
+                  )
                 )}
               </div>
             </section>
@@ -1109,6 +1252,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   }
   // 위에서 'ai' 레이아웃은 회의가 없어도 그렸고, 단독 페이지는 회의가 있어야만 그립니다
   if (!meeting) return null;
+  const videoStatusLabel = meetingVideoStatusLabel(meeting.video_status);
 
   return (
     <div style={{ maxWidth: 720, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 20px' }}>

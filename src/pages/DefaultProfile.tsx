@@ -324,6 +324,14 @@ export default function DefaultProfile() {
                 </div>
 
                 <div className={styles.actionButtons}>
+                  <button
+                    type="button"
+                    className="danger-button"
+                    disabled={loggingOut}
+                    onClick={() => void handleLogout()}
+                  >
+                    {loggingOut ? '로그아웃 중...' : '로그아웃'}
+                  </button>
                   <button type="button" className={styles.cancelButton} onClick={() => navigate('/main')}>
                     취소
                   </button>

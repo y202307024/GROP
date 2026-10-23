@@ -1,7 +1,6 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
-import Icon from './Icon';
 import NotificationBell from './NotificationBell';
 import ProfileEditModal from './ProfileEditModal';
 import { DEFAULT_AVATAR_KEY, getAvatarSrc } from '../utils/avatarOptions';
@@ -14,15 +13,10 @@ import sidebarCalendar from '../assets/sidebar/sidebar-calendar.svg';
 import sidebarGroup from '../assets/sidebar/sidebar-group.svg';
 import sidebarSettings from '../assets/sidebar/sidebar-settings.svg';
 
-/**
- * 알림 목록 — 아직 DB와 연결하지 않아서(백엔드팀과 논의 전) 화면 디자인만 먼저
- * 맞춘 자리표시용(placeholder) 데이터입니다. 실제 연결 전까지는 항상 이 3개만 보여요.
- */
-const PLACEHOLDER_NOTIFICATIONS = [
-  { id: '1', title: '새 회의가 생성되었습니다', time: '5분 전' },
-  { id: '2', title: 'AI 요약이 완료되었습니다', time: '1시간 전' },
-  { id: '3', title: '이서연 님이 그룹에 참여했습니다', time: '어제' },
-];
+// 페이지마다 AppShell이 새로 mount되는데, 매번 기본 아바타(고양이)로 시작한 뒤
+// 조회가 끝나야 실제 아바타로 바뀌면 탭 전환할 때마다 고양이가 깜빡여 보입니다.
+// 모듈 스코프에 마지막으로 불러온 아바타를 캐싱해 다음 mount는 여기서 바로 시작합니다.
+let cachedAvatar: string | null = null;
 
 type Props = {
   children: ReactNode;
@@ -59,10 +53,11 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
   // 뷰포트가 1440px보다 좁은 모니터/배율에서 사이드바·상단바가 잘리지 않도록
   // .app을 통째로 축소합니다 (자세한 배경은 useAppShellScale.ts 참고).
   useAppShellScale();
-  const [avatar, setAvatar] = useState(DEFAULT_AVATAR_KEY);
-  const [notifyOpen, setNotifyOpen] = useState(false);
+  const [avatar, setAvatar] = useState(cachedAvatar ?? DEFAULT_AVATAR_KEY);
   // 상단바 프로필 아이콘을 누르면 페이지 이동 없이 이 모달을 띄웁니다.
   const [profileModalOpen, setProfileModalOpen] = useState(false);
+  // 프로필 행이 없다 = 가입 직후 최초 진입. 팝업을 강제로 띄웁니다.
+  const [needsProfileSetup, setNeedsProfileSetup] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -73,8 +68,15 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
         .select('nickname, avatar, avatar_url')
         .eq('id', data.user.id)
         .maybeSingle();
-      if (!mounted || !profile) return;
-      setAvatar(profile.avatar_url || profile.avatar || DEFAULT_AVATAR_KEY);
+      if (!mounted) return;
+      if (!profile) {
+        setNeedsProfileSetup(true);
+        setProfileModalOpen(true);
+        return;
+      }
+      const next = profile.avatar_url || profile.avatar || DEFAULT_AVATAR_KEY;
+      cachedAvatar = next;
+      setAvatar(next);
     });
     return () => {
       mounted = false;
@@ -116,38 +118,7 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
 
         <main className={styles.main}>
           <div className={styles.topbar}>
-            <div className={styles.notificationWrapper}>
-              <button
-                className={styles.iconBtn}
-                type="button"
-                aria-label="알림"
-                onClick={() => setNotifyOpen((prev) => !prev)}
-              >
-                <Icon name="bell" />
-              </button>
-              <div className={styles.notificationDropdown} hidden={!notifyOpen}>
-                <div className={styles.notificationDropdownHeader}>
-                  알림
-                  <button
-                    className={styles.notificationCloseButton}
-                    type="button"
-                    aria-label="알림 닫기"
-                    onClick={() => setNotifyOpen(false)}
-                  >
-                    <Icon name="x" />
-                  </button>
-                </div>
-                <div className={styles.notificationList}>
-                  {/* DB 연동 전까지는 화면만 보여주는 자리표시용 데이터입니다 */}
-                  {PLACEHOLDER_NOTIFICATIONS.map((n) => (
-                    <div className={styles.notificationItem} key={n.id}>
-                      <div className={styles.notificationItemTitle}>{n.title}</div>
-                      <div className={styles.notificationItemTime}>{n.time}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <NotificationBell />
 
             <button
               className={`${styles.iconBtn} ${styles.profileButton}`}
@@ -166,8 +137,15 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
 
         <ProfileEditModal
           open={profileModalOpen}
-          onClose={() => setProfileModalOpen(false)}
-          onSaved={setAvatar}
+          required={needsProfileSetup}
+          onClose={() => {
+            setProfileModalOpen(false);
+            setNeedsProfileSetup(false);
+          }}
+          onSaved={(next) => {
+            cachedAvatar = next;
+            setAvatar(next);
+          }}
         />
       </div>
     </div>

@@ -22,6 +22,7 @@ import {
   decodeMeetingSharedFile,
   encodeMeetingSharedFile,
   uploadMeetingAttachment,
+  type MeetingChatMessage,
   type MeetingSharedFile,
 } from '../utils/meetingChat';
 import { syncMeetingAttachmentsDoc, toMeetingAttachments } from '../utils/meetingDocs';
@@ -570,6 +571,7 @@ function RoomContent({
   recordingSyncRef,
   sharedFilesRef,
   sessionMeetingIdRef,
+  chatLogRef,
   onLeave,
   onToggleRecord,
   onRemoteStartRecording,
@@ -590,6 +592,8 @@ function RoomContent({
   sharedFilesRef: RefObject<MeetingSharedFile[]>;
   /** 이 세션 문서(회의록) id — 파일만 올려도 생기고, 이후 녹화 시 같은 행에 붙입니다 */
   sessionMeetingIdRef: RefObject<string | null>;
+  /** 부모(녹화 저장)와 공유하는 채팅 기록 ref */
+  chatLogRef: RefObject<MeetingChatMessage[]>;
   onLeave: () => void;
   onToggleRecord: () => void;
   onRemoteStartRecording: () => void;
@@ -843,6 +847,7 @@ function RoomContent({
           onGroupNameChange={onGroupNameChange}
           speakerMuted={speakerMuted}
           onSpeakerMutedChange={setSpeakerMuted}
+          chatLogRef={chatLogRef}
         />
       </main>
       <footer className={`${shell.bottomBar} ${styles.roomBottomBar}`}>
@@ -943,7 +948,6 @@ export default function Room() {
   const isPreview = import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === '1';
   const [token, setToken] = useState('');
   const [userId, setUserId] = useState('');
-  const [userName, setUserName] = useState('');
   const [groupName, setGroupName] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -984,6 +988,8 @@ export default function Room() {
   const roomOpenedAtRef = useRef<number | null>(null);
   /** 회의 중 들어왔던 user id. 저장할 때 닉네임으로 바꿉니다. */
   const attendeeIdsRef = useRef<string[]>([]);
+  /** MeetingChatPanel의 최신 채팅 메시지 미러 — 녹화 저장 시 회의록에 chat_log로 함께 남깁니다. */
+  const chatLogRef = useRef<MeetingChatMessage[]>([]);
 
   useEffect(() => {
     groupIdRef.current = id;
@@ -1137,8 +1143,6 @@ export default function Room() {
           await saveSessionMeta(sessionMeetingIdRef.current);
           return { ok: true };
         }
-        const now = new Date();
-        const titleStr = `${now.getFullYear()}년 ${now.getMonth() + 1}월 ${now.getDate()}일 회의`;
         const { data: userData } = await supabase.auth.getUser();
         const result = await syncMeetingAttachmentsDoc({
           meetingId: null,
@@ -1246,65 +1250,19 @@ export default function Room() {
       };
     }
 
-    // 파일은 서버에만 두고, DB에는 재생 URL + 회의 중 첨부를 저장합니다.
-    // 이미 파일만으로 만든 문서가 있으면 그 행에 녹화를 이어 붙입니다.
-    const videoUrl = `${getApiBase()}/videos/${relativePath}`;
-    const attachments = toMeetingAttachments(sharedFilesRef.current);
-    const existingId = sessionMeetingIdRef.current;
-
-    if (existingId) {
-      const { error: updateError } = await supabase
-        .from('meetings')
-        .update({
-          video_url: videoUrl,
-          title: titleStr,
-          attachments,
-        })
-        .eq('id', existingId);
-
-      if (updateError && /attachments/i.test(updateError.message)) {
-        const { error: fallbackError } = await supabase
-          .from('meetings')
-          .update({ video_url: videoUrl, title: titleStr })
-          .eq('id', existingId);
-        if (fallbackError) return { ok: false, error: fallbackError.message };
-      } else if (updateError) {
-        return { ok: false, error: updateError.message };
-      }
-
+    const result = await uploadStoredRecording(recordingId);
+    if (result.ok) {
       recordedChunksRef.current = [];
-      return { ok: true };
-    }
-
-    const { error: insertError } = await supabase.from('meetings').insert({
-      group_id: groupIdRef.current,
-      title: titleStr,
-      date: now.toISOString(),
-      video_url: videoUrl,
-      created_by: userData.user?.id,
-      attachments,
-    });
-
-    if (insertError) {
-      // attachments 컬럼이 아직 없으면(마이그레이션 전) 첨부 없이라도 회의록은 저장합니다.
-      if (/attachments/i.test(insertError.message)) {
-        const { error: fallbackError } = await supabase.from('meetings').insert({
-          group_id: groupIdRef.current,
-          title: titleStr,
-          date: now.toISOString(),
-          video_url: videoUrl,
-          created_by: userData.user?.id,
-        });
-        if (fallbackError) return { ok: false, error: fallbackError.message };
-      } else {
-        return { ok: false, error: insertError.message };
+      activeRecordingIdRef.current = null;
+      clearActiveRecording(recordingId);
+      if (result.meetingId && !result.alreadyDone) {
+        remember(result.meetingId);
+        await saveSessionMeta(result.meetingId);
       }
       return { ok: true, meetingId: result.meetingId, alreadyDone: result.alreadyDone };
     }
 
     // 실패분은 pending_upload 로 남아 있습니다. 배너의 다시 시도·내 컴퓨터 저장으로 이어집니다.
-    clearActiveRecording(recordingId);
-    activeRecordingIdRef.current = null;
     return { ok: false, error: result.error, kept: result.kept };
   };
 
@@ -1313,7 +1271,6 @@ export default function Room() {
       // 미리보기 모드: 로그인/토큰 요청을 건너뛰고 바로 화면을 그립니다 (위 isPreview 설명 참고)
       if (isPreview) {
         setUserId('preview-user');
-        setUserName('미리보기');
         setGroupName('미리보기 그룹');
         setLoading(false);
         return;
@@ -1351,7 +1308,6 @@ export default function Room() {
         }
 
         setUserId(userData.user.id);
-        setUserName(name);
 
         if (id) {
           const { data: group } = await supabase
@@ -1802,6 +1758,7 @@ export default function Room() {
             recordingSyncRef={recordingSyncRef}
             sharedFilesRef={sharedFilesRef}
             sessionMeetingIdRef={sessionMeetingIdRef}
+            chatLogRef={chatLogRef}
             onLeave={handleLeave}
             onToggleRecord={toggleRecording}
             onRemoteStartRecording={() => {

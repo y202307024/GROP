@@ -77,6 +77,14 @@ export default function MeetingList() {
         if (g?.id && typeof g.name === 'string') nameById.set(g.id, g.name);
       }
 
+      // video_key 칸이 아직 없는 배포에서는 예전 칸만으로 목록을 보여 줍니다.
+      const withStatus = await supabase
+        .from('meetings')
+        .select('id, title, date, summary, video_url, video_key, video_status, group_id')
+        .in('group_id', targetGroupIds)
+        .order('date', { ascending: false });
+      if (withStatus.error) console.warn('회의록 목록을 불러오지 못했습니다:', withStatus.error.message);
+
       // attachments 컬럼이 있으면 함께 읽고, 없으면 기본 컬럼만 다시 조회합니다(DocumentList와 같은 방식).
       type Row = Omit<Meeting, 'group_name' | 'fileNames'> & { attachments?: unknown };
       let rows: Row[];
@@ -85,18 +93,6 @@ export default function MeetingList() {
         .select('id, title, date, summary, video_url, group_id, attachments')
         .in('group_id', targetGroupIds)
         .order('date', { ascending: false });
-      if (withStatus.error && /video_key|video_status/i.test(withStatus.error.message)) {
-        const fallback = await supabase
-          .from('meetings')
-          .select('id, title, date, summary, video_url, group_id')
-          .in('group_id', targetGroupIds)
-          .order('date', { ascending: false });
-        if (fallback.error) console.warn('회의록 목록을 불러오지 못했습니다:', fallback.error.message);
-        rows = (fallback.data ?? null) as Meeting[] | null;
-      } else {
-        if (withStatus.error) console.warn('회의록 목록을 불러오지 못했습니다:', withStatus.error.message);
-        rows = (withStatus.data ?? null) as Meeting[] | null;
-      }
 
       if (withAttach.error && /attachments/i.test(withAttach.error.message)) {
         const fallback = await supabase
@@ -149,7 +145,7 @@ export default function MeetingList() {
   const docCount = meetings.reduce((sum, m) => sum + m.fileNames.length, 0);
 
   return (
-    <AppShell activePage="meeting">
+    <AppShell activePage="main">
       {/* 페이지 높이를 화면에 고정하고, 날짜 폴더가 많아지면 목록(.list) 안에서만 스크롤됩니다 */}
       <div className={`page ${s.fixedPage}`}>
         {loading ? (

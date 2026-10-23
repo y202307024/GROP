@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import MeetingRecordingRecovery from './components/MeetingRecordingRecovery'
 import { useStageScale } from './hooks/useStageScale'
 import Login from './pages/Login'
 import SignUp from './pages/SignUp'
