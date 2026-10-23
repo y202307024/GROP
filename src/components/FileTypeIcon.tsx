@@ -4,7 +4,7 @@ import fileJpg from '../assets/file-icons/file-jpg.svg';
 import fileJs from '../assets/file-icons/file-js.svg';
 import fileJson from '../assets/file-icons/file-json.svg';
 import fileJsx from '../assets/file-icons/file-jsx.svg';
-import filePdf from '../assets/file-icons/file-pdf.svg';
+import filePdf from '../assets/file-icons/file-PDF.svg';
 import filePng from '../assets/file-icons/file-png.svg';
 import fileSrt from '../assets/file-icons/file-srt.svg';
 import fileTs from '../assets/file-icons/file-ts.svg';
