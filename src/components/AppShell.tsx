@@ -2,6 +2,9 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
 import Icon from './Icon';
+import NotificationBell from './NotificationBell';
+import ProfileEditModal from './ProfileEditModal';
+import { DEFAULT_AVATAR_KEY, getAvatarSrc } from '../utils/avatarOptions';
 
 type Props = {
   children: ReactNode;
@@ -9,27 +12,35 @@ type Props = {
   activePage?: 'main' | 'meeting' | 'document' | 'ai' | 'calendar' | 'member' | 'setting';
 };
 
+// 페이지마다 AppShell이 새로 mount되는데, 매번 기본 아바타(고양이)로 시작한 뒤
+// 조회가 끝나야 실제 아바타로 바뀌면 탭 전환할 때마다 고양이가 깜빡여 보입니다.
+// 모듈 스코프에 마지막으로 불러온 아바타를 캐싱해 다음 mount는 여기서 바로 시작합니다.
+let cachedAvatar: string | null = null;
+
 const navItems = [
   { id: 'main', label: '메인', icon: 'home' as const, path: '/main' },
-  { id: 'meeting', label: '회의', icon: 'clipboard-list' as const, path: '/canvas' },
+  // { id: 'meeting', label: '회의', icon: 'clipboard-list' as const, path: '/meetings' },
   { id: 'document', label: '문서', icon: 'file-text' as const, path: '/documents' },
-  { id: 'ai', label: 'AI 요약', icon: 'sparkles' as const, comingSoon: true },
-  { id: 'calendar', label: '캘린더', icon: 'calendar' as const, comingSoon: true },
+  { id: 'ai', label: 'AI 요약', icon: 'sparkles' as const, path: '/ai' },
+  { id: 'calendar', label: '캘린더', icon: 'calendar' as const, path: '/calendar' },
   { id: 'member', label: '팀원', icon: 'users' as const, path: '/main' },
   { id: 'setting', label: '설정', icon: 'settings' as const, path: '/profile' },
 ];
 
 /**
  * grop/main.html 과 같은 앱 껍데기
- * - 사이드바: 메인/회의/문서/AI/캘린더/팀원/설정
+ * - 사이드바: 메인/문서/AI/팀원/설정 (회의·캘린더 탭은 잠시 숨김)
  * - 상단바: 알림 + 프로필
  * - children: 각 페이지 본문
  */
 export default function AppShell({ children, activePage = 'main' }: Props) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const [avatar, setAvatar] = useState('🙂');
-  const [notifyOpen, setNotifyOpen] = useState(false);
+  const [avatar, setAvatar] = useState(cachedAvatar ?? DEFAULT_AVATAR_KEY);
+  // 상단바 프로필 아이콘을 누르면 페이지 이동 없이 이 모달을 띄웁니다.
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
+  // 가입 후 profiles 행이 아직 없는 "최초 진입" 여부. true면 팝업을 강제로 띄우고 닫기를 막습니다.
+  const [needsProfileSetup, setNeedsProfileSetup] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -40,8 +51,17 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
         .select('nickname, avatar, avatar_url')
         .eq('id', data.user.id)
         .maybeSingle();
-      if (!mounted || !profile) return;
-      setAvatar(profile.avatar_url || profile.avatar || '🙂');
+      if (!mounted) return;
+
+      if (!profile) {
+        // 프로필 행이 없다 = 가입 직후 최초 진입. 팝업을 강제로 띄웁니다.
+        setNeedsProfileSetup(true);
+        setProfileModalOpen(true);
+        return;
+      }
+      const next = profile.avatar_url || profile.avatar || DEFAULT_AVATAR_KEY;
+      cachedAvatar = next;
+      setAvatar(next);
     });
     return () => {
       mounted = false;
@@ -62,14 +82,7 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
               key={item.id}
               type="button"
               className={`nav-item menu${current === item.id ? ' active' : ''}`}
-              onClick={() => {
-                // 원본 HTML과 같이 AI/캘린더는 아직 화면이 없습니다.
-                if (item.comingSoon) {
-                  alert('아직 준비 중인 기능입니다');
-                  return;
-                }
-                if (item.path) navigate(item.path);
-              }}
+              onClick={() => navigate(item.path)}
             >
               <Icon name={item.icon} />
               {item.label}
@@ -80,49 +93,35 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
 
       <main className="main">
         <div className="topbar">
-          <div className="notification-wrapper">
-            <button
-              className="icon-btn"
-              type="button"
-              aria-label="알림"
-              onClick={() => setNotifyOpen((open) => !open)}
-            >
-              <Icon name="bell" />
-            </button>
-            <div className="notification-dropdown" hidden={!notifyOpen}>
-              <div className="notification-dropdown-arrow" />
-              <div className="notification-dropdown-header">알림</div>
-              <div className="notification-list">
-                <div className="notification-item">
-                  <div className="notification-item-title">새 회의가 생성됐어요</div>
-                  <div className="notification-item-time">5분 전</div>
-                </div>
-                <div className="notification-item">
-                  <div className="notification-item-title">AI 요약이 완료됐어요</div>
-                  <div className="notification-item-time">1시간 전</div>
-                </div>
-                <div className="notification-item">
-                  <div className="notification-item-title">그룹에 새 멤버가 참여했어요</div>
-                  <div className="notification-item-time">어제</div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <NotificationBell />
 
           <button
             className="icon-btn profile-button"
             type="button"
             aria-label="내 프로필"
-            onClick={() => navigate('/profile')}
+            onClick={() => setProfileModalOpen(true)}
           >
             <span className="profile-button-avatar">
-              {avatar.startsWith('http') ? <img src={avatar} alt="" /> : avatar}
+              <img src={getAvatarSrc(avatar)} alt="" />
             </span>
           </button>
         </div>
 
         {children}
       </main>
+
+      <ProfileEditModal
+        open={profileModalOpen}
+        required={needsProfileSetup}
+        onClose={() => {
+          setProfileModalOpen(false);
+          setNeedsProfileSetup(false);
+        }}
+        onSaved={(next) => {
+          cachedAvatar = next;
+          setAvatar(next);
+        }}
+      />
     </div>
   );
 }

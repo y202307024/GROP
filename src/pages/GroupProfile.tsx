@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { useNavigate, useParams } from 'react-router-dom';
 import AppShell from '../components/AppShell';
+import { AVATAR_OPTIONS, DEFAULT_AVATAR_KEY, getAvatarSrc } from '../utils/avatarOptions';
 
-const avatars = ['🐱', '🐶', '🐸', '🐼', '🦊', '🐨', '🐯', '🦁', '🐙', '🐬'];
 const MAX_FILE_SIZE_MB = 3; // 업로드 사진 최대 용량
 
 export default function GroupProfile() {
@@ -14,7 +14,7 @@ export default function GroupProfile() {
 
   const [userId, setUserId] = useState<string | null>(null);
   const [nickname, setNickname] = useState('');
-  const [selectedAvatar, setSelectedAvatar] = useState('🐱'); // 이모지 아바타
+  const [selectedAvatar, setSelectedAvatar] = useState(DEFAULT_AVATAR_KEY); // 아바타 프리셋 key
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null); // 업로드한 사진 URL (있으면 이게 우선)
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -46,7 +46,7 @@ export default function GroupProfile() {
 
       if (data) {
         setNickname(data.nickname ?? '');
-        setSelectedAvatar(data.avatar ?? '🐱');
+        setSelectedAvatar(data.avatar ?? DEFAULT_AVATAR_KEY);
         setAvatarUrl(data.avatar_url ?? null);
       }
       setLoading(false);
@@ -93,7 +93,7 @@ export default function GroupProfile() {
     setUploading(false);
   };
 
-  // 업로드한 사진 제거 → 다시 이모지 아바타로 전환
+  // 업로드한 사진 제거 → 다시 프리셋 아바타로 전환
   const handleRemovePhoto = () => {
     setAvatarUrl(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -148,7 +148,7 @@ export default function GroupProfile() {
 
           <div className="profile-photo-section">
             <div className="profile-photo-preview">
-              {avatarUrl ? <img src={avatarUrl} alt="프로필 사진" /> : selectedAvatar}
+              <img src={avatarUrl || getAvatarSrc(selectedAvatar)} alt="프로필 사진" />
             </div>
             <div className="profile-photo-actions">
               <button type="button" className="secondary-button" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
@@ -164,17 +164,17 @@ export default function GroupProfile() {
           <div className="profile-avatar-section">
             <div className="profile-section-label">아바타 선택</div>
             <div className="avatar-grid">
-              {avatars.map((a) => (
+              {AVATAR_OPTIONS.map((a) => (
                 <button
-                  key={a}
+                  key={a.key}
                   type="button"
-                  className={`avatar-option${!avatarUrl && selectedAvatar === a ? ' is-selected' : ''}`}
+                  className={`avatar-option${!avatarUrl && selectedAvatar === a.key ? ' is-selected' : ''}`}
                   onClick={() => {
-                    setSelectedAvatar(a);
+                    setSelectedAvatar(a.key);
                     setAvatarUrl(null);
                   }}
                 >
-                  {a}
+                  <img src={a.src} alt="" />
                 </button>
               ))}
             </div>

@@ -34,13 +34,19 @@ export async function createMeetingRecordingStream(
 
   let backdrop: HTMLCanvasElement | null = null;
   try {
-    backdrop = await html2canvas(container, {
-      backgroundColor: '#1e1f22',
-      scale: 1,
-      logging: false,
-      useCORS: true,
-      ignoreElements: (el) => el === canvas,
-    });
+    // html2canvas 가 오래 걸리면 녹화 시작이 멈춘 것처럼 보여, 짧게만 시도합니다.
+    backdrop = await Promise.race([
+      html2canvas(container, {
+        backgroundColor: '#1e1f22',
+        scale: 1,
+        logging: false,
+        useCORS: true,
+        ignoreElements: (el) => el === canvas,
+      }),
+      new Promise<null>((resolve) => {
+        window.setTimeout(() => resolve(null), 2500);
+      }),
+    ]);
   } catch {
     backdrop = null;
   }
@@ -50,7 +56,16 @@ export async function createMeetingRecordingStream(
   video.muted = true;
   video.playsInline = true;
   video.srcObject = canvasStream;
-  await video.play();
+  try {
+    await Promise.race([
+      video.play(),
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 800);
+      }),
+    ]);
+  } catch {
+    // autoplay 실패해도 합성 루프는 계속 돌립니다.
+  }
 
   const ctx = off.getContext('2d');
   if (!ctx) {
@@ -73,8 +88,9 @@ export async function createMeetingRecordingStream(
     }
     rafId = requestAnimationFrame(draw);
   };
-  rafId = requestAnimationFrame(draw);
 
+  // 첫 프레임을 그린 뒤 스트림을 열어, MediaRecorder 가 빈 청크만 받는 경우를 줄입니다.
+  draw();
   const outputStream = off.captureStream(24);
 
   const cleanup = () => {

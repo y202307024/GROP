@@ -5,6 +5,8 @@ import { addGroupMember, joinGroupByInviteCode } from '../utils/joinGroup';
 import AppShell from '../components/AppShell';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
+import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
+import { liveIdentitiesFor, useLiveRooms } from '../utils/liveMeeting';
 
 function rndCode() {
   const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -25,6 +27,9 @@ type MeetingRow = {
   date: string;
   summary: string | null;
   group_id: string;
+  attendees?: unknown;
+  chat_log?: unknown;
+  created_by?: string | null;
 };
 
 function formatMeetingDate(dateStr: string) {
@@ -97,11 +102,17 @@ export default function MainPage() {
   const [groupName, setGroupName] = useState('');
   const [groups, setGroups] = useState<Group[]>([]);
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
+  const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
+  const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
+  /** 소속 그룹 중 가장 가까운 예정 회의 (캘린더 패널용) */
+  const [nextMeeting, setNextMeeting] = useState<MeetingRow | null>(null);
   const [inviteInput, setInviteInput] = useState(searchParams.get('code')?.toUpperCase() ?? '');
   const [joinMsg, setJoinMsg] = useState('');
   const [joinSuccess, setJoinSuccess] = useState(false);
   const [userId, setUserId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  // 진행중은 AI 요약이 아니라, 그 회의 방에 아직 사람이 있는지로 판단합니다.
+  const liveRooms = useLiveRooms();
 
   useEffect(() => {
     const init = async () => {
@@ -112,6 +123,12 @@ export default function MainPage() {
     };
     init();
   }, []);
+
+  useEffect(() => {
+    if (!userId) return;
+    const timer = window.setInterval(() => { void fetchGroups(userId); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [userId]);
 
   const fetchGroups = async (uid: string) => {
     const { data } = await supabase
@@ -134,15 +151,48 @@ export default function MainPage() {
     const ids = list.map((g) => g.id);
     if (ids.length === 0) {
       setMeetings([]);
+      setNextMeeting(null);
       return;
     }
-    const { data: meetingRows } = await supabase
+    // attendees 칸이 없어도 created_by 는 남겨야 참석자 아이콘이 전부 비지 않습니다.
+    const meetingColumns = [
+      'id, title, date, summary, group_id, attendees, chat_log, created_by',
+      'id, title, date, summary, group_id, chat_log, created_by',
+      'id, title, date, summary, group_id, created_by',
+    ];
+    let meetingRows: MeetingRow[] | null = null;
+    for (const columns of meetingColumns) {
+      const res = await supabase
+        .from('meetings')
+        .select(columns)
+        .in('group_id', ids)
+        .order('date', { ascending: false })
+        .limit(4);
+      if (!res.error) {
+        meetingRows = res.data as unknown as MeetingRow[] | null;
+        break;
+      }
+      if (!/attendees|chat_log/i.test(res.error.message)) {
+        console.warn('회의 목록을 불러오지 못했습니다:', res.error.message);
+        break;
+      }
+    }
+    setMeetings(meetingRows || []);
+    const faces = await loadGroupFaceIndex(ids);
+    setAvatarByUserId(faces.avatarByUserId);
+    setNicknameToIdByGroup(faces.nicknameToIdByGroup);
+
+    // 캘린더: 지금 이후 일정 중 가장 가까운 1건
+    const nowIso = new Date().toISOString();
+    const { data: upcoming } = await supabase
       .from('meetings')
       .select('id, title, date, summary, group_id')
       .in('group_id', ids)
-      .order('date', { ascending: false })
-      .limit(4);
-    setMeetings(meetingRows || []);
+      .gte('date', nowIso)
+      .order('date', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    setNextMeeting(upcoming ?? null);
   };
 
   const createGroup = async () => {
@@ -188,6 +238,20 @@ export default function MainPage() {
   const firstGroup = groups[0];
   const calendarLabel = `${new Date().getMonth() + 1}월 ${new Date().getDate()}일`;
 
+  /** 다음 회의 한 줄 표시용 */
+  const nextMeetingLine = (() => {
+    if (!nextMeeting?.date) return null;
+    const d = new Date(nextMeeting.date);
+    const md = `${d.getMonth() + 1}월 ${d.getDate()}일`;
+    let h = d.getHours();
+    const m = String(d.getMinutes()).padStart(2, '0');
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    const time = `${h}:${m}${ampm}`;
+    const title = nextMeeting.title?.trim() || '회의';
+    return `${md} ${time} · ${title}`;
+  })();
+
   return (
     <AppShell activePage="main">
       <div className="group-carousel">
@@ -221,7 +285,7 @@ export default function MainPage() {
         </span>
       </div>
 
-      <div className="row-2col">
+      <div className="row-2col row-2col--panels">
         <section className="panel meeting-table">
           <div className="section-head">
             <h2>회의 목록</h2>
@@ -239,32 +303,47 @@ export default function MainPage() {
             <div className="meeting-row">
               <span className="title">아직 회의록이 없어요</span>
             </div>
-          ) : meetings.map((m) => (
+          ) : meetings.map((m) => {
+            const inRoom = liveRooms.some((room) => room.meetingId === m.id);
+            const faceIds = attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id));
+            for (const id of liveIdentitiesFor(liveRooms, m.id)) {
+              if (!faceIds.includes(id)) faceIds.push(id);
+            }
+            return (
             <div
               key={m.id}
               className="meeting-row"
               onClick={() => navigate(`/group/${m.group_id}/meeting/${m.id}`)}
             >
               <span className="title">{m.title || '회의'}</span>
-              <span className={`status-pill ${m.summary ? 'done' : 'progress'}`}>
-                {m.summary ? '완료' : '진행중'}
+              <span className={`status-pill ${inRoom ? 'progress' : 'done'}`}>
+                {inRoom ? '진행중' : '완료'}
               </span>
               <span className="date">{formatMeetingDate(m.date)}</span>
-              <span className="attendees">
-                <Icon name="circle-user" />
-                <Icon name="circle-user" />
-                <Icon name="circle-user" />
-              </span>
+              <MeetingAttendeeFaces
+                ids={faceIds}
+                avatarByUserId={avatarByUserId}
+              />
               <span className="ai-icon">
-                {m.summary ? <Icon name="check-circle" /> : <span className="progress-ring" />}
+                {m.summary
+                  ? <Icon name="check-circle" className="done" />
+                  : <Icon name="minus-circle" className="pending" />}
               </span>
             </div>
-          ))}
+            );
+          })}
         </section>
 
         <section className="panel">
           <div className="section-head">
             <h2>최근 AI 요약</h2>
+            <a
+              className="see-all"
+              href="/documents"
+              onClick={(e) => { e.preventDefault(); navigate('/documents'); }}
+            >
+              전체 보기 &gt;
+            </a>
           </div>
           <div className="summary-list">
             {meetings.filter((m) => m.summary).slice(0, 3).map((m) => (
@@ -273,11 +352,12 @@ export default function MainPage() {
                 <div className="content">
                   <div className="top-row">
                     <span className="title">{m.title || '회의'}</span>
-                    <span className="status-pill done">완료</span>
                     <span className="date">{formatMeetingDate(m.date)}</span>
                   </div>
                   <p className="desc">{m.summary}</p>
                 </div>
+                {/* 완료 배지는 카드 오른쪽 끝에 세로 중앙 정렬 (스크린샷 기준) */}
+                <span className="status-pill done">완료</span>
               </div>
             ))}
             {meetings.filter((m) => m.summary).length === 0 && (
@@ -300,10 +380,10 @@ export default function MainPage() {
           <div className="section-head"><h2>빠른 작업</h2></div>
           <div className="quick-actions">
             <button className="qa-card" type="button" onClick={() => setModalOpen(true)}>
-              <Icon name="folder-plus" />
+              <Icon name="plus" />
               <span>그룹 추가</span>
             </button>
-            <button className="qa-card" type="button" onClick={() => firstGroup && navigate(`/group/${firstGroup.id}/meetings`)}>
+            <button className="qa-card" type="button" onClick={() => navigate('/ai')}>
               <Icon name="sparkles" />
               <span>AI 요약</span>
             </button>
@@ -319,11 +399,39 @@ export default function MainPage() {
         </section>
 
         <section>
-          <div className="section-head"><h2>캘린더</h2></div>
+          <div className="section-head">
+            <h2>캘린더</h2>
+            <a
+              className="see-all"
+              href="/calendar"
+              onClick={(e) => { e.preventDefault(); navigate('/calendar'); }}
+            >
+              전체 보기 &gt;
+            </a>
+          </div>
           <div className="calendar-panel">
             <div className="calendar-date">{calendarLabel}</div>
             <MiniWeek />
-            <p className="calendar-empty">예정 되어있는 회의가 없습니다.</p>
+            {nextMeetingLine && nextMeeting ? (
+              <button
+                type="button"
+                className="calendar-empty"
+                style={{
+                  cursor: 'pointer',
+                  border: 'none',
+                  background: 'transparent',
+                  width: '100%',
+                  color: 'inherit',
+                  font: 'inherit',
+                  padding: 0,
+                }}
+                onClick={() => navigate(`/group/${nextMeeting.group_id}/meeting/${nextMeeting.id}`)}
+              >
+                {nextMeetingLine}
+              </button>
+            ) : (
+              <p className="calendar-empty">예정 되어있는 회의가 없습니다.</p>
+            )}
           </div>
         </section>
       </div>

@@ -1,9 +1,7 @@
 const express = require('express')
 const cors = require('cors')
 const dotenv = require('dotenv')
-const { AccessToken } = require('livekit-server-sdk')
-const Groq = require('groq-sdk')
-const { toFile } = require('groq-sdk')
+const { AccessToken, RoomServiceClient } = require('livekit-server-sdk')
 const multer = require('multer')
 const fs = require('fs')
 
@@ -12,21 +10,14 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 
 const path = require('path')
 const { startOauthFallback, rememberOauthOrigin, getOauthOrigin } = require('./oauthFallback')
+// AI 요약(오디오 추출 → Whisper → LLM) 로직은 Netlify 함수와 함께 쓰려고 별도 모듈로 분리했습니다.
+const { getChatModel, getTranscribeModel, summarizeMeeting, summaryErrorMessage } = require('./aiSummary')
 dotenv.config({ path: path.resolve(__dirname, '../.env') })
 
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '50mb' }))
 
-// Groq Whisper 업로드 한도 (초과 시 친절히 안내)
-const MAX_AUDIO_BYTES = 25 * 1024 * 1024
-
-// Groq은 모델을 자주 교체·폐기합니다(llama 계열은 이미 전부 내려갔습니다).
-// 모델명이 404가 나면 코드를 고치지 말고 .env의 GROQ_MODEL만 바꾸세요.
-// 사용 가능한 목록 확인:
-//   curl -H "Authorization: Bearer $GROQ_API_KEY" https://api.groq.com/openai/v1/models
-const CHAT_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b'
-const TRANSCRIBE_MODEL = process.env.GROQ_TRANSCRIBE_MODEL || 'whisper-large-v3'
 
 // ─────────────────────────────────────────────────────────────
 // 회의 녹화 영상 저장 (Supabase Storage 대신 이 컴퓨터 디스크에 저장)
@@ -44,6 +35,10 @@ fs.mkdirSync(CHAT_FILES_DIR, { recursive: true })
 const CHAT_FILES_INCOMING_DIR = path.join(CHAT_FILES_DIR, '_incoming')
 fs.mkdirSync(CHAT_FILES_INCOMING_DIR, { recursive: true })
 const MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024
+
+/** 회의 문서(첨부 목록) — DB attachments 컬럼 없이도 문서 탭에서 파일을 보게 합니다. */
+const MEETING_DOCS_DIR = path.resolve(__dirname, 'uploads', 'meeting-docs')
+fs.mkdirSync(MEETING_DOCS_DIR, { recursive: true })
 
 /** 폴더명에 .. 나 슬래시가 들어오면 디스크 밖으로 나가지 못하게 막습니다. */
 function isSafePathSegment(value) {
@@ -160,99 +155,6 @@ function guessChatFileMime(originalName, mimetype) {
   return IMAGE_MIME_BY_EXT[fileExtFromName(originalName)] || mimetype || 'application/octet-stream'
 }
 
-function getGroq() {
-  if (!process.env.GROQ_API_KEY) {
-    throw new Error('GROQ_API_KEY가 .env에 설정되지 않았습니다')
-  }
-  return new Groq({ apiKey: process.env.GROQ_API_KEY })
-}
-
-/** 초 → "MM:SS" 또는 "H:MM:SS" */
-function formatTimestamp(totalSeconds) {
-  const s = Math.max(0, Math.floor(totalSeconds || 0))
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const sec = s % 60
-  const mm = String(m).padStart(2, '0')
-  const ss = String(sec).padStart(2, '0')
-  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
-}
-
-/** Whisper segment 배열 → "[MM:SS] 발화" 형태의 녹취록 */
-function buildTimestampedTranscript(segments) {
-  return segments
-    .map((seg) => `[${formatTimestamp(seg.start)}] ${String(seg.text || '').trim()}`)
-    .filter((line) => line.length > 12)
-    .join('\n')
-}
-
-/** LLM이 뱉은 chapters를 검증·정규화 (시간 범위 밖 / 제목 없음 제거) */
-function normalizeChapters(raw, durationSec) {
-  if (!Array.isArray(raw)) return []
-
-  const list = []
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue
-
-    let time = null
-    if (typeof item.time === 'number' && Number.isFinite(item.time)) {
-      time = Math.max(0, Math.floor(item.time))
-    } else if (typeof item.time === 'string' && /^\d+(:\d{1,2}){0,2}$/.test(item.time.trim())) {
-      time = item.time.trim().split(':').map(Number).reduce((acc, n) => acc * 60 + n, 0)
-    }
-    if (time === null) continue
-    if (durationSec > 0 && time > durationSec + 1) continue
-
-    const title = typeof item.title === 'string' ? item.title.trim() : ''
-    if (!title) continue
-
-    const summary = typeof item.summary === 'string' ? item.summary.trim() : ''
-    list.push({ time, title, summary: summary || undefined })
-  }
-
-  list.sort((a, b) => a.time - b.time)
-
-  const deduped = []
-  for (const c of list) {
-    if (deduped.length > 0 && deduped[deduped.length - 1].time === c.time) continue
-    deduped.push(c)
-  }
-  return deduped
-}
-
-/** 구조화된 결과 → meetings.summary에 저장할 사람이 읽는 텍스트 */
-function buildSummaryText(result, chapters) {
-  const lines = []
-
-  lines.push('📋 회의 핵심 요약')
-  lines.push(result.overview || '(요약 없음)')
-  lines.push('')
-
-  if (chapters.length > 0) {
-    lines.push('🕘 타임라인')
-    for (const c of chapters) {
-      lines.push(`[${formatTimestamp(c.time)}] ${c.title}`)
-      if (c.summary) lines.push(`    ${c.summary}`)
-    }
-    lines.push('')
-  }
-
-  const decisions = Array.isArray(result.decisions) ? result.decisions.filter(Boolean) : []
-  if (decisions.length > 0) {
-    lines.push('✅ 결정 사항')
-    for (const d of decisions) lines.push(`- ${d}`)
-    lines.push('')
-  }
-
-  const actionItems = Array.isArray(result.actionItems) ? result.actionItems.filter(Boolean) : []
-  if (actionItems.length > 0) {
-    lines.push('⚡ 다음 할 일')
-    for (const a of actionItems) lines.push(`- ${a}`)
-  }
-
-  return lines.join('\n').trim()
-}
-
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' })
 })
@@ -263,6 +165,73 @@ app.get('/api/oauth-origin', (req, res) => {
 
 app.post('/api/oauth-origin', (req, res) => {
   res.json({ origin: rememberOauthOrigin(req.body?.origin) })
+})
+
+function livekitRoomService() {
+  const host = process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || ''
+  const httpHost = host.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:')
+  if (!httpHost || !process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) return null
+  return new RoomServiceClient(httpHost, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET)
+}
+
+function meetingIdFromMetadata(metadata) {
+  try {
+    const parsed = JSON.parse(metadata || '')
+    return typeof parsed?.meetingId === 'string' ? parsed.meetingId : null
+  } catch {
+    return null
+  }
+}
+
+/** 사람이 남아 있는 방. 회의 목록의 진행중/완료와 참석자 아이콘이 이 목록을 봅니다. */
+app.get('/api/live-rooms', async (_req, res) => {
+  const svc = livekitRoomService()
+  if (!svc) return res.status(500).json({ error: 'LiveKit 서버 설정이 없습니다' })
+  try {
+    const rooms = await svc.listRooms()
+    const active = []
+    for (const room of rooms) {
+      if (Number(room.numParticipants) <= 0) continue
+      let identities = []
+      try {
+        const people = await svc.listParticipants(room.name)
+        identities = people.map((person) => person.identity).filter(Boolean)
+      } catch (err) {
+        console.warn('참가자 목록 조회 실패:', room.name, err.message)
+      }
+      active.push({
+        name: room.name,
+        meetingId: meetingIdFromMetadata(room.metadata),
+        identities,
+      })
+    }
+    res.json({ rooms: active })
+  } catch (err) {
+    console.error('진행중 방 조회 실패:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+/** 이 방에 표시할 회의 행을 붙입니다. 이미 있으면 그 행을 그대로 돌려줍니다. */
+app.post('/api/live-room-meeting', async (req, res) => {
+  const roomName = String(req.body?.roomName || '').trim()
+  const meetingId = String(req.body?.meetingId || '').trim()
+  if (!roomName || !meetingId) {
+    return res.status(400).json({ error: 'roomName과 meetingId가 필요합니다' })
+  }
+  const svc = livekitRoomService()
+  if (!svc) return res.status(500).json({ error: 'LiveKit 서버 설정이 없습니다' })
+  try {
+    const rooms = await svc.listRooms([roomName])
+    const current = meetingIdFromMetadata(rooms[0]?.metadata)
+    if (current) return res.json({ meetingId: current })
+    await svc.updateRoomMetadata(roomName, JSON.stringify({ meetingId }))
+    const after = await svc.listRooms([roomName])
+    res.json({ meetingId: meetingIdFromMetadata(after[0]?.metadata) || meetingId })
+  } catch (err) {
+    console.error('회의 행 연결 실패:', err.message)
+    res.status(500).json({ error: err.message })
+  }
 })
 
 app.post('/api/livekit-token', async (req, res) => {
@@ -276,12 +245,14 @@ app.post('/api/livekit-token', async (req, res) => {
       process.env.LIVEKIT_API_SECRET,
       { identity, name: userName || identity }
     )
+    // canUpdateOwnMetadata: 보드 선택 상태를 participant metadata로 공유할 때 필요합니다.
     token.addGrant({
       roomJoin: true,
       room: roomName,
       canPublish: true,
       canSubscribe: true,
       canPublishData: true,
+      canUpdateOwnMetadata: true,
     })
 
     const jwt = await token.toJwt()
@@ -290,6 +261,39 @@ app.post('/api/livekit-token', async (req, res) => {
   } catch (err) {
     console.error('토큰 발급 실패:', err.message)
     res.status(500).json({ error: err.message })
+  }
+})
+
+/**
+ * 방장이 멤버를 내보낼 때 LiveKit 방에서 강제 퇴장시킵니다.
+ * roomName = 그룹 id, identity = 대상 user id
+ */
+app.post('/api/livekit-remove-participant', async (req, res) => {
+  try {
+    const roomName = String(req.body?.roomName || '').trim()
+    const identity = String(req.body?.identity || '').trim()
+    if (!roomName || !identity) {
+      return res.status(400).json({ error: 'roomName과 identity가 필요합니다' })
+    }
+
+    const host = process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || ''
+    // wss:// → https:// (RoomService HTTP API)
+    const httpHost = host.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:')
+    if (!httpHost || !process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) {
+      return res.status(500).json({ error: 'LiveKit 서버 설정이 없습니다' })
+    }
+
+    const svc = new RoomServiceClient(
+      httpHost,
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET,
+    )
+    await svc.removeParticipant(roomName, identity)
+    res.json({ ok: true })
+  } catch (err) {
+    // 방이 비어 있거나 참가자가 없으면 실패할 수 있음 — 클라이언트는 DB 강퇴만으로도 OK
+    console.error('LiveKit 참가자 제거 실패:', err.message)
+    res.status(200).json({ ok: false, error: err.message })
   }
 })
 
@@ -373,6 +377,54 @@ app.post('/api/chat-files/upload', checkUploadToken, uploadChatFile.single('file
   })
 })
 
+/**
+ * 그룹에 올라간 채팅/회의 첨부 파일 목록.
+ * meeting-docs 가 비어 있을 때 문서 탭 「열기」 폴백으로 씁니다.
+ */
+app.get('/api/chat-files', (req, res) => {
+  const groupId = req.query.groupId
+  if (!isSafePathSegment(groupId)) {
+    return res.status(400).json({ error: 'groupId 가 필요합니다' })
+  }
+  const dir = path.join(CHAT_FILES_DIR, groupId)
+  if (!fs.existsSync(dir)) return res.json([])
+
+  let names = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch (err) {
+    console.error('채팅 파일 목록 읽기 실패:', err)
+    return res.status(500).json({ error: '파일 목록을 읽지 못했습니다' })
+  }
+
+  const files = []
+  for (const name of names) {
+    if (name.startsWith('.')) continue
+    const full = path.join(dir, name)
+    let st
+    try {
+      st = fs.statSync(full)
+    } catch {
+      continue
+    }
+    if (!st.isFile()) continue
+    // 저장 파일명 앞의 타임스탬프(ms)를 업로드 시각으로 씁니다.
+    const tsMatch = /^(\d{13})-/.exec(name)
+    const ts = tsMatch ? Number(tsMatch[1]) : st.mtimeMs
+    files.push({
+      id: name,
+      name,
+      path: `${groupId}/${name}`,
+      size: st.size,
+      mime: guessChatFileMime(name, ''),
+      ts,
+    })
+  }
+
+  files.sort((a, b) => b.ts - a.ts)
+  res.json(files)
+})
+
 app.use('/files', (req, res, next) => {
   const relPath = decodeURIComponent(String(req.path || '').replace(/^\//, ''))
   if (!relPath) return next()
@@ -392,135 +444,172 @@ app.use('/files', (req, res, next) => {
   return res.status(404).json({ error: '파일을 찾지 못했습니다', path: relPath })
 })
 
+/** 회의 문서 첨부 목록을 디스크에 저장합니다. (문서 탭 「열기」용) */
+app.put('/api/meeting-docs/:meetingId', checkUploadToken, (req, res) => {
+  const meetingId = String(req.params.meetingId || '')
+  const groupId = req.body?.groupId
+  if (!isSafePathSegment(meetingId) || !isSafePathSegment(groupId)) {
+    return res.status(400).json({ error: '잘못된 회의/그룹 id 입니다' })
+  }
+
+  const files = Array.isArray(req.body?.files) ? req.body.files : []
+  const normalized = files
+    .filter((f) => f && typeof f.path === 'string' && typeof f.name === 'string')
+    .map((f) => ({
+      id: typeof f.id === 'string' ? f.id : undefined,
+      name: String(f.name),
+      path: String(f.path),
+      size: typeof f.size === 'number' ? f.size : 0,
+      mime: typeof f.mime === 'string' ? f.mime : 'application/octet-stream',
+      ts: typeof f.ts === 'number' ? f.ts : Date.now(),
+    }))
+
+  const dir = path.join(MEETING_DOCS_DIR, groupId)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch (err) {
+    console.error('meeting-docs 폴더 생성 실패:', err)
+    return res.status(500).json({ error: '문서 폴더를 만들지 못했습니다' })
+  }
+
+  const payload = {
+    id: meetingId,
+    groupId,
+    title: typeof req.body?.title === 'string' ? req.body.title : '',
+    date: typeof req.body?.date === 'string' ? req.body.date : new Date().toISOString(),
+    files: normalized,
+    updatedAt: new Date().toISOString(),
+  }
+
+  try {
+    fs.writeFileSync(path.join(dir, `${meetingId}.json`), JSON.stringify(payload, null, 2), 'utf8')
+  } catch (err) {
+    console.error('meeting-docs 저장 실패:', err)
+    return res.status(500).json({ error: '첨부 목록을 저장하지 못했습니다' })
+  }
+
+  console.log('회의 문서 첨부 저장:', groupId, meetingId, normalized.length)
+  res.json(payload)
+})
+
+/** 한 회의의 첨부 목록 */
+app.get('/api/meeting-docs/:meetingId', (req, res) => {
+  const meetingId = String(req.params.meetingId || '')
+  const groupId = req.query.groupId
+  if (!isSafePathSegment(meetingId)) {
+    return res.status(400).json({ error: '잘못된 회의 id 입니다' })
+  }
+
+  const tryRead = (gid) => {
+    const filePath = path.join(MEETING_DOCS_DIR, gid, `${meetingId}.json`)
+    if (!filePath.startsWith(MEETING_DOCS_DIR)) return null
+    if (!fs.existsSync(filePath)) return null
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    } catch {
+      return null
+    }
+  }
+
+  if (isSafePathSegment(groupId)) {
+    const doc = tryRead(groupId)
+    if (doc) return res.json(doc)
+    return res.status(404).json({ error: '문서 첨부를 찾지 못했습니다' })
+  }
+
+  // groupId 없이 요청하면 모든 그룹 폴더에서 찾습니다.
+  try {
+    const groups = fs.readdirSync(MEETING_DOCS_DIR, { withFileTypes: true })
+    for (const ent of groups) {
+      if (!ent.isDirectory() || ent.name.startsWith('_')) continue
+      const doc = tryRead(ent.name)
+      if (doc) return res.json(doc)
+    }
+  } catch {
+    /* ignore */
+  }
+  return res.status(404).json({ error: '문서 첨부를 찾지 못했습니다' })
+})
+
+/** 그룹의 회의 문서 목록(첨부 포함) — 문서 탭 보강용 */
+app.get('/api/meeting-docs', (req, res) => {
+  const groupId = req.query.groupId
+  if (!isSafePathSegment(groupId)) {
+    return res.status(400).json({ error: 'groupId 가 필요합니다' })
+  }
+  const dir = path.join(MEETING_DOCS_DIR, groupId)
+  if (!fs.existsSync(dir)) return res.json([])
+
+  let entries = []
+  try {
+    entries = fs.readdirSync(dir).filter((name) => name.endsWith('.json'))
+  } catch {
+    return res.json([])
+  }
+
+  const docs = []
+  for (const name of entries) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+      if (raw && raw.id) docs.push(raw)
+    } catch {
+      /* skip broken */
+    }
+  }
+  docs.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+  res.json(docs)
+})
+
 // AI 요약 엔드포인트 — 타임스탬프가 붙은 챕터까지 생성합니다.
+// 실제 요약 흐름은 aiSummary.js 에 있고, 여기서는 "영상을 이 서버 디스크에서 어떻게 읽는지"만 정합니다.
 app.post('/api/summarize', async (req, res) => {
   try {
-    const { videoUrl } = req.body
-    if (!videoUrl || typeof videoUrl !== 'string') {
-      return res.status(400).json({ error: 'videoUrl이 필요합니다' })
-    }
-    console.log('AI 요약 요청:', videoUrl)
-
-    // 1. 영상은 HTTPS로 다시 받지 않고, 이 컴퓨터에 저장된 파일을 읽습니다.
-    // (Vite mkcert 인증서를 Node가 검증하지 못해 unable to verify the first certificate 가 납니다.)
-    let buffer
-    const localFile = resolveMeetingVideoFile(videoUrl)
-    if (localFile) {
-      console.log('디스크에서 영상 읽음:', localFile)
-      buffer = fs.readFileSync(localFile)
-    } else {
-      // 디스크에 없으면 같은 Node 서버의 HTTP /videos 로만 받습니다.
-      // Vite(https://localhost:5173) 주소는 mkcert 때문에 Node fetch가 실패합니다.
-      const rel = extractVideosRelativePath(videoUrl)
-      const fetchUrl = rel
-        ? `http://127.0.0.1:${process.env.PORT || 3001}/videos/${rel}`
-        : videoUrl
-      console.log('로컬 파일이 없어 URL로 받습니다:', fetchUrl)
-      const response = await fetch(fetchUrl)
-      if (!response.ok) {
-        throw new Error(`영상을 내려받지 못했습니다 (HTTP ${response.status})`)
-      }
-      buffer = Buffer.from(await response.arrayBuffer())
-    }
-    console.log('영상 준비 완료! 크기:', buffer.length)
-
-    if (buffer.length > MAX_AUDIO_BYTES) {
-      throw new Error(
-        `녹화 파일이 너무 큽니다 (${(buffer.length / 1024 / 1024).toFixed(1)}MB). ` +
-        `현재 한도는 ${MAX_AUDIO_BYTES / 1024 / 1024}MB 입니다.`
-      )
+    const { videoUrl, chatLog, meetingDateLabel } = req.body
+    const hasChatLog = Array.isArray(chatLog) && chatLog.length > 0
+    if ((!videoUrl || typeof videoUrl !== 'string') && !hasChatLog) {
+      return res.status(400).json({ error: 'videoUrl 또는 chatLog 중 하나는 필요합니다' })
     }
 
-    // 2. Groq Whisper로 음성 → 텍스트 (구간별 타임스탬프 포함)
-    console.log('음성 변환 중...')
-    const groq = getGroq()
-    const transcription = await groq.audio.transcriptions.create({
-      file: await toFile(buffer, 'audio.webm', { type: 'audio/webm' }),
-      model: TRANSCRIBE_MODEL,
-      language: 'ko',
-      response_format: 'verbose_json',
-      timestamp_granularities: ['segment'],
-    })
+    const loadVideo = videoUrl && typeof videoUrl === 'string'
+      ? async () => {
+          console.log('AI 요약 요청 (영상):', videoUrl)
+          // 영상은 HTTPS로 다시 받지 않고, 이 컴퓨터에 저장된 파일을 읽습니다.
+          // (Vite mkcert 인증서를 Node가 검증하지 못해 unable to verify the first certificate 가 납니다.)
+          const localFile = resolveMeetingVideoFile(videoUrl)
+          if (localFile) {
+            console.log('디스크에서 영상 읽음:', localFile)
+            return { filePath: localFile }
+          }
+          // 디스크에 없으면 같은 Node 서버의 HTTP /videos 로만 받습니다.
+          // Vite(https://localhost:5173) 주소는 mkcert 때문에 Node fetch가 실패합니다.
+          const rel = extractVideosRelativePath(videoUrl)
+          const fetchUrl = rel
+            ? `http://127.0.0.1:${process.env.PORT || 3001}/videos/${rel}`
+            : videoUrl
+          console.log('로컬 파일이 없어 URL로 받습니다:', fetchUrl)
+          const response = await fetch(fetchUrl)
+          if (!response.ok) {
+            throw new Error(
+              response.status === 404
+                ? '이 컴퓨터에 녹화 파일이 없습니다. 회의를 이 서버에서 다시 녹화해 주세요.'
+                : `영상을 내려받지 못했습니다 (HTTP ${response.status})`
+            )
+          }
+          const buffer = Buffer.from(await response.arrayBuffer())
+          console.log('영상 준비 완료! 크기:', buffer.length)
+          return { buffer }
+        }
+      : null
 
-    const transcript = transcription.text || ''
-    const segments = Array.isArray(transcription.segments) ? transcription.segments : []
-    const durationSec = Number(transcription.duration) || 0
-    console.log(`변환 완료: ${segments.length}개 구간, ${durationSec.toFixed(0)}초`)
-
-    if (!transcript.trim()) {
-      throw new Error('음성에서 텍스트를 추출하지 못했습니다. 녹화에 소리가 들어갔는지 확인해 주세요.')
-    }
-
-    // 타임스탬프가 있으면 그걸 쓰고, 없으면 평문으로 대체
-    const transcriptForLlm = segments.length > 0
-      ? buildTimestampedTranscript(segments)
-      : transcript
-
-    // 3. Groq LLaMA로 챕터 + 요약 생성 (JSON 모드)
-    console.log('요약/챕터 생성 중...')
-    const completion = await groq.chat.completions.create({
-      model: CHAT_MODEL,
-      response_format: { type: 'json_object' },
-      temperature: 0.3,
-      messages: [
-        {
-          role: 'system',
-          content: `당신은 한국어 회의록을 정리하는 전문가입니다.
-입력은 [MM:SS] 형식의 타임스탬프가 붙은 회의 녹취록입니다.
-화제가 바뀌는 지점을 찾아 챕터로 나누고, 반드시 아래 구조의 JSON만 출력하세요.
-
-{
-  "overview": "회의 전체를 2~3문장으로 요약",
-  "chapters": [
-    { "time": 0, "title": "짧은 소제목 (20자 이내)", "summary": "이 구간에서 다룬 내용 1~2문장" }
-  ],
-  "decisions": ["확정된 결정 사항"],
-  "actionItems": ["담당자와 할 일"]
-}
-
-규칙:
-- time은 반드시 초 단위 정수입니다. [01:30] 이면 90 입니다.
-- 챕터는 녹취록에 실제로 등장한 타임스탬프만 사용하세요. 지어내지 마세요.
-- 챕터는 3~8개가 적당하며, 시간 순으로 정렬하세요.
-- 첫 챕터는 time 0 으로 시작하세요.
-- 내용이 없는 항목은 빈 배열로 두세요.`,
-        },
-        {
-          role: 'user',
-          content: `다음 회의 녹취록을 JSON으로 정리해주세요:\n\n${transcriptForLlm}`,
-        },
-      ],
-    })
-
-    const rawContent = completion.choices[0]?.message?.content || '{}'
-    let parsed
-    try {
-      parsed = JSON.parse(rawContent)
-    } catch {
-      throw new Error('AI 응답을 해석하지 못했습니다. 다시 시도해 주세요.')
-    }
-
-    const chapters = normalizeChapters(parsed.chapters, durationSec)
-    const summaryText = buildSummaryText(parsed, chapters)
-    console.log(`요약 완료! 챕터 ${chapters.length}개`)
-
-    res.json({
-      success: true,
-      transcript,
-      summary: summaryText,
-      chapters,
-      duration: durationSec,
-    })
+    res.json(await summarizeMeeting({
+      loadVideo,
+      chatLog,
+      meetingDateLabel: typeof meetingDateLabel === 'string' ? meetingDateLabel : '',
+    }))
   } catch (err) {
-    console.error('AI 요약 실패:', err.message)
-    // 모델 폐기(404)는 원인을 알기 어려우니 해결 방법을 같이 알려줍니다.
-    const looksLikeModelError = err.status === 404
-      || /model|decommission|does not exist/i.test(err.message || '')
-    const hint = looksLikeModelError
-      ? `\n\n사용 중인 모델(${CHAT_MODEL})이 폐기됐을 수 있습니다.`
-        + '\n.env에 GROQ_MODEL=사용가능한모델명 을 추가한 뒤 서버를 재시작하세요.'
-      : ''
-    res.status(500).json({ error: `${err.message}${hint}` })
+    const message = summaryErrorMessage(err)
+    console.error('AI 요약 실패:', message)
+    res.status(500).json({ error: message })
   }
 })
 
@@ -532,11 +621,16 @@ app.use((err, req, res, next) => {
 })
 
 const PORT = process.env.PORT || 3001
-app.listen(PORT, () => {
+// Render 등 클라우드는 외부 헬스체크를 위해 0.0.0.0 바인딩이 필요합니다.
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`서버 실행중: port ${PORT}`)
-  console.log(`  요약 모델: ${CHAT_MODEL}`)
-  console.log(`  음성 모델: ${TRANSCRIBE_MODEL}`)
+  console.log(`  요약 모델: ${getChatModel()}`)
+  console.log(`  음성 모델: ${getTranscribeModel()}`)
   console.log(`  녹화본 저장 경로: ${MEETING_VIDEOS_DIR}`)
   console.log(`  채팅 첨부 경로: ${CHAT_FILES_DIR}`)
-  startOauthFallback()
+  console.log(`  회의 문서(첨부목록) 경로: ${MEETING_DOCS_DIR}`)
+  // 로컬 개발용 OAuth 폴백(127.0.0.1:3000). 클라우드에서는 불필요해 건너뜁니다.
+  if (!process.env.RENDER && process.env.ENABLE_OAUTH_FALLBACK !== '0') {
+    startOauthFallback()
+  }
 })

@@ -1,9 +1,9 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { supabase } from './services/supabaseClient';
 import ExcalidrawToolbar, { toolShortcutMap, type ExcalidrawTool } from './components/ExcalidrawToolbar';
 // 타임랩스 사이드 패널 컴포넌트 import (현재 비활성화)
 import CanvasViewportControls from './components/CanvasViewportControls';
-import { CANVAS_FONT_FAMILY, drawShapeTool, drawStamp, drawText, textFontSize, type ShapeTool } from './canvasShapeUtils';
+import { colorWithOpacity, drawShapeTool, drawStamp, drawText, shapeDashArray, textFontSize, type ShapeTool } from './canvasShapeUtils';
 import { explainBoardError } from './boardErrors';
 import { dedupeBoardsById, getBoardOptionLabel } from './timelapseApi';
 // 타임랩스 사이드 패널 CSS import (현재 비활성화)
@@ -14,18 +14,64 @@ import BoardFilePreview from './components/BoardFilePreview';
 import { expandedFileSize, getFilePreviewKind } from './filePreviewUtils';
 import { rasterizeBoardFile } from './rasterizeBoardFile';
 import { chatFileUrl, displayFileName, formatChatFileSize, MAX_CHAT_FILE_BYTES } from './utils/meetingChat';
+import StickyNoteOverlay, { type PlacedSticky, type StickyEditMode } from './components/StickyNoteOverlay';
 
 const MEETING_BOARD_TOPIC = 'meeting-board';
+/** 회의방 펜/지우개 획 실시간 동기화 (Supabase Realtime 병목 회피) */
+const MEETING_BOARD_STROKE_TOPIC = 'meeting-board-stroke';
 
 type MeetingBoardMessage = {
   type: 'board:selected';
   boardId: string;
   title?: string;
   from: string;
+  /**
+   * 보드를 고른 시각(ms). 응답·metadata 가 여러 경로로 뒤섞여 도착해도 가장 최근 선택만 반영하기 위한 기준입니다.
+   * 직접 고른 적 없이 기본 보드를 보고 있는 참가자는 0 으로 보내 실제 선택에 항상 밀리게 합니다.
+   */
+  selectedAt?: number;
 };
 
-function encodeMeetingBoardMessage(msg: MeetingBoardMessage): Uint8Array {
+/**
+ * next 가 prev 보다 나중의 보드 선택인지 판단합니다.
+ * 같은 시각이면 boardId 로 순서를 정해, 모든 참가자가 같은 보드로 수렴하게 합니다.
+ */
+function isNewerBoardSelection(next: MeetingBoardMessage, prev: MeetingBoardMessage | null): boolean {
+  if (!prev) return true;
+  const nextAt = next.selectedAt ?? 0;
+  const prevAt = prev.selectedAt ?? 0;
+  if (nextAt !== prevAt) return nextAt > prevAt;
+  return next.boardId >= prev.boardId;
+}
+
+/** 늦게 들어오거나 재연결한 참가자가 "지금 어떤 보드인지" 묻는 메시지 */
+type MeetingBoardRequest = {
+  type: 'board:request';
+  from: string;
+};
+
+/** LiveKit으로 보내는 stroke 이벤트. DB payload와 동일한 type/payload를 담습니다. */
+type MeetingStrokeMessage = {
+  type: 'stroke.begin' | 'stroke.append' | 'stroke.end';
+  boardId: string;
+  actorId: string;
+  payload: unknown;
+};
+
+function encodeMeetingBoardMessage(msg: MeetingBoardMessage | MeetingBoardRequest): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+function decodeMeetingBoardRequest(payload: Uint8Array): MeetingBoardRequest | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(payload));
+    if (parsed && parsed.type === 'board:request' && typeof parsed.from === 'string') {
+      return parsed as MeetingBoardRequest;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function decodeMeetingBoardMessage(payload: Uint8Array): MeetingBoardMessage | null {
@@ -53,6 +99,41 @@ function decodeMeetingBoardMetadata(metadata?: string): MeetingBoardMessage | nu
   }
 }
 
+function encodeMeetingStrokeMessage(msg: MeetingStrokeMessage): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(msg));
+}
+
+function decodeMeetingStrokeMessage(payload: Uint8Array): MeetingStrokeMessage | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(payload));
+    if (
+      !parsed ||
+      (parsed.type !== 'stroke.begin' && parsed.type !== 'stroke.append' && parsed.type !== 'stroke.end') ||
+      typeof parsed.boardId !== 'string' ||
+      typeof parsed.actorId !== 'string'
+    ) {
+      return null;
+    }
+    return parsed as MeetingStrokeMessage;
+  } catch {
+    return null;
+  }
+}
+
+/** LiveKit ↔ Realtime 중복 적용 방지용 키 (append는 liveSeq 필요) */
+function strokeLiveDedupeKey(type: string, payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as { strokeId?: string; liveSeq?: number };
+  if (typeof p.strokeId !== 'string' || !p.strokeId) return null;
+  if (type === 'stroke.begin') return `begin:${p.strokeId}`;
+  if (type === 'stroke.end') return `end:${p.strokeId}`;
+  if (type === 'stroke.append') {
+    if (typeof p.liveSeq !== 'number') return null;
+    return `append:${p.strokeId}:${p.liveSeq}`;
+  }
+  return null;
+}
+
 const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3] as const;
 const DEFAULT_ZOOM_INDEX = 3;
 const MAX_HISTORY = 50;
@@ -76,6 +157,18 @@ type Props = {
   initialBoardId?: string;
   initialTimelapseSaveId?: string;
   autoPlayTimelapse?: boolean;
+  /** 텍스트를 선택했을 때 툴바 정렬 상태를 맞춥니다. */
+  onTextAlignChange?: (align: 'left' | 'center' | 'right') => void;
+  /** 텍스트를 선택했을 때 굵게/취소선/밑줄 상태를 맞춥니다. */
+  onTextDecorChange?: (style: { bold: boolean; strike: boolean; underline: boolean }) => void;
+  /** 배치된 텍스트 선택/해제 — 하단 서식 메뉴 표시에 씁니다. */
+  onTextSelectedChange?: (selected: boolean) => void;
+  /** 텍스트를 선택했을 때 툴바 글자 크기를 맞춥니다. */
+  onTextFontSizeChange?: (size: number) => void;
+  /** false면 판서 불가(관전). 원격 획 수신은 그대로입니다. */
+  canDraw?: boolean;
+  /** false면 보드 선택·생성·이름 변경 불가. 다른 사람이 바꾼 보드는 따라갑니다. */
+  canChangeBoard?: boolean;
 };
 
 export type CanvasBoardHandle = {
@@ -83,6 +176,37 @@ export type CanvasBoardHandle = {
   getCanvasElement: () => HTMLCanvasElement | null;
   pickTool: (tool: ExcalidrawTool) => void;
   toggleLibrary: () => void;
+  /** 보이는 화면을 한 번 더 클릭하면 그 위치에 메모장을 붙입니다. */
+  addStickyNote: () => void;
+  /** 메모장 클릭 배치 모드를 끕니다. */
+  cancelStickyPlace: () => void;
+  /** 펜/도형 획 색·굵기·불투명도·점선 (하단 서브메뉴와 연동) */
+  setStrokeStyle: (style: {
+    color?: string;
+    size?: number;
+    opacity?: number;
+    dash?: 'solid' | 'dashed';
+  }) => void;
+  /** 캔버스에서 색을 찍어 콜백으로 돌려줍니다. */
+  startEyedropper: (onPick: (color: string) => void) => void;
+  /** 도형 테두리/채우기 옵션 */
+  setShapeStyle: (style: Partial<{
+    dash: 'solid' | 'dashed';
+    strokeOpacity: number;
+    fillEnabled: boolean;
+    fillColor: string;
+    fillOpacity: number;
+  }>) => void;
+  /** 다음 메모장 기본색 + 선택 중인 메모장 배경색 */
+  setStickyPaperColor: (color: string) => void;
+  /** 텍스트 도구 글자 크기 */
+  setTextFontSize: (size: number) => void;
+  /** 텍스트 가로 정렬 */
+  setTextAlign: (align: 'left' | 'center' | 'right') => void;
+  /** 텍스트 굵게·취소선·밑줄 */
+  setTextDecor: (style: Partial<{ bold: boolean; strike: boolean; underline: boolean }>) => void;
+  /** 네모 드래그로 영역 안 객체·획을 지우는 모드 */
+  setAreaEraseMode: (on: boolean) => void;
 };
 
 type Point = { x: number; y: number };
@@ -96,17 +220,27 @@ type EventType =
   | 'stroke.end'
   | 'board.clear'
   | 'shape.add'
+  | 'shape.transform'
+  | 'shape.remove'
   | 'image.add'
   | 'image.transform'
+  | 'image.remove'
   | 'text.add'
   | 'text.transform'
+  | 'text.remove'
   | 'file.add'
   | 'file.transform'
   | 'file.remove'
-  | 'stamp.add';
+  | 'stamp.add'
+  | 'sticky.add'
+  | 'sticky.update'
+  | 'sticky.transform'
+  | 'sticky.remove'
+  | 'region.erase'
+  | 'history.undo'
+  | 'history.redo';
 
-// 캔버스에 붙이는 이미지: 파일 용량 상한, 화면에 그릴 때 가로 최대 픽셀
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+// 캔버스에 붙이는 이미지: 화면에 그릴 때 가로 최대 픽셀
 const MAX_IMAGE_DRAW_WIDTH = 800;
 const MIN_IMAGE_DRAW_SIZE = 48;
 
@@ -120,17 +254,71 @@ type BoardEventRow = {
   payload: unknown;
 };
 
+/**
+ * Ctrl+Z 한 번에 되돌릴 "내 동작 하나".
+ * - 획: begin/append/end 여러 행이 한 획이라 strokeId 로 묶습니다.
+ * - 그 외: 한 동작에서 넣은 board_events 행 id 목록 (영역 지우기는 여러 행)
+ */
+type HistoryTarget = { strokeId: string } | { eventIds: string[] };
+
+type HistoryTogglePayload = { target: HistoryTarget };
+
+function isStrokeEventType(type: EventType) {
+  return type === 'stroke.begin' || type === 'stroke.append' || type === 'stroke.end';
+}
+
+/**
+ * history.undo / history.redo 를 순서대로 접어, 되돌려진 동작의 이벤트를 뺀 목록을 돌려줍니다.
+ * 모든 참가자가 같은 이벤트 로그로 같은 결과를 그리게 하는 것이 목적입니다.
+ * events 는 seq 오름차순이어야 undo → redo 순서가 맞습니다.
+ */
+function filterUndoneEvents(events: BoardEventRow[]): BoardEventRow[] {
+  const undoneStrokes = new Set<string>();
+  const undoneEvents = new Set<string>();
+  for (const ev of events) {
+    if (ev.type !== 'history.undo' && ev.type !== 'history.redo') continue;
+    const target = (ev.payload as HistoryTogglePayload | null)?.target;
+    if (!target) continue;
+    const undo = ev.type === 'history.undo';
+    if ('strokeId' in target) {
+      if (undo) undoneStrokes.add(target.strokeId);
+      else undoneStrokes.delete(target.strokeId);
+    } else {
+      for (const id of target.eventIds ?? []) {
+        if (undo) undoneEvents.add(id);
+        else undoneEvents.delete(id);
+      }
+    }
+  }
+
+  return events.filter((ev) => {
+    if (ev.type === 'history.undo' || ev.type === 'history.redo') return false;
+    if (undoneEvents.has(ev.id)) return false;
+    if (isStrokeEventType(ev.type)) {
+      const strokeId = (ev.payload as { strokeId?: string } | null)?.strokeId;
+      if (strokeId && undoneStrokes.has(strokeId)) return false;
+    }
+    return true;
+  });
+}
+
 type StrokeBeginPayload = {
   strokeId: string;
   tool: StrokeTool;
   color: string;
   size: number;
   point: Point;
+  /** 0~1, 없으면 1 */
+  opacity?: number;
+  /** solid | dashed */
+  dash?: 'solid' | 'dashed';
 };
 
 type StrokeAppendPayload = {
   strokeId: string;
   points: Point[];
+  /** LiveKit/Realtime 중복 제거용 순번 (회의 모드에서 부여) */
+  liveSeq?: number;
 };
 
 type StrokeEndPayload = {
@@ -138,12 +326,108 @@ type StrokeEndPayload = {
 };
 
 type ShapeAddPayload = {
+  /** 있으면 선택·이동용 PlacedShape id */
+  id?: string;
   tool: ShapeTool;
   from: Point;
   to: Point;
   color: string;
   size: number;
+  /** 채우기 색. 없으면/빈 값이면 투명 */
+  fill?: string;
+  /** solid | dashed */
+  dash?: 'solid' | 'dashed';
+  strokeOpacity?: number;
+  fillOpacity?: number;
 };
+
+/** 배치된 도형 위치만 바꿉니다. (선택 도구로 드래그) */
+type ShapeTransformPayload = {
+  id: string;
+  from: Point;
+  to: Point;
+};
+
+type ShapeRemovePayload = {
+  id: string;
+};
+
+type TextRemovePayload = {
+  id: string;
+};
+
+type ImageRemovePayload = {
+  id: string;
+};
+
+/** 네모 영역 지우기 — 획 픽셀을 destination-out 으로 지웁니다. */
+type RegionErasePayload = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type Rect = { x: number; y: number; width: number; height: number };
+
+function normalizeRect(from: Point, to: Point): Rect {
+  const x = Math.min(from.x, to.x);
+  const y = Math.min(from.y, to.y);
+  return {
+    x,
+    y,
+    width: Math.abs(to.x - from.x),
+    height: Math.abs(to.y - from.y),
+  };
+}
+
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return !(a.x + a.width < b.x || b.x + b.width < a.x || a.y + a.height < b.y || b.y + b.height < a.y);
+}
+
+/** 캔버스에 그린 뒤 선택·이동할 수 있는 도형 */
+type PlacedShape = {
+  id: string;
+  tool: ShapeTool;
+  from: Point;
+  to: Point;
+  color: string;
+  size: number;
+  fill?: string;
+  dash: 'solid' | 'dashed';
+  strokeOpacity: number;
+  fillOpacity?: number;
+};
+
+/** 도형 from~to 의 축 정렬 바운딩 박스 */
+function shapeBounds(from: Point, to: Point) {
+  const x = Math.min(from.x, to.x);
+  const y = Math.min(from.y, to.y);
+  return {
+    x,
+    y,
+    width: Math.max(Math.abs(to.x - from.x), 1),
+    height: Math.max(Math.abs(to.y - from.y), 1),
+  };
+}
+
+/** 위쪽 도형부터 히트 테스트 (얇은 선도 잡히게 패딩) */
+function hitTestShape(shapes: PlacedShape[], p: Point): PlacedShape | null {
+  const pad = 10;
+  for (let i = shapes.length - 1; i >= 0; i -= 1) {
+    const s = shapes[i];
+    const b = shapeBounds(s.from, s.to);
+    if (
+      p.x >= b.x - pad &&
+      p.x <= b.x + b.width + pad &&
+      p.y >= b.y - pad &&
+      p.y <= b.y + b.height + pad
+    ) {
+      return s;
+    }
+  }
+  return null;
+}
 
 type ImageAddPayload = {
   id?: string;
@@ -315,6 +599,11 @@ type TextAddPayload = {
   fontSize?: number;
   width?: number;
   height?: number;
+  /** 없으면 left */
+  align?: 'left' | 'center' | 'right';
+  bold?: boolean;
+  strike?: boolean;
+  underline?: boolean;
 };
 
 type TextTransformPayload = {
@@ -324,6 +613,10 @@ type TextTransformPayload = {
   width: number;
   height: number;
   fontSize: number;
+  align?: 'left' | 'center' | 'right';
+  bold?: boolean;
+  strike?: boolean;
+  underline?: boolean;
 };
 
 type PlacedText = {
@@ -335,6 +628,10 @@ type PlacedText = {
   fontSize: number;
   width: number;
   height: number;
+  align: 'left' | 'center' | 'right';
+  bold: boolean;
+  strike: boolean;
+  underline: boolean;
 };
 
 /** 캔버스 위 인라인 텍스트 입력 중인 초안. size는 글자 크기(px)입니다. */
@@ -346,6 +643,10 @@ type TextDraft = {
   size: number;
   width: number;
   height: number;
+  align: 'left' | 'center' | 'right';
+  bold: boolean;
+  strike: boolean;
+  underline: boolean;
 };
 
 const MIN_TEXT_SIZE = 12;
@@ -429,6 +730,10 @@ function resizePlacedText(item: PlacedText, handle: ImageResizeHandle, p: Point)
       size: item.fontSize,
       width: item.width,
       height: item.height,
+      align: item.align,
+      bold: item.bold,
+      strike: item.strike,
+      underline: item.underline,
     },
     handle,
     p,
@@ -443,6 +748,10 @@ function resizePlacedText(item: PlacedText, handle: ImageResizeHandle, p: Point)
   };
 }
 
+function normalizeTextAlign(align?: string): 'left' | 'center' | 'right' {
+  return align === 'center' || align === 'right' ? align : 'left';
+}
+
 type StampAddPayload = {
   x: number;
   y: number;
@@ -451,18 +760,71 @@ type StampAddPayload = {
   size: number;
 };
 
+type StickyAddPayload = {
+  id?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  text: string;
+  drawing: string;
+};
+
+type StickyUpdatePayload = {
+  id: string;
+  text: string;
+  drawing: string;
+  /** 있으면 메모장 종이 배경색도 같이 맞춥니다. */
+  color?: string;
+};
+
+type StickyTransformPayload = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type StickyRemovePayload = {
+  id: string;
+};
+
+const DEFAULT_STICKY_W = 280;
+const DEFAULT_STICKY_H = 340;
+const MIN_STICKY_W = 200;
+const MIN_STICKY_H = 220;
+const STICKY_PAPER = '#fffef8';
+
+function resizePlacedSticky(note: PlacedSticky, p: Point): PlacedSticky {
+  return {
+    ...note,
+    width: Math.max(MIN_STICKY_W, p.x - note.x),
+    height: Math.max(MIN_STICKY_H, p.y - note.y),
+  };
+}
+
 function isHistoryCommitEvent(type: EventType): boolean {
   return (
     type === 'stroke.end' ||
     type === 'shape.add' ||
+    type === 'shape.transform' ||
+    type === 'shape.remove' ||
     type === 'image.add' ||
     type === 'image.transform' ||
+    type === 'image.remove' ||
     type === 'text.add' ||
     type === 'text.transform' ||
+    type === 'text.remove' ||
     type === 'file.add' ||
     type === 'file.transform' ||
     type === 'file.remove' ||
     type === 'stamp.add' ||
+    type === 'sticky.add' ||
+    type === 'sticky.transform' ||
+    type === 'sticky.remove' ||
+    type === 'region.erase' ||
     type === 'board.clear'
   );
 }
@@ -482,6 +844,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   initialBoardId,
   initialTimelapseSaveId,
   autoPlayTimelapse = false,
+  onTextAlignChange,
+  onTextDecorChange,
+  onTextSelectedChange,
+  onTextFontSizeChange,
+  canDraw = true,
+  canChangeBoard = true,
 }, ref) {
   const isEmbedded = embedded || meetingMode;
   // 회의방·단독 캔버스 모두 원본 CSS 껍데기를 쓰면 내부 상단바를 숨깁니다.
@@ -497,12 +865,27 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const pendingChunkRef = useRef<Point[]>([]);
   const chunkTimerRef = useRef<number | null>(null);
   const strokeWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  /** 획별 append 순번 — LiveKit·DB payload에 넣어 Realtime 중복을 막습니다. */
+  const strokeLiveSeqByIdRef = useRef<Map<string, number>>(new Map());
+  /** LiveKit 또는 Realtime으로 이미 적용한 stroke 키 */
+  const appliedLiveStrokeKeysRef = useRef<Set<string>>(new Set());
   const remoteLastPointByStrokeRef = useRef<Map<string, Point>>(new Map());
   const remotePendingAppendsRef = useRef<Map<string, Point[][]>>(new Map());
   const remotePendingEndsRef = useRef<Set<string>>(new Set());
   const replayTimerRef = useRef<number | null>(null);
   const isReplayingRef = useRef(false);
-  const strokeStyleByIdRef = useRef<Map<string, { tool: StrokeTool; color: string; size: number }>>(new Map());
+  const strokeStyleByIdRef = useRef<Map<string, {
+    tool: StrokeTool;
+    color: string;
+    size: number;
+    opacity: number;
+    dash: 'solid' | 'dashed';
+  }>>(new Map());
+  // 반투명(마커) 획: 구간 겹침으로 동그란 점이 생기지 않게, 끝날 때까지 점을 모았다가 한 경로로 그립니다.
+  const translucentStrokePointsRef = useRef<Map<string, Point[]>>(new Map());
+  // 로컬 반투명 획 미리보기용 점 목록 (스냅샷 위에 통째로 다시 그림)
+  const liveStrokePointsRef = useRef<Point[] | null>(null);
+  const eyedropperCallbackRef = useRef<((color: string) => void) | null>(null);
   const replayRafRef = useRef<number | null>(null);
   const lastReplayUiUpdateMsRef = useRef<number>(0);
   const replayEventsRef = useRef<BoardEventRow[]>([]);
@@ -525,11 +908,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     start: PlacedFile;
   } | null>(null);
   const removePlacedFileRef = useRef<(id: string) => void>(() => {});
+  const removePlacedTextRef = useRef<(id: string) => void>(() => {});
+  const removePlacedShapeRef = useRef<(id: string) => void>(() => {});
+  const removePlacedImageRef = useRef<(id: string) => void>(() => {});
   const undoHistoryRef = useRef<() => void>(() => {});
   const redoHistoryRef = useRef<() => void>(() => {});
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   const textDraftRef = useRef<TextDraft | null>(null);
-  const commitTextDraftRef = useRef<(opts?: { keepTool?: boolean }) => void>(() => {});
+  const commitTextDraftRef = useRef<() => void>(() => {});
   const startTextInViewRef = useRef<() => void>(() => {});
   const ignoreTextBlurRef = useRef(false);
   const textResizeRef = useRef<{
@@ -540,7 +926,27 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const pendingImagePointRef = useRef<Point | null>(null);
   const pendingStampRef = useRef<'rect' | 'circle' | 'triangle' | null>(null);
   const actorIdRef = useRef('unknown');
+  const onToolChangeRef = useRef(onToolChange);
+  onToolChangeRef.current = onToolChange;
+  // 메모 배치 시 내부적으로 hand로 돌려도 하단 stamp UI는 유지하기 위해 알림을 한 번 건너뜁니다.
+  const skipToolChangeNotifyRef = useRef(false);
+  const onTextSelectedChangeRef = useRef(onTextSelectedChange);
+  onTextSelectedChangeRef.current = onTextSelectedChange;
+  const onTextFontSizeChangeRef = useRef(onTextFontSizeChange);
+  onTextFontSizeChangeRef.current = onTextFontSizeChange;
+  const onTextAlignChangeRef = useRef(onTextAlignChange);
+  onTextAlignChangeRef.current = onTextAlignChange;
+  const onTextDecorChangeRef = useRef(onTextDecorChange);
+  onTextDecorChangeRef.current = onTextDecorChange;
   const lastInsertErrorAlertMsRef = useRef(0);
+  /** 내가 한 동작 / 내가 되돌린 동작 스택 — Ctrl+Z 는 다른 사람 동작을 건드리지 않습니다. */
+  const myUndoStackRef = useRef<HistoryTarget[]>([]);
+  const myRedoStackRef = useRef<HistoryTarget[]>([]);
+  /** 영역 지우기처럼 여러 행이 한 동작일 때, 여기 모았다가 한 번에 스택에 올립니다. */
+  const undoGroupRef = useRef<string[] | null>(null);
+  /** 아직 끝나지 않은 insert — 되돌리기 전에 기다려야 방금 한 동작이 대상이 됩니다. */
+  const pendingInsertsRef = useRef<Set<Promise<void>>>(new Set());
+  const historyBusyRef = useRef(false);
   const deepLinkHandledRef = useRef(false);
   const historyRef = useRef<ImageData[]>([]);
   const historyIndexRef = useRef(-1);
@@ -561,6 +967,24 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     startPoint: Point;
     start: PlacedText;
   } | null>(null);
+  // 그린 도형을 나중에 선택·이동하기 위한 목록
+  const placedShapesRef = useRef<PlacedShape[]>([]);
+  const selectedShapeIdRef = useRef<string | null>(null);
+  const placedShapeDragRef = useRef<{
+    id: string;
+    startPoint: Point;
+    start: PlacedShape;
+  } | null>(null);
+  const placedStickiesRef = useRef<PlacedSticky[]>([]);
+  const selectedStickyIdRef = useRef<string | null>(null);
+  const placedStickyDragRef = useRef<{
+    id: string;
+    mode: 'move' | 'se';
+    startPoint: Point;
+    start: PlacedSticky;
+  } | null>(null);
+  const removePlacedStickyRef = useRef<(id: string) => void>(() => {});
+  const stickyTextTimerRef = useRef<number | null>(null);
   const lastSavedTitleRef = useRef<Record<string, string>>({});
   const replaySpeedRef = useRef(10);
   const compressGapsRef = useRef(true);
@@ -584,10 +1008,42 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [placedTexts, setPlacedTexts] = useState<PlacedText[]>([]);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [placedShapes, setPlacedShapes] = useState<PlacedShape[]>([]);
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
+  const [placedStickies, setPlacedStickies] = useState<PlacedSticky[]>([]);
+  const [selectedStickyId, setSelectedStickyId] = useState<string | null>(null);
+  const [stickyEditMode, setStickyEditMode] = useState<StickyEditMode>('text');
+  const [stickyPenColor, setStickyPenColor] = useState('#222222');
   const [color, setColor] = useState('#111827');
   const [size, setSize] = useState(6);
+  // 펜 전용: 불투명도 · 실선/점선
+  const [penOpacity, setPenOpacity] = useState(1);
+  const [penDash, setPenDash] = useState<'solid' | 'dashed'>('solid');
+  const [eyedropperActive, setEyedropperActive] = useState(false);
+  // 도형 전용: 점선/채우기/불투명도
+  const [shapeDash, setShapeDash] = useState<'solid' | 'dashed'>('solid');
+  const [shapeStrokeOpacity, setShapeStrokeOpacity] = useState(1);
+  const [shapeFillEnabled, setShapeFillEnabled] = useState(false);
+  const [shapeFillColor, setShapeFillColor] = useState('#93c5a0');
+  const [shapeFillOpacity, setShapeFillOpacity] = useState(0.35);
+  // 하단 툴바 메모 색상 — 새로 붙일 노트와 선택 노트에 반영
+  const stickyPaperColorRef = useRef(STICKY_PAPER);
   const [textSize, setTextSize] = useState(DEFAULT_TEXT_SIZE);
+  // 새 텍스트·입력 중 초안의 가로 정렬
+  const textAlignRef = useRef<'left' | 'center' | 'right'>('left');
+  const textBoldRef = useRef(false);
+  const textStrikeRef = useRef(false);
+  const textUnderlineRef = useRef(false);
   const [textDraft, setTextDraft] = useState<TextDraft | null>(null);
+  /** 네모 드래그로 영역 안을 지우는 모드 (지우개 사이드바 → 영역 지우기) */
+  const [areaEraseMode, setAreaEraseModeState] = useState(false);
+  const areaEraseModeRef = useRef(false);
+  const areaEraseDragRef = useRef<{ start: Point } | null>(null);
+  const [areaErasePreview, setAreaErasePreview] = useState<Rect | null>(null);
+  const areaErasePreviewRef = useRef<Rect | null>(null);
+  /** 메모장 도구: 다음 캔버스 클릭 위치에 붙입니다. */
+  const [stickyPlaceMode, setStickyPlaceModeState] = useState(false);
+  const stickyPlaceModeRef = useRef(false);
 
   const [actorId, setActorId] = useState<string>('unknown');
 
@@ -601,6 +1057,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [boards, setBoards] = useState<Board[]>([]);
   const [boardId, setBoardId] = useState<string>(initialBoardId ?? '');
   const [boardTitle, setBoardTitle] = useState<string>('새 보드');
+  // 비동기 콜백·LiveKit 이벤트 핸들러에서 오래된 클로저 대신 "지금 보고 있는 보드"를 읽기 위한 ref
+  const boardIdRef = useRef(boardId);
+  boardIdRef.current = boardId;
+  const boardTitleRef = useRef(boardTitle);
+  boardTitleRef.current = boardTitle;
+  // 보드를 빠르게 바꾸면 이전 보드 로딩이 늦게 끝나 새 보드 위에 섞여 그려지므로, 최신 로딩만 반영하기 위한 번호
+  const boardLoadSeqRef = useRef(0);
   const [isLoadingBoards, setIsLoadingBoards] = useState(false);
   const [, setIsLoadingBoard] = useState(false);
 
@@ -615,6 +1078,47 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const initChoiceHandledRef = useRef(false);
   const latestBoardSelectionRef = useRef<MeetingBoardMessage | null>(null);
 
+  /**
+   * 회의방에서 "어떤 보드를 띄울지" 정해졌는지 여부.
+   * 정해지기 전에 그룹 기본 보드를 먼저 그리면, 예전 보드가 잠깐 보였다가 현재 보드(또는 새 보드 선택창)로 바뀌며 깜빡입니다.
+   * 그래서 다른 참가자의 보드 정보·선택창 결정·대기 시간 초과 중 하나가 올 때까지 보드를 그리지 않습니다.
+   */
+  const [meetingBoardReady, setMeetingBoardReady] = useState(!meetingMode);
+  const meetingBoardReadyRef = useRef(!meetingMode);
+  /** 대기 시간이 끝났을 때 대신 띄울 그룹 기본 보드 (loadGroupBoards 가 채웁니다) */
+  const defaultMeetingBoardRef = useRef<Board | null>(null);
+  const showInitChoiceRef = useRef(false);
+  showInitChoiceRef.current = showInitChoice;
+
+  const markMeetingBoardReady = () => {
+    if (meetingBoardReadyRef.current) return;
+    meetingBoardReadyRef.current = true;
+    setMeetingBoardReady(true);
+  };
+
+  /** 다른 참가자가 끝내 보드를 알려 주지 않거나 LiveKit 연결이 늦을 때, 그룹 기본 보드로 대신 시작합니다. */
+  const fallBackToDefaultMeetingBoard = () => {
+    // 선택창이 떠 있으면 사용자가 고를 때까지 기다립니다. (뒤에 기본 보드를 깔면 다시 깜빡입니다)
+    if (meetingBoardReadyRef.current || showInitChoiceRef.current) return;
+    markMeetingBoardReady();
+    const fallback = defaultMeetingBoardRef.current;
+    // 목록이 아직 안 왔으면 loadGroupBoards 가 끝날 때 기본 보드를 고릅니다.
+    if (!fallback || boardIdRef.current) return;
+    const title = formatBoardTitle(fallback.title);
+    setBoardId(fallback.id);
+    setBoardTitle(title);
+    lastSavedTitleRef.current[fallback.id] = title;
+  };
+
+  // LiveKit 연결 자체가 늦거나 실패해도 보드가 계속 비어 있지 않도록, 일정 시간이 지나면 기본 보드를 띄웁니다.
+  useEffect(() => {
+    if (!meetingMode) return;
+    const timer = window.setTimeout(fallBackToDefaultMeetingBoard, 6000);
+    return () => window.clearTimeout(timer);
+    // fallBackToDefaultMeetingBoard 는 ref 만 읽어 최초 렌더의 함수로도 충분합니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingMode]);
+
   const publishBoardSelection = (payload: MeetingBoardMessage) => {
     if (!localParticipant) return;
     void localParticipant.publishData(encodeMeetingBoardMessage(payload), {
@@ -624,6 +1128,24 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     void localParticipant.setMetadata(JSON.stringify(payload)).catch((err) => {
       console.warn('LiveKit metadata update failed:', err);
     });
+  };
+
+  /**
+   * 회의 중에 내가 보드를 바꾸거나 새로 만들면 다른 참가자도 같은 보드로 따라오게 알립니다.
+   * (예전엔 입장 직후 선택창에서만 알려서, 회의 중 "새 보드"·목록 변경이 나에게만 반영됐습니다.)
+   */
+  const announceBoardSelection = (id: string, title: string) => {
+    if (!meetingMode || !localParticipant || !id) return;
+    const payload: MeetingBoardMessage = {
+      type: 'board:selected',
+      boardId: id,
+      title,
+      from: localParticipant.identity,
+      // 내 PC 시계가 다른 참가자보다 늦어도 새 선택이 "예전 선택"으로 버려지지 않게, 마지막으로 본 선택보다 항상 크게 잡습니다.
+      selectedAt: Math.max(Date.now(), (latestBoardSelectionRef.current?.selectedAt ?? 0) + 1),
+    };
+    latestBoardSelectionRef.current = payload;
+    publishBoardSelection(payload);
   };
 
   // 회의방 접속 상태를 확인해서, 첫 참가자일 때만 초기 선택창을 띄웁니다.
@@ -664,99 +1186,187 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   // LiveKit으로 보드 선택 정보를 주고받는 영역입니다.
   // 다른 참가자에게 현재 선택된 보드를 알려주고, 누가 새로 들어오거나 다시 들어와도
   // 같은 보드를 보도록 상태를 맞춰줍니다.
+  // 주의: 수신 시 publish를 다시 하면 N명이 서로 재방송하며 data 채널이 폭주합니다.
+  // (3명 이상에서 채팅·화이트보드 반응이 같이 느려지는 원인이었습니다.)
   useEffect(() => {
     if (!room) return;
     if (!meetingMode) return;
 
+    // 수신한 선택은 로컬에만 반영합니다. 재방송은 ParticipantConnected 쪽에서만 합니다.
     const applyBoardSelection = (msg: MeetingBoardMessage) => {
       if (!msg.boardId) return;
+      const prev = latestBoardSelectionRef.current;
+      // 3명 이상이면 응답·metadata 가 여러 명에게서 순서 없이 도착하고, 그중엔 예전 보드 정보도 섞여 있습니다.
+      // 이미 반영한 선택보다 오래된 정보는 버려야 최신 보드가 예전 보드로 덮이지 않습니다.
+      if (!isNewerBoardSelection(msg, prev)) return;
       setShowInitChoice(false);
       initChoiceHandledRef.current = true;
+      // 회의에서 쓰는 보드를 알게 됐으니 이제부터 보드를 그립니다.
+      markMeetingBoardReady();
+
+      // 이미 같은 보드를 보고 있으면 상태/네트워크 작업을 건너뛰어 불필요한 렌더·폭주를 막습니다.
+      // (기록만 같고 실제 화면 보드가 다르면 다시 맞춰야 하므로 boardIdRef 도 함께 확인합니다.)
+      if (
+        prev?.boardId === msg.boardId
+        && boardIdRef.current === msg.boardId
+        && (prev.title ?? '') === (msg.title ?? '')
+      ) {
+        // 화면은 그대로 두되 selectedAt 은 최신 값으로 기록해야, 다음 요청 때 정확한 시각으로 답할 수 있습니다.
+        latestBoardSelectionRef.current = msg;
+        return;
+      }
+
       setBoardId(msg.boardId);
       if (msg.title) setBoardTitle(msg.title);
+      // 다른 사람이 방금 만든 보드는 내 목록에 없어서 선택칸이 비어 보이므로 목록에도 넣습니다.
+      setBoards((list) =>
+        list.some((b) => b.id === msg.boardId)
+          ? list
+          : [{ id: msg.boardId, title: msg.title ?? '새 보드', created_at: new Date().toISOString() }, ...list],
+      );
       latestBoardSelectionRef.current = msg;
-      publishBoardSelection(msg);
+    };
+
+    // 요청한 사람에게만 내가 지금 보고 있는 보드를 알려 줍니다.
+    // 예전엔 "가장 먼저 들어온 한 명"만 답했는데, 그 사람이 예전 보드를 보고 있으면 늦게 온 사람도 그 보드로 갔습니다.
+    // 이제는 보드가 있는 참가자 모두가 답하고, 요청한 쪽이 selectedAt 이 가장 최근인 답을 고릅니다.
+    // (요청자에게만 보내는 1회성 응답이라 재방송 폭주는 생기지 않습니다.)
+    const replyCurrentBoard = (requester: string) => {
+      if (!requester) return;
+      const currentId = boardIdRef.current;
+      if (!currentId) return;
+      const latest = latestBoardSelectionRef.current;
+      // 직접 고르거나 전달받은 기록이 없는 보드(그룹 기본 보드 등)는 selectedAt 0 으로 보내 실제 선택에 밀리게 합니다.
+      const payload: MeetingBoardMessage = latest?.boardId === currentId
+        ? latest
+        : {
+            type: 'board:selected',
+            boardId: currentId,
+            title: boardTitleRef.current,
+            from: room.localParticipant.identity,
+            selectedAt: 0,
+          };
+      void room.localParticipant
+        .publishData(encodeMeetingBoardMessage(payload), {
+          reliable: true,
+          topic: MEETING_BOARD_TOPIC,
+          destinationIdentities: [requester],
+        })
+        .catch((err) => console.warn('현재 보드 공유 실패:', err));
     };
 
     const handler = (payload: Uint8Array, participant?: unknown, _kind?: unknown, topic?: string) => {
       if (topic && topic !== MEETING_BOARD_TOPIC) return;
-      const msg = decodeMeetingBoardMessage(payload);
-      if (!msg) return;
-      if (participant && 'identity' in (participant as any) && (participant as any).identity === localParticipant.identity) {
+      const sender = participant && 'identity' in (participant as any)
+        ? String((participant as any).identity)
+        : undefined;
+      // localParticipant가 아직 없으면 identity 비교를 건너뜁니다.
+      if (sender && sender === localParticipant?.identity) return;
+
+      // 현재 보드를 묻는 요청이면 요청자에게 내 보드를 답하고, 그 외에는 보드 선택으로 처리합니다.
+      const request = decodeMeetingBoardRequest(payload);
+      if (request) {
+        replyCurrentBoard(sender ?? request.from);
         return;
       }
+      const msg = decodeMeetingBoardMessage(payload);
+      if (!msg) return;
       applyBoardSelection(msg);
     };
 
-    const participantMetadataHandler = (metadata: string | undefined, participant?: unknown) => {
+    // 주의: 이 이벤트의 첫 인자는 "바뀌기 전" metadata 입니다(livekit-client 규약).
+    // 그 값을 쓰면 새 보드로 바뀐 직후 이전 보드로 되돌아가므로, 참가자의 현재 metadata 를 읽습니다.
+    const participantMetadataHandler = (_prevMetadata: string | undefined, participant?: unknown) => {
       if (!participant || !room) return;
       if (!('identity' in (participant as any))) return;
       const remote = participant as { identity: string; metadata?: string };
-      if (remote.identity === localParticipant.identity) return;
-      const msg = decodeMeetingBoardMetadata(metadata);
+      if (remote.identity === localParticipant?.identity) return;
+      const msg = decodeMeetingBoardMetadata(remote.metadata);
       if (!msg) return;
       applyBoardSelection(msg);
     };
 
+    // metadata 는 마지막으로 보드를 고른 사람만 최신이고 다른 참가자 값은 예전 보드일 수 있습니다.
+    // 예전엔 처음 찾은 참가자의 값을 그대로 써서, 예전 보드를 가진 사람이 먼저 잡히면 그 보드로 갔습니다.
+    // 그래서 모든 참가자의 metadata 중 selectedAt 이 가장 최근인 것을 고릅니다.
     const syncFromExistingParticipants = () => {
+      let newest: MeetingBoardMessage | null = null;
       for (const participant of room.remoteParticipants.values()) {
         const msg = decodeMeetingBoardMetadata(participant.metadata);
-        if (msg) {
-          applyBoardSelection(msg);
-          return;
-        }
+        if (msg && isNewerBoardSelection(msg, newest)) newest = msg;
+      }
+      if (newest) applyBoardSelection(newest);
+    };
+
+    // 예전에는 기존 참가자가 ParticipantConnected 순간에 보드를 알려 줬는데,
+    // 새 참가자가 아직 수신 준비가 안 됐거나 보낼 사람이 선택 기록이 없으면 놓쳤습니다.
+    // 그래서 들어온(재연결한) 쪽이 직접 현재 보드를 요청하고, 받은 답 중 가장 최근 선택을 따릅니다.
+    let fallbackTimer: number | undefined;
+    const requestCurrentBoard = () => {
+      if (room.state !== 'connected') return;
+      const me = room.localParticipant;
+      if (!me.identity) return;
+      // metadata 에 이미 보드 정보가 있으면 응답을 기다리지 않고 먼저 맞춥니다.
+      syncFromExistingParticipants();
+      if (room.remoteParticipants.size === 0) return;
+      const request: MeetingBoardRequest = { type: 'board:request', from: me.identity };
+      void me
+        .publishData(encodeMeetingBoardMessage(request), { reliable: true, topic: MEETING_BOARD_TOPIC })
+        .catch((err) => console.warn('현재 보드 요청 실패:', err));
+      // 답이 보통 1초 안에 오므로, 2초 넘게 아무도 답하지 않으면(모두 보드를 고르기 전 등) 기본 보드로 시작합니다.
+      if (!meetingBoardReadyRef.current) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = window.setTimeout(fallBackToDefaultMeetingBoard, 2000);
       }
     };
 
-    const publishCurrentBoardSelection = () => {
-      const payload = latestBoardSelectionRef.current;
-      if (payload) publishBoardSelection(payload);
-    };
-
-    const onParticipantConnected = (participant: unknown) => {
-      if (!localParticipant) return;
-      if (!participant || !('identity' in (participant as any))) return;
-      const remote = participant as { identity: string };
-      if (remote.identity === localParticipant.identity) return;
-      publishCurrentBoardSelection();
-    };
-
-    syncFromExistingParticipants();
     room.on(RoomEvent.DataReceived, handler);
     room.on(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
-    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    room.on(RoomEvent.Connected, requestCurrentBoard);
+    room.on(RoomEvent.Reconnected, requestCurrentBoard);
+    // 핸들러를 먼저 등록한 뒤 요청해야 응답을 놓치지 않습니다.
+    requestCurrentBoard();
     return () => {
+      window.clearTimeout(fallbackTimer);
       room.off(RoomEvent.DataReceived, handler);
       room.off(RoomEvent.ParticipantMetadataChanged, participantMetadataHandler);
-      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+      room.off(RoomEvent.Connected, requestCurrentBoard);
+      room.off(RoomEvent.Reconnected, requestCurrentBoard);
     };
+    // fallBackToDefaultMeetingBoard 는 ref·setter 만 읽으므로 의존성에 넣어 매 렌더마다 재구독할 필요가 없습니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, meetingMode, localParticipant?.identity]);
 
   // 초기 선택창에서 '새 보드 생성'을 눌렀을 때 실행되는 함수입니다.
   // 새 보드를 데이터베이스에 만들고, 그 보드 ID를 현재 캔버스에 연결합니다.
   const handleCreateNewBoardChoice = async () => {
+    if (!canChangeBoard) {
+      alert('보드 변경 권한이 없습니다.');
+      return;
+    }
     setShowInitChoice(false);
     initChoiceHandledRef.current = true;
+    markMeetingBoardReady();
     try {
       const title = isGroupCanvas ? `${GROUP_BOARD_TITLE_PREFIX}${groupId ?? ''}${Date.now()}` : '새 보드';
-      const { data, error } = await supabase.from('boards').insert([{ title }]).select().limit(1).single();
+      // group_id 를 함께 넣어야 그룹 보드 목록(fetchGroupBoards)에 나타나 늦게 온 참가자 목록에도 보입니다.
+      const insertPayload: { title: string; group_id?: string } = { title };
+      if (isGroupCanvas && groupId) insertPayload.group_id = groupId;
+      let { data, error } = await supabase.from('boards').insert([insertPayload]).select().limit(1).single();
+      // group_id 컬럼이 없는 DB(마이그레이션 전)에서는 제목 접두어만으로 저장합니다.
+      if (error?.message?.includes('group_id') && insertPayload.group_id) {
+        ({ data, error } = await supabase.from('boards').insert([{ title }]).select().limit(1).single());
+      }
       if (error) throw error;
       if (data && data.id) {
         const board = data as Board;
-        const title = board.title ?? '새 보드';
+        // 접두어가 붙은 내부 제목이 그대로 보이지 않게 표시용 제목으로 바꿔 알립니다.
+        const displayTitle = formatBoardTitle(board.title ?? '새 보드');
         setBoards((prev) => [board, ...prev]);
         setBoardId(board.id);
-        setBoardTitle(title);
-        if (localParticipant) {
-          const payload: MeetingBoardMessage = {
-            type: 'board:selected',
-            boardId: board.id,
-            title,
-            from: localParticipant.identity,
-          };
-          latestBoardSelectionRef.current = payload;
-          publishBoardSelection(payload);
-        }
+        setBoardTitle(displayTitle);
+        lastSavedTitleRef.current[board.id] = displayTitle;
+        announceBoardSelection(board.id, displayTitle);
       }
     } catch (e) {
       console.error('failed to create board on choice', e);
@@ -772,25 +1382,27 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   // 초기 선택창에서 '기존 보드 불러오기'를 눌렀을 때 실행되는 함수입니다.
   // 이미 저장된 보드 중 가장 최근 보드를 찾아서 현재 캔버스에 연결합니다.
   const handleUseExistingBoardChoice = async () => {
+    if (!canChangeBoard) {
+      alert('보드 변경 권한이 없습니다.');
+      return;
+    }
     setShowInitChoice(false);
     initChoiceHandledRef.current = true;
+    markMeetingBoardReady();
     try {
-      const { data, error } = await supabase.from('boards').select('*').order('created_at', { ascending: false }).limit(1).maybeSingle();
-      if (!error && data && data.id) {
-        const board = data as Board;
-        const title = board.title ?? '보드';
+      // 그룹 회의에서는 다른 그룹 보드가 섞이지 않도록 이 그룹의 최신 보드만 고릅니다.
+      let board: Board | null = null;
+      if (isGroupCanvas && groupId) {
+        board = (await fetchGroupBoards(groupId))[0] ?? null;
+      } else {
+        const { data, error } = await supabase.from('boards').select('*').order('created_at', { ascending: false }).limit(1).maybeSingle();
+        if (!error && data && data.id) board = data as Board;
+      }
+      if (board) {
+        const displayTitle = formatBoardTitle(board.title ?? '보드');
         setBoardId(board.id);
-        setBoardTitle(title);
-        if (localParticipant) {
-          const payload: MeetingBoardMessage = {
-            type: 'board:selected',
-            boardId: board.id,
-            title,
-            from: localParticipant.identity,
-          };
-          latestBoardSelectionRef.current = payload;
-          publishBoardSelection(payload);
-        }
+        setBoardTitle(displayTitle);
+        announceBoardSelection(board.id, displayTitle);
       }
     } catch (e) {
       console.error('failed to load existing board on choice', e);
@@ -811,18 +1423,49 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     durationMs: number;
   } | null>(null);
 
-  const effectiveStrokeStyle = useMemo(() => {
-    return tool === 'eraser' ? '#ffffff' : color;
-  }, [tool, color]);
+  /** 획 ID별 스타일로 선분/점을 그릴 때 씁니다. */
+  const strokePaintColor = (strokeColor: string, opacity: number, strokeTool: StrokeTool) => {
+    if (strokeTool === 'eraser') return '#000000';
+    return colorWithOpacity(strokeColor, opacity);
+  };
+
+  /** 마커처럼 알파가 1 미만이면 구간 겹침 아티팩트가 납니다. */
+  const isTranslucentPen = (opacity: number, strokeTool: StrokeTool) =>
+    strokeTool !== 'eraser' && opacity < 0.999;
+
+  const strokeDashArray = (dash: 'solid' | 'dashed', strokeSize: number) => {
+    if (dash !== 'dashed') return [] as number[];
+    const a = Math.max(4, strokeSize * 1.8);
+    const b = Math.max(3, strokeSize * 1.2);
+    return [a, b];
+  };
 
   const activeTool = spacePressed ? 'hand' : tool;
   const zoomScale = ZOOM_STEPS[zoomIndex];
   const zoomPercent = Math.round(zoomScale * 100);
   const isShapeTool = (t: Tool): t is ShapeTool =>
-    t === 'rectangle' || t === 'diamond' || t === 'ellipse' || t === 'arrow' || t === 'line';
+    t === 'rectangle' || t === 'diamond' || t === 'triangle' || t === 'pentagon' || t === 'hexagon' || t === 'star' || t === 'ellipse' || t === 'arrow' || t === 'line' || t === 'elbowArrow' || t === 'curveArrow';
 
   // 이 도구들은 펼친 파일 위를 통과해서 캔버스에 그립니다. 손 도구는 파일 스크롤을 남깁니다.
-  const drawThroughFile = isShapeTool(activeTool) || activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'text' || Boolean(pendingStampKind);
+  const drawThroughFile =
+    isShapeTool(activeTool) ||
+    activeTool === 'pen' ||
+    activeTool === 'eraser' ||
+    activeTool === 'text' ||
+    Boolean(pendingStampKind) ||
+    stickyPlaceMode;
+  // 펜/도형/지우개일 때만 기존 텍스트 박스 클릭을 막습니다. 텍스트·선택 도구에서는 나중에 서식 수정이 되게 고를 수 있습니다.
+  const drawThroughText =
+    isShapeTool(activeTool) ||
+    activeTool === 'pen' ||
+    activeTool === 'eraser' ||
+    Boolean(pendingStampKind) ||
+    stickyPlaceMode;
+  // 도형 오버레이: 선택(손) 도구에서만 클릭해 이동합니다.
+  const drawThroughShape = activeTool !== 'hand' || stickyPlaceMode;
+  // 영역 지우기/지우개일 때만 이미지·메모 클릭을 통과시킵니다.
+  // 메모 배치 모드에서는 기존 메모장을 눌러 편집할 수 있어야 해서 통과시키지 않습니다.
+  const drawThroughMedia = activeTool === 'eraser' || areaEraseMode;
 
   useEffect(() => {
     if (!drawThroughFile) return;
@@ -830,40 +1473,85 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     canvasRef.current?.focus({ preventScroll: true });
   }, [drawThroughFile]);
 
+  const setAreaEraseMode = (on: boolean) => {
+    areaEraseModeRef.current = on;
+    setAreaEraseModeState(on);
+    areaEraseDragRef.current = null;
+    areaErasePreviewRef.current = null;
+    setAreaErasePreview(null);
+  };
+
   const pickTool = (next: ExcalidrawTool) => {
     // A(텍스트)는 고르는 즉시 입력칸을 엽니다. 다른 도구로 바꿀 때만 초안을 확정합니다.
     if (next !== 'text') {
-      commitTextDraftRef.current({ keepTool: true });
+      commitTextDraftRef.current();
     }
     if (next !== 'image') {
       void commitUncommittedImage();
       selectPlacedImage(null);
     }
+    // 손 도구가 아니면 배치된 텍스트·도형 선택을 해제합니다.
+    if (next !== 'hand') {
+      selectPlacedText(null);
+      selectPlacedShape(null);
+    }
     if (next !== 'hand' && tool === 'hand') {
       setPanOffset({ x: 0, y: 0 });
     }
+    // 지우개가 아니면 영역 지우기 드래그를 끕니다.
+    if (next !== 'eraser') {
+      setAreaEraseMode(false);
+    }
+    // 다른 보드 도구를 고르면 메모 클릭 배치를 끕니다.
+    stickyPlaceModeRef.current = false;
+    setStickyPlaceModeState(false);
     setTool(next);
     if (next === 'text') {
       startTextInViewRef.current();
     }
   };
 
-  const resetToIdleTool = () => {
-    if (locked) return;
-    setTool(useGropShell ? 'hand' : 'pen');
-  };
-
   useEffect(() => {
-    onToolChange?.(tool);
-  }, [tool, onToolChange]);
+    // onToolChange 참조가 매 렌더 바뀌어도 tool이 같을 때는 부모 active를 덮어쓰지 않습니다.
+    // (하단 파일/메모 등 메타 도구가 즉시 hand로 되돌아가는 문제 방지)
+    if (skipToolChangeNotifyRef.current) {
+      skipToolChangeNotifyRef.current = false;
+      return;
+    }
+    onToolChangeRef.current?.(tool);
+  }, [tool]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // 인라인 텍스트/입력칸에 타이핑 중이면 스페이스·단축키를 가로채지 않습니다.
+      const key = typeof e.key === 'string' ? e.key.toLowerCase() : '';
+      // 한글 IME에서도 Ctrl+Z/Y 가 동작하도록 code 우선
+      const isZ = e.code === 'KeyZ' || key === 'z';
+      const isY = e.code === 'KeyY' || key === 'y';
+      const wantUndo = (e.ctrlKey || e.metaKey) && isZ && !e.shiftKey;
+      const wantRedo = (e.ctrlKey || e.metaKey) && (isY || (isZ && e.shiftKey));
+
+      // 보드 위 텍스트/메모 편집 중일 때만 브라우저 기본 실행취소에 맡깁니다.
+      // (채팅·보드이름 등 다른 input에 포커스가 있어도 캔버스 실행취소는 동작하게 합니다.)
+      const target = e.target;
+      const editingBoardText =
+        target instanceof HTMLTextAreaElement &&
+        target.dataset.boardTextEditor === 'true' &&
+        !target.readOnly;
+
+      if (wantUndo || wantRedo) {
+        if (editingBoardText) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (wantUndo) undoHistoryRef.current();
+        else redoHistoryRef.current();
+        return;
+      }
+
+      // 인라인 텍스트/입력칸에 타이핑 중이면 스페이스·도구 단축키를 가로채지 않습니다.
       if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement ||
-        e.target instanceof HTMLSelectElement
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
       ) {
         return;
       }
@@ -871,24 +1559,30 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         e.preventDefault();
         setSpacePressed(true);
       }
-      // 한글 입력기에서는 e.key 가 z 가 아닐 수 있어 code 로 받습니다.
-      const isZ = e.code === 'KeyZ' || e.key.toLowerCase() === 'z';
-      const isY = e.code === 'KeyY' || e.key.toLowerCase() === 'y';
-      if ((e.ctrlKey || e.metaKey) && isZ && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        undoHistoryRef.current();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && (isY || (isZ && e.shiftKey))) {
-        e.preventDefault();
-        e.stopPropagation();
-        redoHistoryRef.current();
-        return;
-      }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedFileIdRef.current) {
         e.preventDefault();
         removePlacedFileRef.current(selectedFileIdRef.current);
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedStickyIdRef.current) {
+        e.preventDefault();
+        removePlacedStickyRef.current(selectedStickyIdRef.current);
+        return;
+      }
+      // 선택 중인 텍스트·도형·이미지도 Del/Backspace 로 지웁니다.
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTextIdRef.current) {
+        e.preventDefault();
+        removePlacedTextRef.current(selectedTextIdRef.current);
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedShapeIdRef.current) {
+        e.preventDefault();
+        removePlacedShapeRef.current(selectedShapeIdRef.current);
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedImageIdRef.current) {
+        e.preventDefault();
+        removePlacedImageRef.current(selectedImageIdRef.current);
         return;
       }
       const mapped = toolShortcutMap[e.key];
@@ -959,6 +1653,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     revealExpandedFilesOnCanvas();
+    // 픽셀 크기가 바뀌면 이전 ImageData 히스토리는 쓸 수 없어 현재 화면만 기준으로 다시 둡니다.
+    // (도형 직후 툴바 높이 변화로 리사이즈가 나면 실행취소가 통째로 사라지던 원인)
     initHistory();
   };
 
@@ -966,15 +1662,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx || canvas.width === 0 || canvas.height === 0) return null;
-    return ctx.getImageData(0, 0, canvas.width, canvas.height);
-  };
-
-  const applyCanvasState = (data: ImageData) => {
-    const canvas = canvasRef.current;
-    const ctx = ctxRef.current ?? ensureContext();
-    if (!canvas || !ctx) return;
-    ctx.putImageData(data, 0, 0);
-    revealExpandedFilesOnCanvas();
+    try {
+      return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch {
+      // 오염된 캔버스·메모리 부족 등에서는 히스토리를 건너뜁니다.
+      return null;
+    }
   };
 
   /** 펼친 파일 자리의 흰 배경만 지워, 파일 내용이 비치고 그 위에 획이 올라가게 합니다. */
@@ -1011,9 +1704,18 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (placedFiles.some((file) => file.expanded)) revealExpandedFilesOnCanvas();
   }, [placedFiles]);
 
+  // 실행취소 버튼 활성 여부는 "내가 되돌릴 수 있는 동작"이 있는지로 정합니다.
   const syncHistoryUi = () => {
-    setCanUndo(historyIndexRef.current > 0);
-    setCanRedo(historyIndexRef.current >= 0 && historyIndexRef.current < historyRef.current.length - 1);
+    setCanUndo(myUndoStackRef.current.length > 0);
+    setCanRedo(myRedoStackRef.current.length > 0);
+  };
+
+  /** 새로 한 내 동작을 되돌리기 스택에 올립니다. 새 동작이 생기면 다시 실행 목록은 비웁니다. */
+  const pushMyUndoTarget = (target: HistoryTarget) => {
+    myUndoStackRef.current.push(target);
+    if (myUndoStackRef.current.length > MAX_HISTORY) myUndoStackRef.current.shift();
+    myRedoStackRef.current = [];
+    syncHistoryUi();
   };
 
   const resetHistory = () => {
@@ -1033,9 +1735,24 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     syncHistoryUi();
   };
 
+  /** 첫 획 전에 빈 기준 스냅샷이 없으면 Ctrl+Z 가 한 번도 안 먹습니다. */
+  const ensureHistoryBaseline = () => {
+    if (historyRef.current.length === 0 || historyIndexRef.current < 0) {
+      initHistory();
+    }
+  };
+
   const commitHistory = () => {
     const snap = captureCanvasState();
     if (!snap) return;
+
+    // 기준 스냅샷이 없으면 지금(이미 변경된) 상태만 한 칸 두고, 다음 동작부터 취소 가능하게 합니다.
+    if (historyRef.current.length === 0 || historyIndexRef.current < 0) {
+      historyRef.current = [snap];
+      historyIndexRef.current = 0;
+      syncHistoryUi();
+      return;
+    }
 
     const idx = historyIndexRef.current;
     if (idx >= 0) {
@@ -1051,20 +1768,51 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     syncHistoryUi();
   };
 
+  /**
+   * 실행취소/다시 실행을 board_events 에 history.undo / history.redo 로 남깁니다.
+   * 화면 픽셀만 되돌리면 다른 참가자·새로고침에 반영되지 않으므로,
+   * 이벤트로 저장한 뒤 되돌려진 동작을 뺀 이벤트 로그로 보드를 다시 그립니다.
+   * 다른 참가자는 Realtime 으로 이 이벤트를 받아 같은 방식으로 다시 그립니다.
+   */
+  const toggleMyHistory = async (kind: 'undo' | 'redo') => {
+    if (!boardId || historyBusyRef.current || isReplayingRef.current) return;
+    historyBusyRef.current = true;
+    try {
+      // 방금 그린 획·도형 저장이 끝나야 그 동작이 스택 맨 위에 올라옵니다.
+      await strokeWriteChainRef.current;
+      await Promise.all([...pendingInsertsRef.current]);
+
+      const from = kind === 'undo' ? myUndoStackRef : myRedoStackRef;
+      const to = kind === 'undo' ? myRedoStackRef : myUndoStackRef;
+      const target = from.current.pop();
+      if (!target) return;
+
+      const { error } = await supabase.from('board_events').insert({
+        board_id: boardId,
+        actor_id: actorIdRef.current,
+        type: kind === 'undo' ? 'history.undo' : 'history.redo',
+        payload: { target } satisfies HistoryTogglePayload,
+      });
+      if (error) {
+        // 저장 실패 시 스택을 원래대로 돌려 다음 시도에 같은 동작을 다시 대상으로 삼습니다.
+        from.current.push(target);
+        reportInsertError(error.message);
+        return;
+      }
+      to.current.push(target);
+      await loadAndRenderBoard(boardId);
+    } finally {
+      historyBusyRef.current = false;
+      syncHistoryUi();
+    }
+  };
+
   const undoHistory = () => {
-    if (historyIndexRef.current <= 0) return;
-    historyIndexRef.current -= 1;
-    const state = historyRef.current[historyIndexRef.current];
-    if (state) applyCanvasState(state);
-    syncHistoryUi();
+    void toggleMyHistory('undo');
   };
 
   const redoHistory = () => {
-    if (historyIndexRef.current >= historyRef.current.length - 1) return;
-    historyIndexRef.current += 1;
-    const state = historyRef.current[historyIndexRef.current];
-    if (state) applyCanvasState(state);
-    syncHistoryUi();
+    void toggleMyHistory('redo');
   };
   undoHistoryRef.current = undoHistory;
   redoHistoryRef.current = redoHistory;
@@ -1199,9 +1947,23 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     const deduped = dedupeBoardsById(list);
-    setBoards(deduped);
-    const preferredId = boardId || initialBoardId;
-    const selected = deduped.find((b) => b.id === preferredId) ?? deduped[0];
+    // 조회하는 동안 보드가 바뀌었을 수 있어, 클로저의 boardId 대신 ref 로 지금 보드를 읽습니다.
+    const currentId = boardIdRef.current || initialBoardId;
+    // 지금 보고 있는 보드가 그룹 목록에 없더라도(다른 참가자가 막 만든 보드 등) 선택칸에서 사라지지 않게 남깁니다.
+    setBoards((prev) => {
+      const keep = prev.find((b) => b.id === currentId && !deduped.some((d) => d.id === b.id));
+      return keep ? [keep, ...deduped] : deduped;
+    });
+    const selected = deduped.find((b) => b.id === currentId) ?? deduped[0];
+    defaultMeetingBoardRef.current = selected ?? null;
+    // 회의방에서는 목록만 갱신하고 선택은 하지 않는 경우가 있습니다.
+    // - 다른 참가자에게서 이미 보드를 받았을 때 (늦게 들어온 사람이 그룹 기본 보드로 돌아가던 원인)
+    // - 아직 어떤 보드를 띄울지 모를 때 (기본 보드가 먼저 그려졌다가 현재 보드로 바뀌며 깜빡이던 원인)
+    //   이때는 응답이 끝내 없으면 fallBackToDefaultMeetingBoard 가 위의 기본 보드를 띄웁니다.
+    if (meetingMode && (latestBoardSelectionRef.current?.boardId || !meetingBoardReadyRef.current)) {
+      setIsLoadingBoards(false);
+      return;
+    }
     if (selected) {
       const title = formatBoardTitle(selected.title);
       setBoardId(selected.id);
@@ -1248,6 +2010,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   }, [groupId, groupName]);
 
   const createBoard = async () => {
+    if (!canChangeBoard) {
+      alert('보드 변경 권한이 없습니다.');
+      return;
+    }
     const { data: userData } = await supabase.auth.getUser();
     if (!userData.user) {
       alert('보드를 만들려면 로그인이 필요합니다.\n메인에서 로그인한 뒤 캔버스로 다시 들어와 주세요.');
@@ -1277,9 +2043,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     setBoardId(b.id);
     setBoardTitle(savedTitle);
     lastSavedTitleRef.current[b.id] = savedTitle;
+    announceBoardSelection(b.id, savedTitle);
+  };
+
+  /** 보드 선택칸 변경 — 권한을 확인하고, 회의 중이면 다른 참가자에게도 알립니다. */
+  const selectBoard = (id: string) => {
+    if (!canChangeBoard) {
+      alert('보드 변경 권한이 없습니다.');
+      return;
+    }
+    setBoardId(id);
+    const picked = boards.find((b) => b.id === id);
+    announceBoardSelection(id, picked ? formatBoardTitle(picked.title) : boardTitle);
   };
 
   const saveBoardTitle = async () => {
+    if (!canChangeBoard) return;
     if (!boardId) return;
     const title = boardTitle.trim() || '새 보드';
     if (lastSavedTitleRef.current[boardId] === title) return;
@@ -1298,7 +2077,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     else void loadBoards();
   };
 
-  const applyStrokeSegment = (p1: Point, p2: Point, strokeTool: StrokeTool, strokeColor: string, strokeSize: number) => {
+  const applyStrokeSegment = (
+    p1: Point,
+    p2: Point,
+    strokeTool: StrokeTool,
+    strokeColor: string,
+    strokeSize: number,
+    opacity = 1,
+    dash: 'solid' | 'dashed' = 'solid',
+  ) => {
     const ctx = ctxRef.current ?? ensureContext();
     if (!ctx) return;
     ctx.save();
@@ -1306,8 +2093,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     ctx.lineJoin = 'round';
     // 지우개는 흰 칠 대신 픽셀을 지워, 펼친 파일이 다시 보이게 합니다.
     ctx.globalCompositeOperation = strokeTool === 'eraser' ? 'destination-out' : 'source-over';
-    ctx.strokeStyle = strokeTool === 'eraser' ? '#000000' : strokeColor;
+    ctx.strokeStyle = strokePaintColor(strokeColor, opacity, strokeTool);
     ctx.lineWidth = strokeSize;
+    ctx.setLineDash(strokeTool === 'eraser' ? [] : strokeDashArray(dash, strokeSize));
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y);
     ctx.lineTo(p2.x, p2.y);
@@ -1315,16 +2103,67 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     ctx.restore();
   };
 
-  const applyStrokeDot = (p: Point, strokeTool: StrokeTool, strokeColor: string, strokeSize: number) => {
+  const applyStrokeDot = (
+    p: Point,
+    strokeTool: StrokeTool,
+    strokeColor: string,
+    strokeSize: number,
+    opacity = 1,
+  ) => {
     const ctx = ctxRef.current ?? ensureContext();
     if (!ctx) return;
     ctx.save();
     ctx.globalCompositeOperation = strokeTool === 'eraser' ? 'destination-out' : 'source-over';
-    ctx.fillStyle = strokeTool === 'eraser' ? '#000000' : strokeColor;
+    ctx.fillStyle = strokePaintColor(strokeColor, opacity, strokeTool);
     ctx.beginPath();
     ctx.arc(p.x, p.y, Math.max(strokeSize / 2, 1), 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+  };
+
+  /**
+   * 점을 하나의 path로 그려 반투명 획의 round-cap 겹침(동그란 진한 점)을 없앱니다.
+   * 점이 하나면 점으로 찍습니다.
+   */
+  const applyStrokePath = (
+    points: Point[],
+    strokeTool: StrokeTool,
+    strokeColor: string,
+    strokeSize: number,
+    opacity = 1,
+    dash: 'solid' | 'dashed' = 'solid',
+  ) => {
+    if (points.length === 0) return;
+    if (points.length === 1) {
+      applyStrokeDot(points[0], strokeTool, strokeColor, strokeSize, opacity);
+      return;
+    }
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx) return;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalCompositeOperation = strokeTool === 'eraser' ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = strokePaintColor(strokeColor, opacity, strokeTool);
+    ctx.lineWidth = strokeSize;
+    ctx.setLineDash(strokeTool === 'eraser' ? [] : strokeDashArray(dash, strokeSize));
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  /** 버퍼에 모인 반투명 획을 한 번에 캔버스에 올립니다. */
+  const finalizeTranslucentStroke = (strokeId: string) => {
+    const style = strokeStyleByIdRef.current.get(strokeId);
+    const points = translucentStrokePointsRef.current.get(strokeId);
+    translucentStrokePointsRef.current.delete(strokeId);
+    if (!style || !points || points.length === 0) return;
+    if (!isTranslucentPen(style.opacity, style.tool)) return;
+    applyStrokePath(points, style.tool, style.color, style.size, style.opacity, style.dash);
   };
 
   const applyStrokeAppendPoints = (strokeId: string, points: Point[]) => {
@@ -1332,11 +2171,24 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (!last) return false;
     const style = strokeStyleByIdRef.current.get(strokeId);
     if (!style) return false;
+
+    // 반투명: 선분마다 그리지 않고 점만 모읍니다. (stroke.end 때 한 경로로 그림)
+    if (isTranslucentPen(style.opacity, style.tool)) {
+      const buf = translucentStrokePointsRef.current.get(strokeId) ?? [{ x: last.x, y: last.y }];
+      for (const next of points) {
+        buf.push({ x: next.x, y: next.y });
+        last.x = next.x;
+        last.y = next.y;
+      }
+      translucentStrokePointsRef.current.set(strokeId, buf);
+      return true;
+    }
+
     for (const next of points) {
       if (last.x === next.x && last.y === next.y) {
-        applyStrokeDot(next, style.tool, style.color, style.size);
+        applyStrokeDot(next, style.tool, style.color, style.size, style.opacity);
       } else {
-        applyStrokeSegment(last, next, style.tool, style.color, style.size);
+        applyStrokeSegment(last, next, style.tool, style.color, style.size, style.opacity, style.dash);
       }
       last.x = next.x;
       last.y = next.y;
@@ -1354,6 +2206,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
     if (remotePendingEndsRef.current.has(strokeId)) {
       remotePendingEndsRef.current.delete(strokeId);
+      finalizeTranslucentStroke(strokeId);
       remoteLastPointByStrokeRef.current.delete(strokeId);
       strokeStyleByIdRef.current.delete(strokeId);
     }
@@ -1373,9 +2226,114 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     replacePlacedTexts([]);
     selectPlacedText(null);
     placedTextDragRef.current = null;
+    replacePlacedShapes([]);
+    selectPlacedShape(null);
+    placedShapeDragRef.current = null;
     replacePlacedFiles([]);
     selectPlacedFile(null);
     placedFileDragRef.current = null;
+    replacePlacedStickies([]);
+    selectPlacedSticky(null);
+    placedStickyDragRef.current = null;
+    if (stickyTextTimerRef.current) {
+      window.clearTimeout(stickyTextTimerRef.current);
+      stickyTextTimerRef.current = null;
+    }
+  };
+
+  /** 캔버스 픽셀만 네모 영역으로 지웁니다 (획·도형·텍스트 래스터). */
+  const applyRegionEraseLocal = (rect: Rect) => {
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!ctx || rect.width <= 0 || rect.height <= 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = '#000';
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    ctx.restore();
+  };
+
+  /**
+   * 드래그한 네모와 겹치는 텍스트·도형·이미지·파일·메모를 제거하고,
+   * 그 안의 그리기 픽셀도 destination-out 으로 지운 뒤 region.erase 이벤트로 동기화합니다.
+   */
+  const eraseArea = (rect: Rect) => {
+    if (rect.width < 3 || rect.height < 3) return;
+
+    const hitTexts = placedTextsRef.current.filter((t) =>
+      rectsOverlap(rect, { x: t.x, y: t.y, width: t.width, height: t.height }),
+    );
+    const hitShapes = placedShapesRef.current.filter((s) => rectsOverlap(rect, shapeBounds(s.from, s.to)));
+    const hitImages = placedImagesRef.current.filter((im) =>
+      rectsOverlap(rect, { x: im.x, y: im.y, width: im.width, height: im.height }),
+    );
+    const hitFiles = placedFilesRef.current.filter((f) =>
+      rectsOverlap(rect, { x: f.x, y: f.y, width: f.width, height: f.height }),
+    );
+    const hitStickies = placedStickiesRef.current.filter((n) =>
+      rectsOverlap(rect, { x: n.x, y: n.y, width: n.width, height: n.height }),
+    );
+
+    // 객체 오버레이를 먼저 걷고, 픽셀 구멍을 뚫은 뒤 이벤트만 쌓습니다 (중간 reload 없음).
+    if (hitTexts.length) {
+      const removeIds = new Set(hitTexts.map((t) => t.id));
+      replacePlacedTexts(placedTextsRef.current.filter((t) => !removeIds.has(t.id)));
+      if (selectedTextIdRef.current && removeIds.has(selectedTextIdRef.current)) selectPlacedText(null);
+    }
+    if (hitShapes.length) {
+      const removeIds = new Set(hitShapes.map((s) => s.id));
+      replacePlacedShapes(placedShapesRef.current.filter((s) => !removeIds.has(s.id)));
+      if (selectedShapeIdRef.current && removeIds.has(selectedShapeIdRef.current)) selectPlacedShape(null);
+    }
+    if (hitImages.length) {
+      const removeIds = new Set(hitImages.map((im) => im.id));
+      replacePlacedImages(placedImagesRef.current.filter((im) => !removeIds.has(im.id)));
+      if (selectedImageIdRef.current && removeIds.has(selectedImageIdRef.current)) selectPlacedImage(null);
+    }
+    if (hitFiles.length) {
+      const removeIds = new Set(hitFiles.map((f) => f.id));
+      replacePlacedFiles(placedFilesRef.current.filter((f) => !removeIds.has(f.id)));
+      if (selectedFileIdRef.current && removeIds.has(selectedFileIdRef.current)) selectPlacedFile(null);
+    }
+    if (hitStickies.length) {
+      const removeIds = new Set(hitStickies.map((n) => n.id));
+      replacePlacedStickies(placedStickiesRef.current.filter((n) => !removeIds.has(n.id)));
+      if (selectedStickyIdRef.current && removeIds.has(selectedStickyIdRef.current)) selectPlacedSticky(null);
+    }
+
+    applyRegionEraseLocal(rect);
+
+    void (async () => {
+      // 객체 삭제 여러 건 + region.erase 를 Ctrl+Z 한 번에 함께 되돌리도록 묶습니다.
+      undoGroupRef.current = [];
+      for (const t of hitTexts) {
+        await insertEvent('text.remove', { id: t.id } satisfies TextRemovePayload);
+      }
+      for (const s of hitShapes) {
+        await insertEvent('shape.remove', { id: s.id } satisfies ShapeRemovePayload);
+      }
+      for (const im of hitImages) {
+        if (!im.committed) continue;
+        await insertEvent('image.remove', { id: im.id } satisfies ImageRemovePayload);
+      }
+      for (const f of hitFiles) {
+        await insertEvent('file.remove', { id: f.id } satisfies FileRemovePayload);
+      }
+      for (const n of hitStickies) {
+        await insertEvent('sticky.remove', { id: n.id } satisfies StickyRemovePayload);
+      }
+      await insertEvent('region.erase', {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      } satisfies RegionErasePayload);
+      const groupIds = undoGroupRef.current ?? [];
+      undoGroupRef.current = null;
+      if (groupIds.length > 0) pushMyUndoTarget({ eventIds: groupIds });
+      commitHistory();
+      // 객체 제거·영역 구멍을 이벤트 순서로 다시 맞춰 다른 참가자와 동일하게 보이게 합니다.
+      if (boardId) await loadAndRenderBoard(boardId);
+    })();
   };
 
   const loadCachedImage = (dataUrl: string): Promise<HTMLImageElement> => {
@@ -1409,18 +2367,53 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const insertEvent = async (type: EventType, payload: unknown) => {
     if (!boardId) return;
-    const { error } = await supabase.from('board_events').insert({
-      board_id: boardId,
-      actor_id: actorIdRef.current,
-      type,
-      payload,
-    });
-    if (error) reportInsertError(error.message);
+    const task = (async () => {
+      // 되돌리기 대상으로 삼으려면 저장된 행 id 가 필요해 insert 후 id 를 받아옵니다.
+      const { data, error } = await supabase
+        .from('board_events')
+        .insert({
+          board_id: boardId,
+          actor_id: actorIdRef.current,
+          type,
+          payload,
+        })
+        .select('id')
+        .single();
+      if (error) {
+        reportInsertError(error.message);
+        return;
+      }
+      const id = (data as { id?: string } | null)?.id;
+      if (!id || !isHistoryCommitEvent(type)) return;
+
+      // 영역 지우기처럼 묶음 동작 중이면 모았다가 한 번에 올립니다.
+      if (undoGroupRef.current) {
+        undoGroupRef.current.push(id);
+        return;
+      }
+      if (type === 'stroke.end') {
+        const strokeId = (payload as StrokeEndPayload | null)?.strokeId;
+        if (strokeId) pushMyUndoTarget({ strokeId });
+        return;
+      }
+      pushMyUndoTarget({ eventIds: [id] });
+    })();
+
+    pendingInsertsRef.current.add(task);
+    try {
+      await task;
+    } finally {
+      pendingInsertsRef.current.delete(task);
+    }
   };
 
   const selectPlacedImage = (id: string | null) => {
     selectedImageIdRef.current = id;
     setSelectedImageId(id);
+    if (id && selectedStickyIdRef.current) {
+      selectedStickyIdRef.current = null;
+      setSelectedStickyId(null);
+    }
   };
 
   const replacePlacedImages = (next: PlacedImage[]) => {
@@ -1474,9 +2467,30 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     } satisfies ImageTransformPayload);
   };
 
+  /** Del 키 등으로 선택한 이미지를 지웁니다. */
+  const removePlacedImage = (id: string) => {
+    const img = placedImagesRef.current.find((x) => x.id === id);
+    if (!img) return;
+    replacePlacedImages(placedImagesRef.current.filter((x) => x.id !== id));
+    if (selectedImageIdRef.current === id) selectPlacedImage(null);
+    // 아직 보드에 안 올린 미리보기는 로컬만 지웁니다.
+    if (!img.committed) {
+      commitHistory();
+      return;
+    }
+    void insertEvent('image.remove', { id } satisfies ImageRemovePayload).then(() => {
+      if (boardId) return loadAndRenderBoard(boardId);
+    });
+  };
+  removePlacedImageRef.current = removePlacedImage;
+
   const selectPlacedFile = (id: string | null) => {
     selectedFileIdRef.current = id;
     setSelectedFileId(id);
+    if (id && selectedStickyIdRef.current) {
+      selectedStickyIdRef.current = null;
+      setSelectedStickyId(null);
+    }
   };
 
   const replacePlacedFiles = (next: PlacedFile[]) => {
@@ -1538,8 +2552,87 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   removePlacedFileRef.current = removePlacedFile;
 
   const selectPlacedText = (id: string | null) => {
+    const prev = selectedTextIdRef.current;
     selectedTextIdRef.current = id;
     setSelectedTextId(id);
+    if (id && selectedStickyIdRef.current) {
+      selectedStickyIdRef.current = null;
+      setSelectedStickyId(null);
+    }
+    // 도형 선택은 직접 해제 (상호 호출 순환 방지)
+    if (id && selectedShapeIdRef.current) {
+      selectedShapeIdRef.current = null;
+      setSelectedShapeId(null);
+    }
+    // 선택/해제가 바뀔 때만 하단에 서식 메뉴를 보여 줍니다.
+    if (Boolean(prev) !== Boolean(id)) {
+      onTextSelectedChangeRef.current?.(Boolean(id));
+    }
+  };
+
+  const selectPlacedShape = (id: string | null) => {
+    selectedShapeIdRef.current = id;
+    setSelectedShapeId(id);
+    if (id) {
+      // 텍스트 선택은 직접 해제 (상호 호출 순환 방지)
+      if (selectedTextIdRef.current) {
+        selectedTextIdRef.current = null;
+        setSelectedTextId(null);
+        onTextSelectedChangeRef.current?.(false);
+      }
+      selectPlacedImage(null);
+      selectPlacedFile(null);
+    }
+  };
+
+  const replacePlacedShapes = (next: PlacedShape[]) => {
+    placedShapesRef.current = next;
+    setPlacedShapes(next);
+  };
+
+  const upsertPlacedShape = (item: PlacedShape) => {
+    const next = placedShapesRef.current.filter((x) => x.id !== item.id);
+    next.push(item);
+    replacePlacedShapes(next);
+  };
+
+  const persistShapeTransform = (item: PlacedShape) => {
+    return insertEvent('shape.transform', {
+      id: item.id,
+      from: item.from,
+      to: item.to,
+    } satisfies ShapeTransformPayload);
+  };
+
+  /** 도형 이동 후 보드를 다시 그려 캔버스 픽셀과 맞춥니다. */
+  const persistAndReloadShape = (item: PlacedShape) => {
+    void persistShapeTransform(item).then(() => {
+      if (boardId) return loadAndRenderBoard(boardId);
+    }).then(() => selectPlacedShape(item.id));
+  };
+
+  /** Del 키 등으로 선택한 도형을 지웁니다. */
+  const removePlacedShape = (id: string) => {
+    const exists = placedShapesRef.current.some((x) => x.id === id);
+    if (!exists) return;
+    replacePlacedShapes(placedShapesRef.current.filter((x) => x.id !== id));
+    if (selectedShapeIdRef.current === id) selectPlacedShape(null);
+    void insertEvent('shape.remove', { id } satisfies ShapeRemovePayload).then(() => {
+      if (boardId) return loadAndRenderBoard(boardId);
+    });
+  };
+  removePlacedShapeRef.current = removePlacedShape;
+
+  /** 배치된 텍스트를 고를 때 툴바(크기·정렬·서식) 상태를 맞춥니다. */
+  const syncToolbarFromPlacedText = (item: PlacedText) => {
+    setTextSize(item.fontSize);
+    textAlignRef.current = item.align;
+    textBoldRef.current = item.bold;
+    textStrikeRef.current = item.strike;
+    textUnderlineRef.current = item.underline;
+    onTextFontSizeChangeRef.current?.(item.fontSize);
+    onTextAlignChangeRef.current?.(item.align);
+    onTextDecorChangeRef.current?.({ bold: item.bold, strike: item.strike, underline: item.underline });
   };
 
   const replacePlacedTexts = (next: PlacedText[]) => {
@@ -1561,6 +2654,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       width: item.width,
       height: item.height,
       fontSize: item.fontSize,
+      align: item.align,
+      bold: item.bold,
+      strike: item.strike,
+      underline: item.underline,
     } satisfies TextTransformPayload);
   };
 
@@ -1570,9 +2667,209 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }).then(() => selectPlacedText(item.id));
   };
 
+  /** Del 키 등으로 선택한 텍스트를 지웁니다. */
+  const removePlacedText = (id: string) => {
+    const exists = placedTextsRef.current.some((x) => x.id === id);
+    if (!exists) return;
+    replacePlacedTexts(placedTextsRef.current.filter((x) => x.id !== id));
+    if (selectedTextIdRef.current === id) selectPlacedText(null);
+    void insertEvent('text.remove', { id } satisfies TextRemovePayload).then(() => {
+      if (boardId) return loadAndRenderBoard(boardId);
+    });
+  };
+  removePlacedTextRef.current = removePlacedText;
+
+  const selectPlacedSticky = (id: string | null) => {
+    selectedStickyIdRef.current = id;
+    setSelectedStickyId(id);
+  };
+
+  const replacePlacedStickies = (next: PlacedSticky[]) => {
+    placedStickiesRef.current = next;
+    setPlacedStickies(next);
+  };
+
+  const upsertPlacedSticky = (item: PlacedSticky) => {
+    const next = placedStickiesRef.current.filter((x) => x.id !== item.id);
+    next.push(item);
+    replacePlacedStickies(next);
+  };
+
+  const persistStickyTransform = (item: PlacedSticky) => {
+    return insertEvent('sticky.transform', {
+      id: item.id,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+    } satisfies StickyTransformPayload);
+  };
+
+  const persistStickyUpdate = (item: PlacedSticky) => {
+    return insertEvent('sticky.update', {
+      id: item.id,
+      text: item.text,
+      drawing: item.drawing,
+      color: item.color,
+    } satisfies StickyUpdatePayload);
+  };
+
+  /** 펜 색·굵기·불투명도·점선을 하단 서브메뉴에서 바꿀 때 호출합니다. */
+  const setStrokeStyle = (style: {
+    color?: string;
+    size?: number;
+    opacity?: number;
+    dash?: 'solid' | 'dashed';
+  }) => {
+    if (typeof style.color === 'string' && style.color.trim()) setColor(style.color);
+    if (typeof style.size === 'number' && Number.isFinite(style.size)) {
+      setSize(Math.min(100, Math.max(1, Math.round(style.size))));
+    }
+    if (typeof style.opacity === 'number' && Number.isFinite(style.opacity)) {
+      setPenOpacity(Math.min(1, Math.max(0, style.opacity)));
+    }
+    if (style.dash === 'solid' || style.dash === 'dashed') setPenDash(style.dash);
+  };
+
+  /** 캔버스 픽셀 색을 한 번 찍어 콜백으로 넘깁니다. */
+  const startEyedropper = (onPick: (color: string) => void) => {
+    eyedropperCallbackRef.current = onPick;
+    setEyedropperActive(true);
+  };
+
+  /** 메모장 종이색 — 선택 중이면 즉시 바꾸고, 이후 addStickyNote에도 씁니다. */
+  const setStickyPaperColor = (nextColor: string) => {
+    const colorValue = nextColor.trim() || STICKY_PAPER;
+    stickyPaperColorRef.current = colorValue;
+    const selectedId = selectedStickyIdRef.current;
+    if (!selectedId) return;
+    const prev = placedStickiesRef.current.find((x) => x.id === selectedId);
+    if (!prev || prev.color === colorValue) return;
+    const next = { ...prev, color: colorValue };
+    upsertPlacedSticky(next);
+    void persistStickyUpdate(next);
+  };
+
+  // 타이핑마다 이벤트를 넣지 않고, 잠깐 멈춘 뒤에만 저장합니다.
+  const scheduleStickyTextPersist = (item: PlacedSticky) => {
+    if (stickyTextTimerRef.current) window.clearTimeout(stickyTextTimerRef.current);
+    stickyTextTimerRef.current = window.setTimeout(() => {
+      const latest = placedStickiesRef.current.find((x) => x.id === item.id);
+      if (latest) void persistStickyUpdate(latest);
+    }, 400);
+  };
+
+  const removePlacedSticky = (id: string) => {
+    const exists = placedStickiesRef.current.some((x) => x.id === id);
+    if (!exists) return;
+    replacePlacedStickies(placedStickiesRef.current.filter((x) => x.id !== id));
+    if (selectedStickyIdRef.current === id) selectPlacedSticky(null);
+    void insertEvent('sticky.remove', { id } satisfies StickyRemovePayload);
+  };
+  removePlacedStickyRef.current = removePlacedSticky;
+
+  /** 메모장 클릭 배치 모드를 끕니다. */
+  const cancelStickyPlace = () => {
+    stickyPlaceModeRef.current = false;
+    setStickyPlaceModeState(false);
+  };
+
+  /**
+   * 메모장 도구: 바로 붙이지 않고, 화면을 한 번 더 클릭하면 그 위치에 붙입니다.
+   * 이미지/파일 도구가 남아 있으면 다음 클릭에 파일창이 뜨므로 hand로 되돌립니다.
+   * (하단 UI의 stamp 선택은 부모가 유지 — onToolChange 알림은 건너뜁니다.)
+   */
+  const addStickyNote = () => {
+    if (tool === 'image' || tool === 'file') {
+      skipToolChangeNotifyRef.current = true;
+      setTool('hand');
+    }
+    stickyPlaceModeRef.current = true;
+    setStickyPlaceModeState(true);
+  };
+
+  /** 클릭한 보드 좌표에 메모장을 붙입니다. 도구가 바뀌기 전까지 연속 배치를 위해 모드는 유지합니다. */
+  const placeStickyAt = (p: Point) => {
+    setShowLibrary(false);
+    setPendingStampKind(null);
+    pendingStampRef.current = null;
+    selectPlacedImage(null);
+    selectPlacedText(null);
+    selectPlacedFile(null);
+    const note: PlacedSticky = {
+      id: crypto.randomUUID(),
+      x: Math.max(0, p.x - DEFAULT_STICKY_W / 2),
+      y: Math.max(0, p.y - DEFAULT_STICKY_H / 2),
+      width: DEFAULT_STICKY_W,
+      height: DEFAULT_STICKY_H,
+      color: stickyPaperColorRef.current || STICKY_PAPER,
+      text: '',
+      drawing: '',
+    };
+    upsertPlacedSticky(note);
+    selectPlacedSticky(note.id);
+    setStickyEditMode('text');
+    // 메모 도구가 선택된 동안은 배치 모드를 유지해, 색을 바꾼 뒤에도 빈 화면 클릭으로 계속 붙입니다.
+    // (다른 도구를 고르면 cancelStickyPlace / pickTool 에서 꺼집니다.)
+    stickyPlaceModeRef.current = true;
+    setStickyPlaceModeState(true);
+    void insertEvent('sticky.add', {
+      id: note.id,
+      x: note.x,
+      y: note.y,
+      width: note.width,
+      height: note.height,
+      color: note.color,
+      text: note.text,
+      drawing: note.drawing,
+    } satisfies StickyAddPayload);
+    commitHistory();
+  };
+
   const enqueueStrokeWrite = (type: EventType, payload: unknown): Promise<void> => {
-    const task = strokeWriteChainRef.current.then(() => insertEvent(type, payload));
+    let nextPayload = payload;
+
+    // append마다 liveSeq를 붙여 LiveKit↔Realtime 중복 적용을 막습니다.
+    if (type === 'stroke.begin') {
+      const p = payload as StrokeBeginPayload;
+      strokeLiveSeqByIdRef.current.set(p.strokeId, 0);
+    } else if (type === 'stroke.append') {
+      const p = payload as StrokeAppendPayload;
+      const seq = (strokeLiveSeqByIdRef.current.get(p.strokeId) ?? 0) + 1;
+      strokeLiveSeqByIdRef.current.set(p.strokeId, seq);
+      nextPayload = { ...p, liveSeq: seq } satisfies StrokeAppendPayload;
+    } else if (type === 'stroke.end') {
+      const p = payload as StrokeEndPayload;
+      strokeLiveSeqByIdRef.current.delete(p.strokeId);
+    }
+
+    // 회의방: LiveKit으로 먼저 뿌려 동시 필기 체감을 DB RTT에서 분리합니다.
+    const isStrokeEvent =
+      type === 'stroke.begin' || type === 'stroke.append' || type === 'stroke.end';
+    const canLivePublish = Boolean(meetingMode && localParticipant && boardId && isStrokeEvent);
+
+    if (meetingMode && localParticipant && boardId && isStrokeEvent) {
+      const dedupeKey = strokeLiveDedupeKey(type, nextPayload);
+      if (dedupeKey) appliedLiveStrokeKeysRef.current.add(dedupeKey);
+
+      const msg: MeetingStrokeMessage = {
+        type,
+        boardId,
+        actorId: actorIdRef.current,
+        payload: nextPayload,
+      };
+      void localParticipant.publishData(encodeMeetingStrokeMessage(msg), {
+        // append는 손실보다 지연이 치명적이라 unreliable, begin/end는 신뢰 전송
+        reliable: type !== 'stroke.append',
+        topic: MEETING_BOARD_STROKE_TOPIC,
+      });
+    }
+
+    // DB insert는 타임랩스·늦게 입장한 사람용으로 백그라운드 유지
+    const task = strokeWriteChainRef.current.then(() => insertEvent(type, nextPayload));
     strokeWriteChainRef.current = task.catch(() => {});
+    // 회의 라이브 경로는 DB 완료를 기다리지 않습니다.
+    if (canLivePublish) return Promise.resolve();
     return task;
   };
 
@@ -1653,7 +2950,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const primeEventStyle = (ev: BoardEventRow) => {
     if (ev.type !== 'stroke.begin') return;
     const p = ev.payload as StrokeBeginPayload;
-    strokeStyleByIdRef.current.set(p.strokeId, { tool: p.tool, color: p.color, size: p.size });
+    strokeStyleByIdRef.current.set(p.strokeId, {
+      tool: p.tool,
+      color: p.color,
+      size: p.size,
+      opacity: typeof p.opacity === 'number' ? p.opacity : 1,
+      dash: p.dash === 'dashed' ? 'dashed' : 'solid',
+    });
   };
 
   const clearReplaySession = () => {
@@ -1706,6 +3009,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     clearAllLocal();
     remoteLastPointByStrokeRef.current = new Map();
     strokeStyleByIdRef.current = new Map();
+    translucentStrokePointsRef.current = new Map();
     return true;
   };
 
@@ -1719,6 +3023,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     clearAllLocal();
     remoteLastPointByStrokeRef.current = new Map();
     strokeStyleByIdRef.current = new Map();
+    translucentStrokePointsRef.current = new Map();
+    liveStrokePointsRef.current = null;
 
     for (let k = 0; k < clamped; k += 1) {
       primeEventStyle(events[k]);
@@ -1808,12 +3114,18 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   // 예를 들어 이전에 그린 선이나 도형이 있다면, 새로 들어왔을 때 다시 화면에 그려줍니다.
   const loadAndRenderBoard = async (targetBoardId: string) => {
     if (!targetBoardId) return;
+    // 이 호출 이후 다른 보드 로딩이 시작되면 이번 결과는 버립니다.
+    const loadSeq = ++boardLoadSeqRef.current;
+    const isStale = () => loadSeq !== boardLoadSeqRef.current;
     clearReplaySession();
     setIsLoadingBoard(true);
     clearAllLocal();
     remoteLastPointByStrokeRef.current = new Map();
     remotePendingAppendsRef.current = new Map();
     remotePendingEndsRef.current = new Set();
+    strokeStyleByIdRef.current = new Map();
+    translucentStrokePointsRef.current = new Map();
+    liveStrokePointsRef.current = null;
 
     const { data, error } = await supabase
       .from('board_events')
@@ -1821,24 +3133,50 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       .eq('board_id', targetBoardId)
       .order('seq', { ascending: true });
 
+    // 조회하는 사이 다른 보드로 바뀌었으면 옛 보드 내용을 새 보드 위에 그리지 않습니다.
+    if (isStale()) return;
     setIsLoadingBoard(false);
     if (error) {
       alert(`보드 로드 실패: ${error.message}`);
       return;
     }
-    const events = (data ?? []) as BoardEventRow[];
+    // 실행취소된 동작은 여기서 빼고 그려, 모든 참가자·새로고침 화면이 같게 합니다.
+    const events = filterUndoneEvents((data ?? []) as BoardEventRow[]);
     const transforms = new Map<string, ImageTransformPayload>();
     const textTransforms = new Map<string, TextTransformPayload>();
+    const shapeTransforms = new Map<string, ShapeTransformPayload>();
     const fileTransforms = new Map<string, FileTransformPayload>();
+    const stickyTransforms = new Map<string, StickyTransformPayload>();
+    const stickyUpdates = new Map<string, StickyUpdatePayload>();
     const removedFiles = new Set<string>();
+    const removedStickies = new Set<string>();
+    const removedTexts = new Set<string>();
+    const removedShapes = new Set<string>();
+    const removedImages = new Set<string>();
     for (const ev of events) {
       if (ev.type === 'image.transform') {
         const p = ev.payload as ImageTransformPayload;
         if (p?.id) transforms.set(p.id, p);
       }
+      if (ev.type === 'image.remove') {
+        const p = ev.payload as ImageRemovePayload;
+        if (p?.id) removedImages.add(p.id);
+      }
       if (ev.type === 'text.transform') {
         const p = ev.payload as TextTransformPayload;
         if (p?.id) textTransforms.set(p.id, p);
+      }
+      if (ev.type === 'text.remove') {
+        const p = ev.payload as TextRemovePayload;
+        if (p?.id) removedTexts.add(p.id);
+      }
+      if (ev.type === 'shape.transform') {
+        const p = ev.payload as ShapeTransformPayload;
+        if (p?.id) shapeTransforms.set(p.id, p);
+      }
+      if (ev.type === 'shape.remove') {
+        const p = ev.payload as ShapeRemovePayload;
+        if (p?.id) removedShapes.add(p.id);
       }
       if (ev.type === 'file.transform') {
         const p = ev.payload as FileTransformPayload;
@@ -1848,16 +3186,43 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         const p = ev.payload as FileRemovePayload;
         if (p?.id) removedFiles.add(p.id);
       }
+      if (ev.type === 'sticky.transform') {
+        const p = ev.payload as StickyTransformPayload;
+        if (p?.id) stickyTransforms.set(p.id, p);
+      }
+      if (ev.type === 'sticky.update') {
+        const p = ev.payload as StickyUpdatePayload;
+        if (p?.id) stickyUpdates.set(p.id, p);
+      }
+      if (ev.type === 'sticky.remove') {
+        const p = ev.payload as StickyRemovePayload;
+        if (p?.id) removedStickies.add(p.id);
+      }
     }
 
     resetHistory();
     for (const ev of events) {
-      if (ev.type === 'image.transform' || ev.type === 'text.transform' || ev.type === 'file.transform' || ev.type === 'file.remove') {
+      // 이미지 등은 비동기로 그려지므로, 그리는 도중 보드가 바뀌면 남은 이벤트를 멈춥니다.
+      if (isStale()) return;
+      if (
+        ev.type === 'image.transform' ||
+        ev.type === 'image.remove' ||
+        ev.type === 'text.transform' ||
+        ev.type === 'text.remove' ||
+        ev.type === 'shape.transform' ||
+        ev.type === 'shape.remove' ||
+        ev.type === 'file.transform' ||
+        ev.type === 'file.remove' ||
+        ev.type === 'sticky.transform' ||
+        ev.type === 'sticky.update' ||
+        ev.type === 'sticky.remove'
+      ) {
         continue;
       }
       if (ev.type === 'image.add') {
         const p = ev.payload as ImageAddPayload;
         const id = p.id || ev.id;
+        if (removedImages.has(id)) continue;
         const t = transforms.get(id);
         const folded: ImageAddPayload = t
           ? { ...p, id, x: t.x, y: t.y, width: t.width, height: t.height }
@@ -1869,9 +3234,34 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (ev.type === 'text.add') {
         const p = ev.payload as TextAddPayload;
         const id = p.id || ev.id;
+        if (removedTexts.has(id)) continue;
         const t = textTransforms.get(id);
         const folded: TextAddPayload = t
-          ? { ...p, id, x: t.x, y: t.y, width: t.width, height: t.height, fontSize: t.fontSize }
+          ? {
+              ...p,
+              id,
+              x: t.x,
+              y: t.y,
+              width: t.width,
+              height: t.height,
+              fontSize: t.fontSize,
+              align: t.align ?? p.align,
+              bold: t.bold ?? p.bold,
+              strike: t.strike ?? p.strike,
+              underline: t.underline ?? p.underline,
+            }
+          : { ...p, id };
+        await applyEvent({ ...ev, payload: folded });
+        if (isHistoryCommitEvent(ev.type)) commitHistory();
+        continue;
+      }
+      if (ev.type === 'shape.add') {
+        const p = ev.payload as ShapeAddPayload;
+        const id = p.id || ev.id;
+        if (removedShapes.has(id)) continue;
+        const t = shapeTransforms.get(id);
+        const folded: ShapeAddPayload = t
+          ? { ...p, id, from: t.from, to: t.to }
           : { ...p, id };
         await applyEvent({ ...ev, payload: folded });
         if (isHistoryCommitEvent(ev.type)) commitHistory();
@@ -1889,15 +3279,44 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         if (isHistoryCommitEvent(ev.type)) commitHistory();
         continue;
       }
+      if (ev.type === 'sticky.add') {
+        const p = ev.payload as StickyAddPayload;
+        const id = p.id || ev.id;
+        if (removedStickies.has(id)) continue;
+        const t = stickyTransforms.get(id);
+        const u = stickyUpdates.get(id);
+        const folded: StickyAddPayload = {
+          ...p,
+          id,
+          x: t?.x ?? p.x,
+          y: t?.y ?? p.y,
+          width: t?.width ?? p.width,
+          height: t?.height ?? p.height,
+          text: u?.text ?? p.text,
+          drawing: u?.drawing ?? p.drawing,
+        };
+        await applyEvent({ ...ev, payload: folded });
+        if (isHistoryCommitEvent(ev.type)) commitHistory();
+        continue;
+      }
       await applyEvent(ev);
       if (isHistoryCommitEvent(ev.type)) commitHistory();
     }
+    if (isStale()) return;
     revealExpandedFilesOnCanvas();
     if (historyRef.current.length === 0) initHistory();
   };
 
   useEffect(() => {
     if (!boardId) return;
+    // 보드가 바뀌면 LiveKit/Realtime 중복 키를 비워 메모리·오 dedupe를 막습니다.
+    appliedLiveStrokeKeysRef.current = new Set();
+    strokeLiveSeqByIdRef.current = new Map();
+    // 되돌리기 스택은 보드별이라, 보드를 바꾸면 비웁니다.
+    myUndoStackRef.current = [];
+    myRedoStackRef.current = [];
+    undoGroupRef.current = null;
+    syncHistoryUi();
     const b = boards.find((x) => x.id === boardId);
     if (b) {
       const title = formatBoardTitle(b.title);
@@ -1919,6 +3338,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           if (isReplayingRef.current) return;
           // 내가 보낸 이벤트는 이미 로컬에서 그렸으므로 중복 적용하지 않음
           if (row.actor_id === actorIdRef.current) return;
+
+          // 다른 참가자의 실행취소/다시 실행: 픽셀로는 되돌릴 수 없어 이벤트 로그로 보드를 다시 그립니다.
+          if (row.type === 'history.undo' || row.type === 'history.redo') {
+            void loadAndRenderBoard(boardId);
+            return;
+          }
+
+          // LiveKit으로 이미 그린 stroke는 Realtime INSERT에서 스킵 (반대 순서면 키를 남김)
+          if (row.type === 'stroke.begin' || row.type === 'stroke.append' || row.type === 'stroke.end') {
+            const key = strokeLiveDedupeKey(row.type, row.payload);
+            if (key) {
+              if (appliedLiveStrokeKeysRef.current.has(key)) return;
+              appliedLiveStrokeKeysRef.current.add(key);
+            }
+          }
+
           void applyEvent(row).then(() => {
             if (isHistoryCommitEvent(row.type)) commitHistory();
           });
@@ -1969,13 +3404,35 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       remotePendingAppendsRef.current = new Map();
       remotePendingEndsRef.current = new Set();
       strokeStyleByIdRef.current = new Map();
+      translucentStrokePointsRef.current = new Map();
+      strokeLiveSeqByIdRef.current = new Map();
+      appliedLiveStrokeKeysRef.current = new Set();
+      return;
+    }
+
+    if (ev.type === 'region.erase') {
+      const p = ev.payload as RegionErasePayload;
+      if (typeof p?.x === 'number' && typeof p?.y === 'number' && typeof p?.width === 'number' && typeof p?.height === 'number') {
+        applyRegionEraseLocal({ x: p.x, y: p.y, width: p.width, height: p.height });
+      }
       return;
     }
 
     if (ev.type === 'stroke.begin') {
       const p = ev.payload as StrokeBeginPayload;
       remoteLastPointByStrokeRef.current.set(p.strokeId, { x: p.point.x, y: p.point.y });
-      strokeStyleByIdRef.current.set(p.strokeId, { tool: p.tool, color: p.color, size: p.size });
+      const opacity = typeof p.opacity === 'number' ? p.opacity : 1;
+      strokeStyleByIdRef.current.set(p.strokeId, {
+        tool: p.tool,
+        color: p.color,
+        size: p.size,
+        opacity,
+        dash: p.dash === 'dashed' ? 'dashed' : 'solid',
+      });
+      // 반투명 획은 시작할 점부터 버퍼에 넣고, end 때 한 경로로 그립니다.
+      if (isTranslucentPen(opacity, p.tool)) {
+        translucentStrokePointsRef.current.set(p.strokeId, [{ x: p.point.x, y: p.point.y }]);
+      }
       flushRemotePendingStroke(p.strokeId);
       return;
     }
@@ -1998,6 +3455,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         remotePendingEndsRef.current.add(p.strokeId);
         return;
       }
+      finalizeTranslucentStroke(p.strokeId);
       remoteLastPointByStrokeRef.current.delete(p.strokeId);
       strokeStyleByIdRef.current.delete(p.strokeId);
       return;
@@ -2007,7 +3465,47 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const p = ev.payload as ShapeAddPayload;
       const ctx = ctxRef.current ?? ensureContext();
       if (!ctx) return;
-      drawShapeTool(ctx, p.tool, p.from, p.to, { strokeStyle: p.color, lineWidth: p.size }, false);
+      drawShapeTool(ctx, p.tool, p.from, p.to, {
+        strokeStyle: colorWithOpacity(p.color, typeof p.strokeOpacity === 'number' ? p.strokeOpacity : 1),
+        lineWidth: p.size,
+        fillStyle: p.fill ? colorWithOpacity(p.fill, typeof p.fillOpacity === 'number' ? p.fillOpacity : 1) : undefined,
+        dash: p.dash === 'dashed' ? shapeDashArray(p.size) : [],
+      }, false);
+      const id = p.id || ev.id;
+      upsertPlacedShape({
+        id,
+        tool: p.tool,
+        from: { ...p.from },
+        to: { ...p.to },
+        color: p.color,
+        size: p.size,
+        fill: p.fill,
+        dash: p.dash === 'dashed' ? 'dashed' : 'solid',
+        strokeOpacity: typeof p.strokeOpacity === 'number' ? p.strokeOpacity : 1,
+        fillOpacity: typeof p.fillOpacity === 'number' ? p.fillOpacity : undefined,
+      });
+      return;
+    }
+
+    if (ev.type === 'shape.transform') {
+      const p = ev.payload as ShapeTransformPayload;
+      if (!p?.id) return;
+      const prev = placedShapesRef.current.find((x) => x.id === p.id);
+      if (prev) {
+        upsertPlacedShape({ ...prev, from: { ...p.from }, to: { ...p.to } });
+      }
+      if (ev.actor_id === actorIdRef.current) return;
+      if (boardId) void loadAndRenderBoard(boardId);
+      return;
+    }
+
+    if (ev.type === 'shape.remove') {
+      const p = ev.payload as ShapeRemovePayload;
+      if (!p?.id) return;
+      replacePlacedShapes(placedShapesRef.current.filter((x) => x.id !== p.id));
+      if (selectedShapeIdRef.current === p.id) selectPlacedShape(null);
+      if (ev.actor_id === actorIdRef.current) return;
+      if (boardId) void loadAndRenderBoard(boardId);
       return;
     }
 
@@ -2049,16 +3547,35 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       return;
     }
 
+    if (ev.type === 'image.remove') {
+      const p = ev.payload as ImageRemovePayload;
+      if (!p?.id) return;
+      replacePlacedImages(placedImagesRef.current.filter((x) => x.id !== p.id));
+      if (selectedImageIdRef.current === p.id) selectPlacedImage(null);
+      if (ev.actor_id === actorIdRef.current) return;
+      if (boardId) void loadAndRenderBoard(boardId);
+      return;
+    }
+
     if (ev.type === 'text.add') {
       const p = ev.payload as TextAddPayload;
       const ctx = ctxRef.current ?? ensureContext();
       if (!ctx) return;
       const fontSize = resolveTextFontSize(p);
       const box = measurePlacedText(p.text, fontSize, p.width, p.height);
+      const align = normalizeTextAlign(p.align);
+      const bold = Boolean(p.bold);
+      const strike = Boolean(p.strike);
+      const underline = Boolean(p.underline);
       drawText(ctx, { x: p.x, y: p.y }, p.text, {
         strokeStyle: p.color,
         lineWidth: p.size,
         fontSize,
+        textWidth: box.width,
+        textAlign: align,
+        bold,
+        strike,
+        underline,
       });
       upsertPlacedText({
         id: p.id || ev.id,
@@ -2069,6 +3586,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         fontSize,
         width: box.width,
         height: box.height,
+        align,
+        bold,
+        strike,
+        underline,
       });
       return;
     }
@@ -2085,8 +3606,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           width: p.width,
           height: p.height,
           fontSize: p.fontSize,
+          align: p.align != null ? normalizeTextAlign(p.align) : prev.align,
+          bold: typeof p.bold === 'boolean' ? p.bold : prev.bold,
+          strike: typeof p.strike === 'boolean' ? p.strike : prev.strike,
+          underline: typeof p.underline === 'boolean' ? p.underline : prev.underline,
         });
       }
+      if (ev.actor_id === actorIdRef.current) return;
+      if (boardId) void loadAndRenderBoard(boardId);
+      return;
+    }
+
+    if (ev.type === 'text.remove') {
+      const p = ev.payload as TextRemovePayload;
+      if (!p?.id) return;
+      replacePlacedTexts(placedTextsRef.current.filter((x) => x.id !== p.id));
+      if (selectedTextIdRef.current === p.id) selectPlacedText(null);
       if (ev.actor_id === actorIdRef.current) return;
       if (boardId) void loadAndRenderBoard(boardId);
       return;
@@ -2148,7 +3683,106 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (!ctx) return;
       drawStamp(ctx, { x: p.x, y: p.y }, p.kind, { strokeStyle: p.color, lineWidth: p.size });
     }
+
+    if (ev.type === 'sticky.add') {
+      const p = ev.payload as StickyAddPayload;
+      upsertPlacedSticky({
+        id: p.id || ev.id,
+        x: p.x,
+        y: p.y,
+        width: p.width || DEFAULT_STICKY_W,
+        height: p.height || DEFAULT_STICKY_H,
+        color: p.color || STICKY_PAPER,
+        text: p.text ?? '',
+        drawing: p.drawing ?? '',
+      });
+      return;
+    }
+
+    if (ev.type === 'sticky.update') {
+      const p = ev.payload as StickyUpdatePayload;
+      if (!p?.id) return;
+      const prev = placedStickiesRef.current.find((x) => x.id === p.id);
+      if (prev) {
+        upsertPlacedSticky({
+          ...prev,
+          text: p.text,
+          drawing: p.drawing,
+          color: p.color || prev.color,
+        });
+      }
+      return;
+    }
+
+    if (ev.type === 'sticky.transform') {
+      const p = ev.payload as StickyTransformPayload;
+      if (!p?.id) return;
+      const prev = placedStickiesRef.current.find((x) => x.id === p.id);
+      if (prev) {
+        upsertPlacedSticky({
+          ...prev,
+          x: p.x,
+          y: p.y,
+          width: p.width,
+          height: p.height,
+        });
+      }
+      return;
+    }
+
+    if (ev.type === 'sticky.remove') {
+      const p = ev.payload as StickyRemovePayload;
+      if (!p?.id) return;
+      replacePlacedStickies(placedStickiesRef.current.filter((x) => x.id !== p.id));
+      if (selectedStickyIdRef.current === p.id) selectPlacedSticky(null);
+    }
   };
+
+  // 회의방: LiveKit stroke data → 원격 획을 DB 왕복 없이 즉시 반영합니다.
+  useEffect(() => {
+    if (!room || !meetingMode) return;
+
+    const handler = (payload: Uint8Array, participant?: unknown, _kind?: unknown, topic?: string) => {
+      if (topic && topic !== MEETING_BOARD_STROKE_TOPIC) return;
+      const msg = decodeMeetingStrokeMessage(payload);
+      if (!msg) return;
+      // 다른 보드 메시지는 무시
+      if (msg.boardId !== boardId) return;
+      if (msg.actorId === actorIdRef.current) return;
+      if (participant && 'identity' in (participant as object)) {
+        const identity = (participant as { identity: string }).identity;
+        if (identity === localParticipant?.identity) return;
+      }
+      if (isReplayingRef.current) return;
+
+      const key = strokeLiveDedupeKey(msg.type, msg.payload);
+      if (key) {
+        if (appliedLiveStrokeKeysRef.current.has(key)) return;
+        appliedLiveStrokeKeysRef.current.add(key);
+      }
+
+      const row: BoardEventRow = {
+        id: key ? `livekit:${key}` : `livekit:${msg.type}:${Date.now()}`,
+        board_id: msg.boardId,
+        seq: 0,
+        ts: new Date().toISOString(),
+        actor_id: msg.actorId,
+        type: msg.type,
+        payload: msg.payload,
+      };
+
+      void applyEvent(row).then(() => {
+        if (isHistoryCommitEvent(row.type)) commitHistory();
+      });
+    };
+
+    room.on(RoomEvent.DataReceived, handler);
+    return () => {
+      room.off(RoomEvent.DataReceived, handler);
+    };
+    // applyEvent/commitHistory는 매 렌더 갱신되지만 board·room 기준으로만 재구독합니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, meetingMode, boardId, localParticipant?.identity]);
 
   const getPoint = (e: PointerEvent): Point | null => {
     const canvas = canvasRef.current;
@@ -2163,13 +3797,36 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const getDrawStyle = () => ({ strokeStyle: color, lineWidth: size });
 
+  /** 도형 드래그/확정 시 테두리·채우기 옵션을 반영합니다. */
+  const getShapeDrawStyle = () => ({
+    strokeStyle: colorWithOpacity(color, shapeStrokeOpacity),
+    lineWidth: size,
+    fillStyle: shapeFillEnabled ? colorWithOpacity(shapeFillColor, shapeFillOpacity) : undefined,
+    dash: shapeDash === 'dashed' ? shapeDashArray(size) : [],
+  });
+
+  const setShapeStyle = (style: Partial<{
+    dash: 'solid' | 'dashed';
+    strokeOpacity: number;
+    fillEnabled: boolean;
+    fillColor: string;
+    fillOpacity: number;
+  }>) => {
+    if (style.dash) setShapeDash(style.dash);
+    if (typeof style.strokeOpacity === 'number') setShapeStrokeOpacity(Math.min(1, Math.max(0, style.strokeOpacity)));
+    if (typeof style.fillEnabled === 'boolean') setShapeFillEnabled(style.fillEnabled);
+    if (typeof style.fillColor === 'string' && style.fillColor.trim()) setShapeFillColor(style.fillColor);
+    if (typeof style.fillOpacity === 'number') setShapeFillOpacity(Math.min(1, Math.max(0, style.fillOpacity)));
+  };
+
   const syncTextDraft = (next: TextDraft | null) => {
     textDraftRef.current = next;
     setTextDraft(next);
   };
 
   // 입력칸 내용을 캔버스에 그리고 보드 이벤트로 저장합니다. 빈 값이면 그냥 닫습니다.
-  const commitTextDraft = (opts?: { keepTool?: boolean }) => {
+  // 확정 후에도 현재 도구(텍스트)를 유지해 연속 입력이 가능하게 합니다.
+  const commitTextDraft = () => {
     const draft = textDraftRef.current;
     if (!draft) return;
     const text = draft.value.replace(/\s+$/u, '');
@@ -2185,11 +3842,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         fontSize: draft.size,
         width: draft.width,
         height: draft.height,
+        align: draft.align,
+        bold: draft.bold,
+        strike: draft.strike,
+        underline: draft.underline,
       };
       drawText(ctxRef.current ?? ensureContext()!, { x: placed.x, y: placed.y }, placed.text, {
         strokeStyle: placed.color,
         lineWidth: size,
         fontSize: placed.fontSize,
+        textWidth: placed.width,
+        textAlign: placed.align,
+        bold: placed.bold,
+        strike: placed.strike,
+        underline: placed.underline,
       });
       upsertPlacedText(placed);
       void insertEvent('text.add', {
@@ -2202,10 +3868,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         fontSize: placed.fontSize,
         width: placed.width,
         height: placed.height,
+        align: placed.align,
+        bold: placed.bold,
+        strike: placed.strike,
+        underline: placed.underline,
       } satisfies TextAddPayload);
       commitHistory();
     }
-    if (!opts?.keepTool) resetToIdleTool();
   };
   commitTextDraftRef.current = commitTextDraft;
 
@@ -2220,6 +3889,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       size: textSize,
       width: box.width,
       height: box.height,
+      align: textAlignRef.current,
+      bold: textBoldRef.current,
+      strike: textStrikeRef.current,
+      underline: textUnderlineRef.current,
     });
   };
 
@@ -2272,6 +3945,51 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     });
   };
 
+  /** 텍스트 정렬 — 입력 중이면 초안, 선택 중이면 배치된 글자에 반영합니다. */
+  const applyTextAlign = (align: 'left' | 'center' | 'right') => {
+    textAlignRef.current = align;
+    const draft = textDraftRef.current;
+    if (draft) {
+      writeTextDraft({ ...draft, align });
+      return;
+    }
+    const selected = placedTextsRef.current.find((t) => t.id === selectedTextIdRef.current);
+    if (selected && selected.align !== align) {
+      const updated = { ...selected, align };
+      upsertPlacedText(updated);
+      persistAndReloadText(updated);
+    }
+  };
+
+  /** 굵게·취소선·밑줄 토글 */
+  const applyTextDecor = (patch: Partial<{ bold: boolean; strike: boolean; underline: boolean }>) => {
+    if (typeof patch.bold === 'boolean') textBoldRef.current = patch.bold;
+    if (typeof patch.strike === 'boolean') textStrikeRef.current = patch.strike;
+    if (typeof patch.underline === 'boolean') textUnderlineRef.current = patch.underline;
+
+    const draft = textDraftRef.current;
+    if (draft) {
+      writeTextDraft({
+        ...draft,
+        bold: typeof patch.bold === 'boolean' ? patch.bold : draft.bold,
+        strike: typeof patch.strike === 'boolean' ? patch.strike : draft.strike,
+        underline: typeof patch.underline === 'boolean' ? patch.underline : draft.underline,
+      });
+      return;
+    }
+    const selected = placedTextsRef.current.find((t) => t.id === selectedTextIdRef.current);
+    if (selected) {
+      const updated = {
+        ...selected,
+        bold: typeof patch.bold === 'boolean' ? patch.bold : selected.bold,
+        strike: typeof patch.strike === 'boolean' ? patch.strike : selected.strike,
+        underline: typeof patch.underline === 'boolean' ? patch.underline : selected.underline,
+      };
+      upsertPlacedText(updated);
+      persistAndReloadText(updated);
+    }
+  };
+
   // A 버튼을 누르면 지금 보이는 캔버스 가운데에 입력칸을 띄웁니다.
   const startTextInView = () => {
     if (textDraftRef.current) {
@@ -2302,14 +4020,28 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx) return;
-    snapshotRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    try {
+      snapshotRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch {
+      snapshotRef.current = null;
+    }
   };
 
   const restoreSnapshot = () => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx || !snapshotRef.current) return;
-    ctx.putImageData(snapshotRef.current, 0, 0);
+    if (
+      snapshotRef.current.width !== canvas.width ||
+      snapshotRef.current.height !== canvas.height
+    ) {
+      return;
+    }
+    try {
+      ctx.putImageData(snapshotRef.current, 0, 0);
+    } catch {
+      /* ignore */
+    }
   };
 
   const placeRasterOnBoard = (point: Point, dataUrl: string, srcW: number, srcH: number) => {
@@ -2371,24 +4103,95 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const p = getPoint(e.nativeEvent);
     if (!p) return;
 
-    if (activeTool !== 'image') {
-      void commitUncommittedImage();
-    }
-
-    if (activeTool === 'hand') {
+    // 판서 권한 없음: 화면 이동(hand)만 허용하고 그리기·배치 도구는 막습니다.
+    if (!canDraw) {
+      if (activeTool !== 'hand' && !spacePressed) return;
       panningRef.current = true;
       panAnchorRef.current = { x: e.clientX, y: e.clientY };
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
 
+    // 메모장 배치: 도구 선택 후 화면을 한 번 더 클릭한 위치에 붙입니다.
+    if (stickyPlaceModeRef.current) {
+      placeStickyAt(p);
+      return;
+    }
+
+    // 영역 지우기: 네모 드래그 시작 (자유 지우개 획 대신)
+    if (areaEraseModeRef.current && activeTool === 'eraser') {
+      areaEraseDragRef.current = { start: p };
+      const zero = { x: p.x, y: p.y, width: 0, height: 0 };
+      areaErasePreviewRef.current = zero;
+      setAreaErasePreview(zero);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // 스포이트: 클릭한 픽셀 색을 고르고 모드를 종료합니다.
+    if (eyedropperActive || eyedropperCallbackRef.current) {
+      const canvas = canvasRef.current;
+      const ctx = ctxRef.current ?? ensureContext();
+      const cb = eyedropperCallbackRef.current;
+      eyedropperCallbackRef.current = null;
+      setEyedropperActive(false);
+      if (canvas && ctx && cb) {
+        const dpr = window.devicePixelRatio || 1;
+        const x = Math.min(canvas.width - 1, Math.max(0, Math.floor(p.x * dpr)));
+        const y = Math.min(canvas.height - 1, Math.max(0, Math.floor(p.y * dpr)));
+        try {
+          const [r, g, b] = ctx.getImageData(x, y, 1, 1).data;
+          const hex = `#${[r, g, b].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+          setColor(hex);
+          cb(hex);
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+
+    // 획/도형을 남기기 전에 실행취소 기준 스냅샷을 확보합니다.
+    ensureHistoryBaseline();
+
+    if (activeTool !== 'image') {
+      void commitUncommittedImage();
+    }
+
+    if (activeTool === 'hand') {
+      // 선택 도구: 도형을 먼저 고르고, 빈 곳이면 선택 해제 후 화면 이동
+      const hitShape = hitTestShape(placedShapesRef.current, p);
+      if (hitShape) {
+        const alreadySelected = selectedShapeIdRef.current === hitShape.id;
+        selectPlacedShape(hitShape.id);
+        if (alreadySelected) {
+          placedShapeDragRef.current = {
+            id: hitShape.id,
+            startPoint: p,
+            start: { ...hitShape, from: { ...hitShape.from }, to: { ...hitShape.to } },
+          };
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
+        return;
+      }
+      if (selectedTextIdRef.current) selectPlacedText(null);
+      if (selectedShapeIdRef.current) selectPlacedShape(null);
+      if (selectedImageIdRef.current) selectPlacedImage(null);
+      if (selectedFileIdRef.current) selectPlacedFile(null);
+      panningRef.current = true;
+      panAnchorRef.current = { x: e.clientX, y: e.clientY };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // 선택·텍스트 도구에서는 기존 글을 골라 서식(밑줄 등)을 나중에 고칠 수 있습니다.
     const hitText = hitTestText(placedTextsRef.current, p);
-    if (hitText && !pendingStampRef.current) {
-      if (textDraftRef.current) commitTextDraft({ keepTool: true });
+    if (hitText && !pendingStampRef.current && !drawThroughText) {
+      if (textDraftRef.current) commitTextDraft();
       const alreadySelected = selectedTextIdRef.current === hitText.id;
       selectPlacedImage(null);
       selectPlacedText(hitText.id);
-      setTextSize(hitText.fontSize);
+      syncToolbarFromPlacedText(hitText);
       // 한 번 클릭해서 고른 뒤에만 드래그/모서리 조절을 시작합니다.
       if (alreadySelected) {
         placedTextDragRef.current = { id: hitText.id, mode: 'move', startPoint: p, start: { ...hitText } };
@@ -2412,6 +4215,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (selectedTextIdRef.current) selectPlacedText(null);
     if (selectedImageIdRef.current) selectPlacedImage(null);
     if (selectedFileIdRef.current) selectPlacedFile(null);
+    if (selectedStickyIdRef.current) selectPlacedSticky(null);
 
     if (pendingStampRef.current) {
       const kind = pendingStampRef.current;
@@ -2433,7 +4237,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
     if (activeTool === 'text') {
       // 이미 입력 중이면 먼저 확정한 뒤, 새로 클릭한 자리에 입력칸을 다시 엽니다.
-      if (textDraftRef.current) commitTextDraft({ keepTool: true });
+      if (textDraftRef.current) commitTextDraft();
       startTextDraft(p);
       return;
     }
@@ -2462,6 +4266,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     if (isShapeTool(activeTool)) {
+      selectPlacedShape(null);
       shapeStartRef.current = p;
       takeSnapshot();
       drawingRef.current = true;
@@ -2481,8 +4286,23 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     pendingChunkRef.current = [];
 
     const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
-    strokeStyleByIdRef.current.set(localStrokeIdRef.current, { tool: strokeTool, color, size });
+    const strokeOpacity = strokeTool === 'eraser' ? 1 : penOpacity;
+    const strokeDash = strokeTool === 'eraser' ? 'solid' : penDash;
+    strokeStyleByIdRef.current.set(localStrokeIdRef.current, {
+      tool: strokeTool,
+      color,
+      size,
+      opacity: strokeOpacity,
+      dash: strokeDash,
+    });
     remoteLastPointByStrokeRef.current.set(localStrokeIdRef.current, { ...p });
+    // 반투명 마커: 시작 스냅샷 + 점 버퍼로 미리보기 시 겹침 점을 없앱니다.
+    if (isTranslucentPen(strokeOpacity, strokeTool)) {
+      takeSnapshot();
+      liveStrokePointsRef.current = [{ x: p.x, y: p.y }];
+    } else {
+      liveStrokePointsRef.current = null;
+    }
     if (boardId) {
       void enqueueStrokeWrite('stroke.begin', {
         strokeId: localStrokeIdRef.current,
@@ -2490,6 +4310,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         color,
         size,
         point: p,
+        opacity: strokeOpacity,
+        dash: strokeDash,
       } satisfies StrokeBeginPayload);
     }
 
@@ -2497,6 +4319,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   };
 
   const handlePointerMove = (e: ReactPointerEvent<HTMLElement>) => {
+    if (areaEraseDragRef.current) {
+      const p = getPoint(e.nativeEvent);
+      if (!p) return;
+      const next = normalizeRect(areaEraseDragRef.current.start, p);
+      areaErasePreviewRef.current = next;
+      setAreaErasePreview(next);
+      return;
+    }
+
     if (panningRef.current && panAnchorRef.current) {
       const dx = e.clientX - panAnchorRef.current.x;
       const dy = e.clientY - panAnchorRef.current.y;
@@ -2529,6 +4360,21 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       return;
     }
 
+    // 선택 도구로 도형 드래그 이동
+    if (placedShapeDragRef.current) {
+      const p = getPoint(e.nativeEvent);
+      if (!p) return;
+      const drag = placedShapeDragRef.current;
+      const dx = p.x - drag.startPoint.x;
+      const dy = p.y - drag.startPoint.y;
+      upsertPlacedShape({
+        ...drag.start,
+        from: { x: drag.start.from.x + dx, y: drag.start.from.y + dy },
+        to: { x: drag.start.to.x + dx, y: drag.start.to.y + dy },
+      });
+      return;
+    }
+
     if (placedFileDragRef.current) {
       const p = getPoint(e.nativeEvent);
       if (!p) return;
@@ -2541,6 +4387,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         });
       } else {
         upsertPlacedFile(resizePlacedFile(drag.start, drag.mode, p));
+      }
+      return;
+    }
+
+    if (placedStickyDragRef.current) {
+      const p = getPoint(e.nativeEvent);
+      if (!p) return;
+      const drag = placedStickyDragRef.current;
+      if (drag.mode === 'move') {
+        upsertPlacedSticky({
+          ...drag.start,
+          x: drag.start.x + (p.x - drag.startPoint.x),
+          y: drag.start.y + (p.y - drag.startPoint.y),
+        });
+      } else {
+        upsertPlacedSticky(resizePlacedSticky(drag.start, p));
       }
       return;
     }
@@ -2567,7 +4429,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (!ctx || !p) return;
       lastPointRef.current = p;
       restoreSnapshot();
-      drawShapeTool(ctx, activeTool, shapeStartRef.current, p, getDrawStyle(), true);
+      drawShapeTool(ctx, activeTool, shapeStartRef.current, p, getShapeDrawStyle(), true);
       return;
     }
 
@@ -2579,13 +4441,48 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const last = lastPointRef.current;
     if (!p || !last) return;
 
-    applyStrokeSegment(last, p, activeTool === 'eraser' ? 'eraser' : 'pen', effectiveStrokeStyle, size);
+    const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
+    const strokeOpacity = strokeTool === 'eraser' ? 1 : penOpacity;
+    const strokeDash = strokeTool === 'eraser' ? 'solid' : penDash;
+
+    // 반투명: 스냅샷 복구 후 전체 경로를 다시 그려 동그란 겹침을 제거합니다.
+    if (liveStrokePointsRef.current) {
+      liveStrokePointsRef.current.push({ x: p.x, y: p.y });
+      restoreSnapshot();
+      applyStrokePath(liveStrokePointsRef.current, strokeTool, color, size, strokeOpacity, strokeDash);
+      pendingChunkRef.current.push(p);
+      scheduleChunkFlush();
+      lastPointRef.current = p;
+      return;
+    }
+
+    applyStrokeSegment(
+      last,
+      p,
+      strokeTool,
+      color,
+      size,
+      strokeOpacity,
+      strokeDash,
+    );
     pendingChunkRef.current.push(p);
     scheduleChunkFlush();
     lastPointRef.current = p;
   };
 
   const handlePointerUp = () => {
+    if (areaEraseDragRef.current) {
+      areaEraseDragRef.current = null;
+      const preview = areaErasePreviewRef.current;
+      areaErasePreviewRef.current = null;
+      setAreaErasePreview(null);
+      // 너무 작은 드래그는 무시하고, 유효한 네모만 지웁니다.
+      if (preview && preview.width >= 3 && preview.height >= 3) {
+        eraseArea(preview);
+      }
+      return;
+    }
+
     if (textResizeRef.current) {
       textResizeRef.current = null;
       ignoreTextBlurRef.current = false;
@@ -2601,11 +4498,27 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       return;
     }
 
+    if (placedShapeDragRef.current) {
+      const id = placedShapeDragRef.current.id;
+      placedShapeDragRef.current = null;
+      const item = placedShapesRef.current.find((x) => x.id === id);
+      if (item) persistAndReloadShape(item);
+      return;
+    }
+
     if (placedFileDragRef.current) {
       const id = placedFileDragRef.current.id;
       placedFileDragRef.current = null;
       const item = placedFilesRef.current.find((x) => x.id === id);
       if (item) persistAndReloadFile(item);
+      return;
+    }
+
+    if (placedStickyDragRef.current) {
+      const id = placedStickyDragRef.current.id;
+      placedStickyDragRef.current = null;
+      const item = placedStickiesRef.current.find((x) => x.id === id);
+      if (item) void persistStickyTransform(item);
       return;
     }
 
@@ -2632,22 +4545,44 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const end = lastPointRef.current ?? from;
       if (ctx) {
         restoreSnapshot();
-        drawShapeTool(ctx, activeTool, from, end, getDrawStyle(), false);
+        drawShapeTool(ctx, activeTool, from, end, getShapeDrawStyle(), false);
       }
+      const id = crypto.randomUUID();
+      const placed: PlacedShape = {
+        id,
+        tool: activeTool,
+        from: { ...from },
+        to: { ...end },
+        color,
+        size,
+        fill: shapeFillEnabled ? shapeFillColor : undefined,
+        dash: shapeDash,
+        strokeOpacity: shapeStrokeOpacity,
+        fillOpacity: shapeFillEnabled ? shapeFillOpacity : undefined,
+      };
+      upsertPlacedShape(placed);
+      // 그린 직후 선택해 두면, 선택 도구로 바꿔 바로 옮길 수 있습니다.
+      selectPlacedShape(id);
       if (boardId) {
         void insertEvent('shape.add', {
+          id,
           tool: activeTool,
           from,
           to: end,
           color,
           size,
+          fill: shapeFillEnabled ? shapeFillColor : undefined,
+          dash: shapeDash,
+          strokeOpacity: shapeStrokeOpacity,
+          fillOpacity: shapeFillEnabled ? shapeFillOpacity : undefined,
         } satisfies ShapeAddPayload);
       }
       shapeStartRef.current = null;
       snapshotRef.current = null;
       drawingRef.current = false;
       lastPointRef.current = null;
-      resetToIdleTool();
+      // hand 로 돌리면 하단 도형 서브메뉴가 닫히며 보드 높이가 바뀌고,
+      // resize → initHistory 로 방금 쌓은 실행취소 스택이 날아갑니다. 도구는 유지합니다.
       commitHistory();
       return;
     }
@@ -2660,6 +4595,26 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     strokeStartPointRef.current = null;
     localStrokeIdRef.current = null;
 
+    // 반투명 미리보기 버퍼 정리 (이미 캔버스에 최종 경로가 올라가 있음)
+    const livePts = liveStrokePointsRef.current;
+    liveStrokePointsRef.current = null;
+    if (livePts) {
+      // 클릭만 하고 안 움직인 경우: 스냅샷 위에 점 하나 확정
+      if (livePts.length === 1) {
+        restoreSnapshot();
+        const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
+        applyStrokePath(
+          livePts,
+          strokeTool,
+          color,
+          size,
+          strokeTool === 'eraser' ? 1 : penOpacity,
+          strokeTool === 'eraser' ? 'solid' : penDash,
+        );
+      }
+      snapshotRef.current = null;
+    }
+
     if (chunkTimerRef.current != null) {
       window.clearTimeout(chunkTimerRef.current);
       chunkTimerRef.current = null;
@@ -2667,7 +4622,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     void (async () => {
       if (pendingChunkRef.current.length === 0 && startPoint) {
         const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
-        applyStrokeDot(startPoint, strokeTool, effectiveStrokeStyle, size);
+        // 반투명은 위에서 path로 이미 찍었으므로, 불투명 점만 여기서 보정합니다.
+        if (!livePts) {
+          applyStrokeDot(
+            startPoint,
+            strokeTool,
+            color,
+            size,
+            strokeTool === 'eraser' ? 1 : penOpacity,
+          );
+        }
         pendingChunkRef.current.push(startPoint);
       }
       await flushChunk();
@@ -2691,7 +4655,17 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     getCanvasElement: () => canvasRef.current,
     pickTool,
     toggleLibrary: () => setShowLibrary((v) => !v),
-  }), [pickTool]);
+    addStickyNote,
+    cancelStickyPlace,
+    setStrokeStyle,
+    startEyedropper,
+    setShapeStyle,
+    setStickyPaperColor,
+    setTextFontSize: (size: number) => applyTextSize(size),
+    setTextAlign: (align: 'left' | 'center' | 'right') => applyTextAlign(align),
+    setTextDecor: (style) => applyTextDecor(style),
+    setAreaEraseMode,
+  }), [pickTool, addStickyNote, cancelStickyPlace, setStrokeStyle, startEyedropper, setShapeStyle, setStickyPaperColor, applyTextSize, applyTextAlign, applyTextDecor]);
 
   /* const downloadPng = () => {
     const canvas = canvasRef.current;
@@ -2758,8 +4732,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             <span style={{ color: meetingMode ? '#949ba4' : '#6b7280', fontSize: 12 }}>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
             <select
               value={boardId}
-              onChange={(e) => setBoardId(e.target.value)}
-              disabled={isLoadingBoards}
+              onChange={(e) => selectBoard(e.target.value)}
+              disabled={isLoadingBoards || !canChangeBoard}
               style={{
                 padding: meetingMode ? '6px 8px' : '8px 10px',
                 border: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
@@ -2767,6 +4741,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 color: meetingMode ? '#dbdee1' : 'inherit',
                 minWidth: 120,
                 fontSize: meetingMode ? 12 : undefined,
+                opacity: canChangeBoard ? 1 : 0.6,
               }}
             >
               <option value="">선택...</option>
@@ -2779,15 +4754,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             <input
               value={boardTitle}
               onChange={(e) => setBoardTitle(e.target.value)}
-              onBlur={() => void saveBoardTitle()}
+              onBlur={() => {
+                if (!canChangeBoard) return;
+                void saveBoardTitle();
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
+                  if (!canChangeBoard) return;
                   void saveBoardTitle();
                   (e.target as HTMLInputElement).blur();
                 }
               }}
               placeholder="보드 이름"
+              disabled={!canChangeBoard}
               style={{
                 padding: meetingMode ? '6px 8px' : '8px 10px',
                 border: meetingMode ? '1px solid #1e1f22' : '1px solid #e5e7eb',
@@ -2795,9 +4775,23 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 color: meetingMode ? '#dbdee1' : 'inherit',
                 width: meetingMode ? 120 : 160,
                 fontSize: meetingMode ? 12 : undefined,
+                opacity: canChangeBoard ? 1 : 0.6,
               }}
             />
-            <button type="button" onClick={createBoard} style={{ padding: meetingMode ? '6px 8px' : '8px 10px', border: 'none', background: meetingMode ? '#5865f2' : '#111827', color: 'white', cursor: 'pointer', fontSize: meetingMode ? 12 : undefined }}>
+            <button
+              type="button"
+              onClick={() => void createBoard()}
+              disabled={!canChangeBoard}
+              style={{
+                padding: meetingMode ? '6px 8px' : '8px 10px',
+                border: 'none',
+                background: meetingMode ? '#5865f2' : '#111827',
+                color: 'white',
+                cursor: canChangeBoard ? 'pointer' : 'not-allowed',
+                fontSize: meetingMode ? 12 : undefined,
+                opacity: canChangeBoard ? 1 : 0.6,
+              }}
+            >
               새 보드
             </button>
             {!meetingMode ? (
@@ -2890,7 +4884,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             <span>{isGroupCanvas ? '그룹 보드' : '보드'}</span>
             <select
               value={boardId}
-              onChange={(e) => setBoardId(e.target.value)}
+              onChange={(e) => selectBoard(e.target.value)}
               disabled={isLoadingBoards}
             >
               <option value="">선택...</option>
@@ -2908,15 +4902,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               placeholder="보드 이름"
             />
             <button type="button" className="primary" onClick={createBoard}>새 보드</button>
-            <label>
-              색
-              <input type="color" value={color} onChange={(e) => setColor(e.target.value)} disabled={tool === 'eraser'} />
-            </label>
-            {tool === 'text' || textDraft || selectedTextId ? (
-              <span>가 {textSize}</span>
-            ) : (
-              <span>굵기 {size}</span>
-            )}
           </div>
         ) : null}
         <div
@@ -2951,6 +4936,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           ))}
           <canvas
             ref={canvasRef}
+            tabIndex={0}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
@@ -2962,10 +4948,39 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               background: 'transparent',
               touchAction: 'none',
               outline: 'none',
-              tabIndex: 0,
-              cursor: activeTool === 'hand' ? 'grab' : activeTool === 'text' ? 'text' : activeTool === 'file' ? 'copy' : 'crosshair',
+              cursor: eyedropperActive
+                ? 'crosshair'
+                : stickyPlaceMode
+                  ? 'copy'
+                  : areaEraseMode
+                    ? 'crosshair'
+                    : activeTool === 'hand'
+                      ? 'grab'
+                      : activeTool === 'text'
+                        ? 'text'
+                        : activeTool === 'file'
+                          ? 'copy'
+                          : 'crosshair',
             }}
           />
+          {/* 영역 지우기 드래그 중 선택 네모 미리보기 */}
+          {areaErasePreview && areaErasePreview.width > 0 && areaErasePreview.height > 0 ? (
+            <div
+              aria-hidden
+              style={{
+                position: 'absolute',
+                left: areaErasePreview.x,
+                top: areaErasePreview.y,
+                width: areaErasePreview.width,
+                height: areaErasePreview.height,
+                border: '1.5px dashed #ef4444',
+                background: 'rgba(239, 68, 68, 0.12)',
+                pointerEvents: 'none',
+                zIndex: 40,
+                boxSizing: 'border-box',
+              }}
+            />
+          ) : null}
           {textDraft ? (
             <div
               className={cb.textBox}
@@ -2981,6 +4996,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             <textarea
               ref={textInputRef}
               className={cb.textEditor}
+              data-board-text-editor="true"
               value={textDraft.value}
               rows={1}
               spellCheck={false}
@@ -3004,12 +5020,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
+                  // 확정 후에도 텍스트 도구를 유지해 연속 입력이 가능하게 합니다.
                   commitTextDraft();
                 }
                 if (e.key === 'Escape') {
                   e.preventDefault();
+                  // 입력만 취소하고, 선택 도구로 바꾸지 않습니다.
                   syncTextDraft(null);
-                  resetToIdleTool();
                 }
               }}
               placeholder="텍스트 입력"
@@ -3017,6 +5034,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 // 모서리 핸들을 잡는 순간에도 blur가 나서, 그때는 확정하지 않습니다.
                 if (ignoreTextBlurRef.current || textResizeRef.current) return;
                 if (!textDraftRef.current?.value.trim()) return;
+                // 확정 후에도 텍스트 도구 유지
                 commitTextDraft();
               }}
               style={{
@@ -3024,6 +5042,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 caretColor: textDraft.color,
                 fontSize: textDraft.size,
                 lineHeight: 1.25,
+                textAlign: textDraft.align,
+                fontWeight: textDraft.bold ? 700 : 400,
+                textDecoration: [
+                  textDraft.underline ? 'underline' : '',
+                  textDraft.strike ? 'line-through' : '',
+                ].filter(Boolean).join(' ') || 'none',
               }}
             />
             </div>
@@ -3047,6 +5071,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                   width: item.width,
                   height: item.height,
                   zIndex: selected ? 19 : 18,
+                  // 펜/도형/지우개일 때만 클릭을 통과시킵니다. 텍스트·선택 도구에서는 골라 서식을 고칩니다.
+                  pointerEvents: drawThroughText ? 'none' : 'auto',
                 }}
                 onPointerDown={(e) => {
                   e.stopPropagation();
@@ -3054,7 +5080,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                   selectPlacedImage(null);
                   selectPlacedFile(null);
                   selectPlacedText(item.id);
-                  setTextSize(item.fontSize);
+                  syncToolbarFromPlacedText(item);
                   if (!alreadySelected) return;
                   const p = getPoint(e.nativeEvent);
                   if (!p) return;
@@ -3090,6 +5116,43 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                     ))
                   : null}
               </div>
+            );
+          })}
+          {/* 선택 도구에서 도형을 고르고 드래그로 옮깁니다. */}
+          {placedShapes.map((item) => {
+            const selected = item.id === selectedShapeId;
+            const b = shapeBounds(item.from, item.to);
+            return (
+              <div
+                key={item.id}
+                className={`${cb.shapeBox}${selected ? ` ${cb.shapeBoxSelected}` : ''}`}
+                title={selected ? '드래그해서 위치를 옮기세요' : '클릭해서 선택'}
+                style={{
+                  left: b.x,
+                  top: b.y,
+                  width: b.width,
+                  height: b.height,
+                  zIndex: selected ? 17 : 16,
+                  pointerEvents: drawThroughShape ? 'none' : 'auto',
+                  cursor: selected ? 'move' : 'pointer',
+                }}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  const alreadySelected = selectedShapeIdRef.current === item.id;
+                  selectPlacedShape(item.id);
+                  if (!alreadySelected) return;
+                  const p = getPoint(e.nativeEvent);
+                  if (!p) return;
+                  placedShapeDragRef.current = {
+                    id: item.id,
+                    startPoint: p,
+                    start: { ...item, from: { ...item.from }, to: { ...item.to } },
+                  };
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+              />
             );
           })}
           {placedFiles.map((item) => {
@@ -3305,6 +5368,55 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               </div>
             );
           })}
+          {placedStickies.map((item) => (
+            <StickyNoteOverlay
+              key={item.id}
+              note={item}
+              selected={item.id === selectedStickyId}
+              editMode={item.id === selectedStickyId ? stickyEditMode : 'text'}
+              penColor={stickyPenColor}
+              // 지우개·영역 지우기일 때 메모 위를 통과해 네모 드래그
+              passThrough={drawThroughMedia}
+              onSelect={() => {
+                selectPlacedImage(null);
+                selectPlacedText(null);
+                selectPlacedFile(null);
+                selectPlacedSticky(item.id);
+              }}
+              onEditMode={setStickyEditMode}
+              onPenColor={setStickyPenColor}
+              onTextChange={(text) => {
+                const next = { ...item, text };
+                upsertPlacedSticky(next);
+                scheduleStickyTextPersist(next);
+              }}
+              onDrawingChange={(drawing) => {
+                const next = { ...item, drawing };
+                upsertPlacedSticky(next);
+                void persistStickyUpdate(next);
+              }}
+              onRemove={() => removePlacedSticky(item.id)}
+              onMovePointerDown={(e) => {
+                e.stopPropagation();
+                selectPlacedImage(null);
+                selectPlacedText(null);
+                selectPlacedFile(null);
+                selectPlacedSticky(item.id);
+                const p = getPoint(e.nativeEvent);
+                if (!p) return;
+                placedStickyDragRef.current = { id: item.id, mode: 'move', startPoint: p, start: { ...item } };
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
+              onResizePointerDown={(e) => {
+                const p = getPoint(e.nativeEvent);
+                if (!p) return;
+                placedStickyDragRef.current = { id: item.id, mode: 'se', startPoint: p, start: { ...item } };
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+            />
+          ))}
         </div>
 
         <input
@@ -3405,6 +5517,25 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         onSave={() => void handleSaveTimelapse()}
       /> */}
 
+      {/* 회의방에서 띄울 보드가 정해지기 전: 예전 보드를 잠깐 보여 주는 대신 안내 문구만 보여 줍니다. */}
+      {meetingMode && !meetingBoardReady && !showInitChoice ? (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 55,
+            pointerEvents: 'none',
+            color: '#6b7280',
+            fontSize: 14,
+          }}
+        >
+          회의 보드를 불러오는 중...
+        </div>
+      ) : null}
+
       {showInitChoice ? (
         <div
           style={{
@@ -3430,19 +5561,38 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             }}
           >
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>새 보드 생성 또는 기존 보드 불러오기</div>
-            <div style={{ fontSize: 13, color: meetingMode ? '#c7c9cc' : '#374151' }}>원하는 작업을 선택하세요.</div>
+            <div style={{ fontSize: 13, color: meetingMode ? '#c7c9cc' : '#374151' }}>
+              {canChangeBoard
+                ? '원하는 작업을 선택하세요.'
+                : '보드 변경 권한이 없습니다. 다른 참가자가 고른 보드를 따릅니다.'}
+            </div>
             <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'flex-end' }}>
               <button
                 type="button"
                 onClick={handleUseExistingBoardChoice}
-                style={{ padding: '8px 12px', border: '1px solid #e5e7eb', background: meetingMode ? '#313338' : 'white', cursor: 'pointer' }}
+                disabled={!canChangeBoard}
+                style={{
+                  padding: '8px 12px',
+                  border: '1px solid #e5e7eb',
+                  background: meetingMode ? '#313338' : 'white',
+                  cursor: canChangeBoard ? 'pointer' : 'not-allowed',
+                  opacity: canChangeBoard ? 1 : 0.5,
+                }}
               >
                 기존 보드 불러오기
               </button>
               <button
                 type="button"
                 onClick={handleCreateNewBoardChoice}
-                style={{ padding: '8px 12px', border: 'none', background: '#111827', color: 'white', cursor: 'pointer' }}
+                disabled={!canChangeBoard}
+                style={{
+                  padding: '8px 12px',
+                  border: 'none',
+                  background: '#111827',
+                  color: 'white',
+                  cursor: canChangeBoard ? 'pointer' : 'not-allowed',
+                  opacity: canChangeBoard ? 1 : 0.5,
+                }}
               >
                 새 보드 생성
               </button>

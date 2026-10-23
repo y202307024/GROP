@@ -3,8 +3,8 @@ import { supabase } from '../services/supabaseClient';
 import { useNavigate } from 'react-router-dom';
 import AppShell from '../components/AppShell';
 import VoiceSettingsPanel from '../components/VoiceSettingsPanel';
+import { AVATAR_OPTIONS, DEFAULT_AVATAR_KEY, getAvatarSrc } from '../utils/avatarOptions';
 
-const avatars = ['🐱', '🐶', '🐸', '🐼', '🦊', '🐨', '🐯', '🦁', '🐙', '🐬'];
 const MAX_FILE_SIZE_MB = 3;
 
 // 앱 전체에서 쓰이는 "기본 프로필" (그룹별로 따로 설정 안 하면 이게 대신 보임)
@@ -14,11 +14,12 @@ export default function DefaultProfile() {
 
   const [userId, setUserId] = useState<string | null>(null);
   const [nickname, setNickname] = useState('');
-  const [selectedAvatar, setSelectedAvatar] = useState('🐱');
+  const [selectedAvatar, setSelectedAvatar] = useState(DEFAULT_AVATAR_KEY);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -34,7 +35,7 @@ export default function DefaultProfile() {
 
       if (data) {
         setNickname(data.nickname ?? '');
-        setSelectedAvatar(data.avatar ?? '🐱');
+        setSelectedAvatar(data.avatar ?? DEFAULT_AVATAR_KEY);
         setAvatarUrl(data.avatar_url ?? null);
       }
       setLoading(false);
@@ -100,6 +101,19 @@ export default function DefaultProfile() {
     }
   };
 
+  /** 전체 설정에서 로그아웃 — 세션 종료 후 로그인 화면으로 */
+  const handleLogout = async () => {
+    if (!confirm('로그아웃 하시겠습니까?')) return;
+    setLoggingOut(true);
+    const { error } = await supabase.auth.signOut();
+    setLoggingOut(false);
+    if (error) {
+      alert(`로그아웃 실패: ${error.message}`);
+      return;
+    }
+    navigate('/');
+  };
+
   if (loading) {
     return (
       <AppShell activePage="setting">
@@ -119,7 +133,7 @@ export default function DefaultProfile() {
 
           <div className="profile-photo-section">
             <div className="profile-photo-preview">
-              {avatarUrl ? <img src={avatarUrl} alt="프로필 사진" /> : selectedAvatar}
+              <img src={avatarUrl || getAvatarSrc(selectedAvatar)} alt="프로필 사진" />
             </div>
             <div className="profile-photo-actions">
               <button type="button" className="secondary-button" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
@@ -135,14 +149,14 @@ export default function DefaultProfile() {
           <div className="profile-avatar-section">
             <div className="profile-section-label">아바타 선택</div>
             <div className="avatar-grid">
-              {avatars.map((a) => (
+              {AVATAR_OPTIONS.map((a) => (
                 <button
-                  key={a}
+                  key={a.key}
                   type="button"
-                  className={`avatar-option${!avatarUrl && selectedAvatar === a ? ' is-selected' : ''}`}
-                  onClick={() => { setSelectedAvatar(a); setAvatarUrl(null); }}
+                  className={`avatar-option${!avatarUrl && selectedAvatar === a.key ? ' is-selected' : ''}`}
+                  onClick={() => { setSelectedAvatar(a.key); setAvatarUrl(null); }}
                 >
-                  {a}
+                  <img src={a.src} alt="" />
                 </button>
               ))}
             </div>
@@ -172,8 +186,23 @@ export default function DefaultProfile() {
         <div className="settings-card" style={{ marginTop: 24 }}>
           <div className="settings-section">
             <h3>음성</h3>
-            <p className="settings-desc">마이크와 헤드셋을 고르고 음량을 조절합니다. 회의방에 그대로 적용됩니다.</p>
+            <p className="settings-desc">마이크와 헤드셋을 고르고 음량을 조절합니다. 장치가 없으면 없음을 선택하세요. 회의방에 그대로 적용됩니다.</p>
             <VoiceSettingsPanel hideHeading />
+          </div>
+        </div>
+
+        <div className="settings-card" style={{ marginTop: 24 }}>
+          <div className="settings-section">
+            <h3>계정</h3>
+            <p className="settings-desc">이 기기에서 GROP 계정 접속을 종료합니다.</p>
+            <button
+              type="button"
+              className="danger-button"
+              disabled={loggingOut}
+              onClick={() => void handleLogout()}
+            >
+              {loggingOut ? '로그아웃 중...' : '로그아웃'}
+            </button>
           </div>
         </div>
       </div>

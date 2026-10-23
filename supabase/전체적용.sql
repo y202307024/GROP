@@ -112,6 +112,16 @@ $$;
 revoke all on function public.is_group_member(uuid) from public;
 grant execute on function public.is_group_member(uuid) to authenticated;
 
+-- 같은 그룹 멤버끼리는 서로의 행도 조회 가능
+drop policy if exists "group_members_select_own" on public.group_members;
+drop policy if exists "group_members_select_member" on public.group_members;
+create policy "group_members_select_member" on public.group_members
+for select to authenticated
+using (
+  user_id = auth.uid()
+  or public.is_group_member(group_id)
+);
+
 -- 그룹을 만든 사람이 멤버 테이블에 빠져 있을 때 자동 등록
 create or replace function public.ensure_group_creator_member(p_group_id uuid)
 returns boolean
@@ -475,6 +485,30 @@ create index if not exists meetings_group_date_idx
 --   time 은 영상 시작부터의 초 단위 정수입니다.
 alter table public.meetings
   add column if not exists chapters jsonb;
+
+-- 상세요약용 전체 녹취록([MM:SS] 타임스탬프 포함)
+alter table public.meetings
+  add column if not exists transcript text;
+
+-- 주제별요약
+--   [{ "topic": "모니터 사양", "detail": "..." }, ...]
+alter table public.meetings
+  add column if not exists topics jsonb;
+
+-- 발언자별요약 (녹취록에 화자 표시가 없어 AI 추정)
+--   [{ "speaker": "화자 1", "summary": "..." }, ...]
+alter table public.meetings
+  add column if not exists speakers jsonb;
+
+-- 회의 중 올린 첨부 파일 목록
+--   [{ "id", "name", "path", "size", "mime", "ts" }, ...]
+alter table public.meetings
+  add column if not exists attachments jsonb not null default '[]'::jsonb;
+
+-- 회의 중 채팅 전체 — 마이크 없이 진행한 회의도 이걸로 AI 요약을 만듭니다.
+--   [{ "id", "from", "name", "text", "ts" }, ...]
+alter table public.meetings
+  add column if not exists chat_log jsonb not null default '[]'::jsonb;
 
 -- ── 권한 / RLS ──────────────────────────────────────────────
 grant select, insert, update, delete on public.meetings to authenticated;
