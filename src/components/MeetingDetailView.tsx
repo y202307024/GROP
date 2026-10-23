@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon';
+import styles from './MeetingDetailView.module.css';
+import a from './MeetingDetailAi.module.css';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import { chatLogForSummary } from '../utils/liveMeeting';
-import { primeWebmSeeking, resolveMeetingVideoUrl } from '../utils/meetingVideo';
+import {
+  meetingHasStoredVideo,
+  meetingVideoStatusLabel,
+  primeWebmSeeking,
+  resolveMeetingVideoUrl,
+} from '../utils/meetingVideo';
 import {
   findActiveChapterIndex,
   formatTimestamp,
@@ -19,6 +26,10 @@ type Meeting = {
   date: string;
   summary: string | null;
   video_url: string | null;
+  /** R2 객체 키. 있으면 재생·요약은 이 키를 쓰고, 없으면 video_url(예전 디스크)을 씁니다. */
+  video_key?: string | null;
+  /** pending_upload | uploaded | backed_up | failed */
+  video_status?: string | null;
   group_id: string;
   created_at?: string | null;
   chapters?: unknown;
@@ -33,6 +44,36 @@ type Meeting = {
   topic_line?: string | null; // AI가 쓴 회의 주제 한 줄
   recording_seconds?: number | null; // 녹화 길이(초)
 };
+
+/** 선택된 회의가 없을 때(AI 요약 탭에 회의록이 하나도 없을 때) 쓰는 빈 회의 placeholder */
+const EMPTY_MEETING: Meeting = {
+  id: '',
+  title: '',
+  date: '',
+  summary: null,
+  video_url: null,
+  group_id: '',
+};
+
+/** 카드에 넣을 한 줄. 배열·빈 값은 버립니다. */
+function cleanLine(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/** 사람 이름만 남깁니다. 빈 값·익명·"화자 1" 같은 추정 라벨은 참석자로 쓰지 않습니다. */
+function personNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const names: string[] = [];
+  for (const item of raw) {
+    const name = typeof item === 'string' ? item.trim() : '';
+    if (!name || names.includes(name)) continue;
+    if (name === '익명' || name === '참여자' || name === '나') continue;
+    if (/^화자\s*\d+$/.test(name)) continue;
+    names.push(name);
+  }
+  return names;
+}
 
 /** meetings.chat_log에 실제 메시지가 있는지(요약 재료로 쓸 수 있는지)만 가볍게 확인 */
 function hasUsableChatLog(raw: unknown): boolean {
@@ -87,26 +128,6 @@ function normalizeSpeakers(raw: unknown): { speaker: string; summary: string }[]
       return { speaker, summary };
     })
     .filter((s) => s.speaker && s.summary);
-}
-
-/** 카드에 넣을 한 줄. 배열·빈 값은 버립니다. */
-function cleanLine(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-/** 사람 이름만 남깁니다. 빈 값·익명·"화자 1" 같은 추정 라벨은 참석자로 쓰지 않습니다. */
-function personNames(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  const names: string[] = [];
-  for (const item of raw) {
-    const name = typeof item === 'string' ? item.trim() : '';
-    if (!name || names.includes(name)) continue;
-    if (name === '익명' || name === '참여자' || name === '나') continue;
-    if (/^화자\s*\d+$/.test(name)) continue;
-    names.push(name);
-  }
-  return names;
 }
 
 const USER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -242,8 +263,8 @@ function missingMeetingsColumn(message: string): string | null {
 }
 
 type Props = {
-  /** 보여 줄 회의 id */
-  meetingId: string;
+  /** 보여 줄 회의 id. null이면 (선택된 회의가 없으면) 빈 상태 레이아웃을 보여줍니다. */
+  meetingId: string | null;
   /** 뒤로가기 버튼 동작. 넘기지 않으면 버튼을 숨깁니다(임베드 상황). */
   onBack?: () => void;
   /** 뒤로가기 버튼 라벨 */
@@ -424,13 +445,15 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   const [aiStep, setAiStep] = useState('');
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState('');
-  // ai 목업 레이아웃 전용 상태 (탭 하이라이트 / 대화록 더보기)
-  const [videoTab, setVideoTab] = useState<'all' | 'speaker'>('all');
-  const [summaryTab, setSummaryTab] = useState<'core' | 'timeline'>('core');
-  // 회의가 속한 그룹 이름. 정보 카드 맨 위 행에 씁니다.
   const [groupName, setGroupName] = useState('');
-  // 참석자 칸에 쓸 닉네임. 그룹 프로필(없으면 기본 프로필) 닉네임입니다.
   const [nicknames, setNicknames] = useState<string[]>([]);
+  // ai 목업 레이아웃 전용 상태 (탭 하이라이트 / 대화록 더보기)
+  // 큰 탭(요약 생성 / 회의 영상), 영상 탭의 대화내역 탭(타임라인 / 채팅), 요약 미리보기 탭(핵심 / 시간대별)
+  const [mainTab, setMainTab] = useState<'summary' | 'video'>('summary');
+  const [chatTab, setChatTab] = useState<'timeline' | 'chat' | 'speaker'>('timeline');
+  const [summaryTab, setSummaryTab] = useState<'core' | 'timeline'>('core');
+  // 요약 탭에서 [MM:SS]/구간을 눌렀을 때: 영상 탭으로 넘어간 뒤 영상이 준비되면 그 시점으로 이동하려고 기억해 둡니다
+  const pendingSeekRef = useRef<number | null>(null);
 
   // 챕터 타임라인 관련
   const [chapters, setChapters] = useState<MeetingChapter[]>([]);
@@ -490,24 +513,35 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   }, [meeting]);
 
   useEffect(() => {
-    if (!meeting?.video_url) {
+    const videoKey = meeting?.video_key?.trim() || '';
+    const videoUrl = meeting?.video_url?.trim() || '';
+    // R2 키가 있으면 재생 주소를 다시 받고, 없으면 예전 /videos 경로를 그대로 씁니다.
+    if (!videoKey && !videoUrl) {
       setPlaybackUrl(null);
       setPlaybackError('');
       return;
     }
     let mounted = true;
-    void resolveMeetingVideoUrl(meeting.video_url).then((url) => {
+    void resolveMeetingVideoUrl(videoUrl, videoKey).then((url) => {
       if (!mounted) return;
-      setPlaybackUrl(url);
-      setPlaybackError('');
-    }).catch(() => {
+      setPlaybackUrl(url || null);
+      setPlaybackError(url ? '' : '녹화 파일을 불러올 수 없습니다.');
+    }).catch((err: unknown) => {
       if (!mounted) return;
-      setPlaybackError('녹화 파일을 불러올 수 없습니다.');
+      setPlaybackError(err instanceof Error ? err.message : '녹화 파일을 불러올 수 없습니다.');
     });
     return () => { mounted = false; };
-  }, [meeting?.video_url]);
+  }, [meeting?.video_url, meeting?.video_key]);
 
   const fetchMeeting = async () => {
+    // 선택된 회의가 없으면(id가 null) 서버 조회 없이 바로 빈 상태로 둡니다.
+    if (!meetingId) {
+      setMeeting(null);
+      setSummaryInput('');
+      setChapters([]);
+      setLoading(false);
+      return;
+    }
     const { data } = await supabase
       .from('meetings')
       .select('*')
@@ -538,20 +572,35 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
    */
   const handleLoadedMetadata = async () => {
     const video = videoRef.current;
-    if (!video || seekPrimedRef.current) return;
-    seekPrimedRef.current = true;
-    const resolved = await primeWebmSeeking(video);
-    setDuration(resolved);
-    // 회의 시간 칸이 새로고침 뒤에도 녹화 길이를 쓰도록 남겨 둡니다. 컬럼이 없으면 화면 값만 씁니다.
-    if (resolved > 0) {
-      const { error } = await supabase
-        .from('meetings')
-        .update({ recording_seconds: Math.round(resolved) })
-        .eq('id', meetingId);
-      if (error && !missingMeetingsColumn(error.message)) {
-        console.warn('녹화 길이 저장 실패:', error.message);
-      }
+    if (!video) return;
+    if (!seekPrimedRef.current) {
+      seekPrimedRef.current = true;
+      const resolved = await primeWebmSeeking(video);
+      setDuration(resolved);
     }
+    // 요약 탭에서 시점을 눌러 넘어온 경우 — 영상이 준비된 지금 그 시점으로 이동합니다
+    if (pendingSeekRef.current !== null) {
+      const target = pendingSeekRef.current;
+      pendingSeekRef.current = null;
+      video.currentTime = target;
+      setCurrentTime(target);
+      void video.play().catch(() => {});
+    }
+  };
+
+  // 영상 탭을 벗어나면 <video>가 사라지므로, 다시 돌아와 새로 생기는 영상은 처음부터 다시 보정해야 합니다
+  useEffect(() => {
+    if (mainTab !== 'video') seekPrimedRef.current = false;
+  }, [mainTab]);
+
+  /** 요약 탭의 시점 클릭 → 영상 탭으로 이동한 뒤 그 시점으로 */
+  const goToVideoAt = (seconds: number) => {
+    if (mainTab === 'video') {
+      void seekTo(seconds);
+      return;
+    }
+    pendingSeekRef.current = seconds;
+    setMainTab('video');
   };
 
   /** 챕터/타임스탬프 클릭 → 해당 시점으로 점프 후 재생 */
@@ -573,11 +622,12 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     video.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
-  // AI 요약 생성 (챕터 포함). 마이크 음성이 없으면(또는 녹화 자체가 없으면) 회의 중 채팅으로 대체합니다.
+  // AI 요약 생성 (챕터 포함)
   const generateAiSummary = async () => {
     if (!meeting) return;
     const chatAvailable = hasUsableChatLog(meeting.chat_log);
-    if (!meeting.video_url && !chatAvailable) {
+    const hasVideo = meetingHasStoredVideo(meeting);
+    if (!hasVideo && !chatAvailable) {
       alert('녹화 파일도, 채팅 기록도 없어요!');
       return;
     }
@@ -585,17 +635,17 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     setAiLoading(true);
 
     try {
-      setAiStep(meeting.video_url ? '🎙️ 음성 변환 중...' : '💬 채팅 기록 정리 중...');
-      // 브라우저는 https://localhost:5173/videos/... 로 재생하지만,
-      // 서버는 mkcert 인증서를 못 믿어서 그 주소로 다시 받으면 실패합니다.
-      // DB에 저장된 경로(또는 /videos/ 상대경로)를 그대로 넘기면 서버가 디스크에서 읽습니다.
+      setAiStep(hasVideo ? '🎙️ 음성 변환 중...' : '💬 채팅 기록 정리 중...');
+      // R2 영상이면 videoKey만 넘깁니다. 서버가 원본을 내려받아 음성만 추출합니다.
+      // 예전 영상은 video_url을 그대로 넘기고, 서버가 디스크에서 읽습니다.
       // 마이크 음성이 없는 회의(no-mic)에 대비해 채팅 기록도 함께 보내면,
       // 서버가 음성에서 텍스트를 못 뽑았을 때 채팅으로 대신 요약합니다.
+      const videoKey = meeting.video_key?.trim();
       const res = await fetch(`${getApiBase()}/api/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          videoUrl: meeting.video_url,
+          ...(videoKey ? { videoKey } : { videoUrl: meeting.video_url }),
           chatLog: chatLogForSummary(meeting.chat_log),
           // 모델이 날짜를 지어내지 않도록, 화면에 쓰는 것과 같은 날짜 문구를 넘깁니다.
           meetingDateLabel: formatDate(meeting.date),
@@ -648,8 +698,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       if (error) throw new Error(error.message);
 
       await fetchMeeting();
-      const sourceNote = data.source === 'chat' ? ' (마이크 음성이 없어 채팅 기록으로 요약했어요)' : '';
-      if (meeting.group_id) {
+      if (meeting?.group_id) {
         await notifyGroupMembers({
           groupId: meeting.group_id,
           type: 'ai_summary',
@@ -660,9 +709,9 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         });
       }
       alert(
-        (nextChapters.length > 0
+        nextChapters.length > 0
           ? `AI 요약 완성! 타임라인 ${nextChapters.length}개가 만들어졌어요 🎉`
-          : 'AI 요약이 완성됐어요! 🎉') + sourceNote
+          : 'AI 요약이 완성됐어요! 🎉'
       );
 
     } catch (err) {
@@ -765,7 +814,9 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   };
 
   if (loading) return <div style={{ padding: 40, fontFamily: 'sans-serif', color: '#888' }}>불러오는 중...</div>;
-  if (!meeting) return <div style={{ padding: 40, fontFamily: 'sans-serif', color: '#888' }}>회의록을 찾을 수 없어요</div>;
+  // 'ai' 탭은 선택된 회의가 없어도(meeting === null) 레이아웃은 그대로 두고
+  // 데이터가 들어가는 자리만 비워서 보여줘야 해서, 여기서 바로 끊지 않습니다.
+  if (!meeting && variant !== 'ai') return <div style={{ padding: 40, fontFamily: 'sans-serif', color: '#888' }}>회의록을 찾을 수 없어요</div>;
 
   /* =====================================================================
      AI 요약 탭 레이아웃 — grop/css/ai.css 목업 구조에 실제 회의 데이터를 채웁니다.
@@ -773,322 +824,435 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
      레이아웃과 완전히 동일한 것을 공유합니다.
   ===================================================================== */
   if (variant === 'ai') {
-    // 요약 텍스트를 클립보드로 복사
-    const copySummary = () => void navigator.clipboard?.writeText(meeting.summary ?? '');
-    // 회의록 링크 공유 (클립보드 복사)
-    const shareMeeting = () => {
-      const url = `${window.location.origin}/group/${meeting.group_id}/meeting/${meeting.id}`;
-      void navigator.clipboard?.writeText(url);
-      alert('회의록 링크를 복사했어요.');
-    };
-    const hasSummary = !!meeting.summary;
-    // 녹화(마이크 유무 무관) 또는 채팅 기록 중 하나라도 있으면 요약을 만들 수 있습니다.
-    const canSummarize = !!meeting.video_url || hasUsableChatLog(meeting.chat_log);
-    // 핵심요약 탭은 '회의 핵심 요약' 문단만 보여줍니다. 헤더가 없는 예전 글만 타임라인을 뺀 본문을 씁니다.
-    const { core: coreSummary, timeline } = splitSummary(meeting.summary, chapters);
-    const coreOverview = parseSummaryForPdf(meeting.summary).overview;
-    const coreSummaryText = coreOverview ? `📋 회의 핵심 요약\n${coreOverview}` : coreSummary;
-    // 발언자별요약 = { speaker, summary }[] (녹취록에 화자 표시가 없어 AI 추정치) — 채팅 기록이 없을 때만 씁니다.
-    const speakers = normalizeSpeakers(meeting.speakers);
-    // 회의 중 채팅 원문 — '전체 채팅' 탭은 이걸 그대로 보여주고, '발언자별'도 요약 대신
-    // 실제로 그 사람이 쓴 메시지를 전부 모아서 보여줍니다(채팅 기록이 있을 때 더 정확함).
-    const chatMessages = normalizeChatLog(meeting.chat_log);
-    const chatBySpeaker = groupChatBySpeaker(chatMessages);
-    // 회의 날짜는 한줄평 없이 실제 날짜만 보여 줍니다.
-    const dateLine = formatDate(meeting.date);
-    const topicLine = cleanLine(meeting.topic_line) || topicNames(meeting.topics).join(', ') || '—';
-    const memberNames = nicknames.length > 0 ? nicknames : attendeeNames(meeting);
+    // 선택된 회의가 없으면 빈 placeholder로 채워서, 레이아웃 자체는 항상 같은 모습으로 보여줍니다.
+    const m = meeting ?? EMPTY_MEETING;
+    const hasSummary = !!m.summary;
+    // 요약 본문은 '핵심 요약'과 '시간대별(타임라인)'로 나눠 탭마다 보여줍니다.
+    const { core: coreSummary, timeline } = splitSummary(m.summary, chapters);
+    const hasTranscript = !!m.transcript?.trim();
+    const memberNames = nicknames.length > 0 ? nicknames : attendeeNames(m);
+    const videoStatusLabel = meetingVideoStatusLabel(m.video_status);
     // 회의 시간은 방 체류 시간이 아니라 녹화 길이입니다.
-    const recordingSec = duration > 0 ? duration : Number(meeting.recording_seconds) || 0;
+    const recordingSec = duration > 0 ? duration : Number(m.recording_seconds) || 0;
     const durationLabel = recordingSec > 0 ? formatMinutesDuring(recordingSec * 1000) : '—';
-    const bounds = sessionBounds(meeting, 0);
-    const sessionLabel = formatSessionRange(bounds, meeting.created_at);
+    const sessionLabel = formatSessionRange(sessionBounds(m, 0), m.created_at);
+
+    /** '2026.09.06 11:30 AM' — 제목 아래 줄에 쓰는 날짜 */
+    const metaDate = (() => {
+      if (!m.date) return '—';
+      const d = new Date(m.date);
+      let h = d.getHours();
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12 || 12;
+      return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')} ${String(h).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')} ${ampm}`;
+    })();
+
+    /**
+     * 회의 주제 — AI 요약(핵심 요약)의 첫 문장을 그대로 씁니다. 별도 "주제" 컬럼이 없고,
+     * 요약 맨 윗줄의 "📋 회의 핵심 요약" 같은 제목 줄은 건너뜁니다.
+     */
+    const topic = cleanLine(m.topic_line) || topicNames(m.topics).join(', ') || (() => {
+      const line = coreSummary
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => l && !(l.length <= 20 && l.includes('요약')));
+      if (!line) return '';
+      const first = line.split(/(?<=[.!?。])\s/)[0];
+      return first.length > 90 ? `${first.slice(0, 90)}…` : first;
+    })();
+
+    /** 텍스트를 .txt 파일로 내려받습니다 */
+    const downloadText = (filename: string, text: string) => {
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    };
+    // 회의 채팅 기록 — meetings.chat_log(마이크 없이 진행한 회의도 요약 재료로 쓰는 그 기록)를 그대로 보여줍니다.
+    const rawChatMessages = normalizeChatLog(m.chat_log);
+    const chatMessages = rawChatMessages.map((msg, i) => ({
+      id: `${msg.ts}-${i}`,
+      sender: msg.name,
+      time: formatClockTime(msg.ts),
+      text: msg.text,
+    }));
+    const hasChat = chatMessages.length > 0;
+    // 발언자별 탭: 채팅 기록이 있으면 그 사람이 실제로 쓴 메시지를 모아 보여주고,
+    // 없으면(음성만 있는 회의) AI가 추정한 화자별 요약으로 대신합니다.
+    const chatBySpeaker = groupChatBySpeaker(rawChatMessages);
+    const speakers = normalizeSpeakers(m.speakers);
+    const baseName = (m.title || '회의').replace(/[\\/:*?"<>|]/g, '_');
+    const downloadTranscript = () => hasTranscript && downloadText(`${baseName}_음성텍스트.txt`, m.transcript ?? '');
+    const downloadChat = () =>
+      hasChat &&
+      downloadText(`${baseName}_채팅기록.txt`, chatMessages.map((c) => `[${c.time}] ${c.sender}: ${c.text}`).join('\n'));
+    /** 받을 수 있는 파일(요약·채팅·음성 텍스트)을 모두 내려받습니다 */
+    const downloadAll = () => {
+      if (hasChat) downloadChat();
+      if (hasSummary) downloadText(`${baseName}_AI요약.txt`, m.summary ?? '');
+      if (hasTranscript) downloadTranscript();
+    };
+
+    /** AI 파일 생성 카드 3개 — 상태/버튼 동작이 서로 달라 데이터로 정리해 둡니다 */
+    const fileCards = [
+      {
+        key: 'summary',
+        title: 'AI 회의 요약',
+        desc: '핵심 내용과 결정 사항을 정리해요.',
+        done: hasSummary,
+        statusText: hasSummary ? '생성 완료' : '아직 만들지 않았어요',
+        canRegenerate: true,
+        onDownload: downloadSummary, // PDF(인쇄) 형태
+      },
+      {
+        key: 'chat',
+        title: '채팅 기록',
+        desc: '회의 중 주고받은 채팅을 저장해요.',
+        // 저장된 채팅이 생기면(chatMessages) 자동으로 "생성 완료"가 되고 다운로드가 켜집니다
+        done: hasChat,
+        statusText: hasChat ? '저장 완료' : '저장된 기록이 없어요',
+        canRegenerate: false,
+        onDownload: hasChat ? downloadChat : undefined,
+      },
+      {
+        key: 'voice',
+        title: '음성 텍스트',
+        desc: '회의 음성을 텍스트로 정리해요.',
+        done: hasTranscript,
+        statusText: hasTranscript ? '생성 완료' : '아직 만들지 않았어요',
+        // 음성 텍스트는 AI 요약을 만들 때 함께 생성됩니다
+        canRegenerate: true,
+        onDownload: hasTranscript ? downloadTranscript : undefined,
+      },
+    ];
 
     return (
       <>
-        {/* ---------- 회의 영상 ---------- */}
-        <section className="panel ai-video-section">
-          <div className="ai-video-header">
-            <span>회의 영상</span>
-            <div className="ai-video-tabs">
-              <button
-                type="button"
-                className={`video-tab${videoTab === 'all' ? ' active' : ''}`}
-                onClick={() => setVideoTab('all')}
-              >
-                전체 채팅
-              </button>
-              <button
-                type="button"
-                className={`video-tab${videoTab === 'speaker' ? ' active' : ''}`}
-                onClick={() => setVideoTab('speaker')}
-              >
-                발언자별
-              </button>
-            </div>
+        {/* ---------- 큰 탭: 요약 생성 / 회의 영상 (뒤로가기는 오른쪽 끝) ---------- */}
+        <div className={a.tabRow}>
+          <div className={a.tabs}>
+            <button
+              type="button"
+              className={`${a.tab}${mainTab === 'summary' ? ` ${a.tabActive}` : ''}`}
+              onClick={() => setMainTab('summary')}
+            >
+              요약 생성
+            </button>
+            <button
+              type="button"
+              className={`${a.tab}${mainTab === 'video' ? ` ${a.tabActive}` : ''}`}
+              onClick={() => setMainTab('video')}
+            >
+              회의 영상
+            </button>
           </div>
+          {onBack && (
+            <button type="button" className={a.backButton} aria-label={backLabel} title={backLabel} onClick={onBack}>
+              <Icon name="chevron-left" />
+            </button>
+          )}
+        </div>
 
-          <div className="ai-video-body">
-            {meeting.video_url && playbackUrl ? (
-              <video
-                ref={videoRef}
-                key={playbackUrl}
-                src={playbackUrl}
-                controls
-                playsInline
-                preload="metadata"
-                onLoadedMetadata={handleLoadedMetadata}
-                onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-                className="ai-video-placeholder"
-                style={{ background: '#000', objectFit: 'contain' }}
-              />
-            ) : (
-              <div
-                className="ai-video-placeholder"
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.9)', fontSize: 13 }}
-              >
-                {meeting.video_url ? playbackError || '녹화 파일 불러오는 중...' : '녹화 파일이 없어요'}
-              </div>
-            )}
+        {/* ---------- 회의 제목 + 날짜/참석자 (두 탭 공통) ---------- */}
+        <div className={a.head}>
+          <h1 className={a.headTitle}>{m.title?.trim() || (meeting ? '회의' : '선택된 회의가 없어요')}</h1>
+          <div className={a.headMeta}>
+            <span className={a.metaItem}>
+              <Icon name="users" />
+              {groupName || '—'}
+            </span>
+            <span className={a.metaDivider} />
+            <span className={a.metaItem}>
+              <Icon name="calendar" />
+              {metaDate}
+            </span>
+            <span className={a.metaDivider} />
+            <span className={a.metaItem}>
+              <Icon name="users" />
+              참석자 {memberNames.length > 0 ? memberNames.join(', ') : '—'}
+            </span>
+            <span className={a.metaDivider} />
+            <span className={a.metaItem}>
+              <Icon name="clock" />
+              {durationLabel} ({sessionLabel})
+            </span>
+          </div>
+        </div>
 
-            {/* 오른쪽 열: '전체 채팅' → 실제 채팅 메시지 / '발언자별' → 그 사람이 한 말 전체 (많으면 세로 스크롤) */}
-            <div className="ai-transcript">
-              <div className="ai-transcript-list">
-                {videoTab === 'speaker' ? (
-                  chatBySpeaker.length > 0 ? (
-                    // 채팅 기록이 있으면 AI 요약이 아니라 그 사람이 실제로 쓴 메시지를 전부 모아 보여줍니다.
-                    chatBySpeaker.map((s, i) => (
-                      <div key={i}>
-                        <div className="ai-transcript-meta">
-                          <Icon name="circle-user" />
-                          <span className="ai-transcript-speaker">{s.speaker}</span>
+        {mainTab === 'summary' ? (
+          /* =============== 요약 생성 탭 =============== */
+          <div className={`${a.grid} ${a.gridSummary}`}>
+            {/* 패널 위 제목은 두지 않습니다 */}
+            <section className={a.col}>
+              <div className={a.panel}>
+                <div className={a.fileCards}>
+                  {fileCards.map((f) => (
+                    <div className={a.fileCard} key={f.key}>
+                      <span className={a.fileIcon}>
+                        <Icon name="file-text" />
+                      </span>
+                      <div className={a.fileText}>
+                        <div className={a.fileTitle}>{f.title}</div>
+                        <div className={a.fileDesc}>{f.desc}</div>
+                        <div className={`${a.fileStatus}${f.done ? '' : ` ${a.fileStatusOff}`}`}>
+                          {f.done && <Icon name="check-circle" />}
+                          {f.statusText}
                         </div>
-                        <p className="ai-transcript-text" style={{ whiteSpace: 'pre-wrap' }}>{s.text}</p>
                       </div>
+                      <button
+                        type="button"
+                        className={a.regenButton}
+                        onClick={generateAiSummary}
+                        disabled={!f.canRegenerate || aiLoading || editingSummary || !meeting}
+                      >
+                        {aiLoading && f.canRegenerate ? '만드는 중...' : f.done ? '다시 생성' : '생성'}
+                      </button>
+                      <button type="button" className={a.downloadButton} onClick={f.onDownload} disabled={!f.onDownload}>
+                        <Icon name="download" />
+                        다운로드
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className={a.downloadAll}
+                  onClick={downloadAll}
+                  disabled={!hasSummary && !hasTranscript}
+                >
+                  <Icon name="download" />
+                  전체 파일 다운로드
+                </button>
+              </div>
+            </section>
+
+            <section className={a.col}>
+              <div className={a.panel}>
+                {/* 두 탭이 패널 폭을 반반 나눠 갖고 글자는 각 탭 가운데 */}
+                <div className={a.previewTabs}>
+                  <button
+                    type="button"
+                    className={`${styles.videoTab}${summaryTab === 'core' ? ` ${styles.videoTabActive}` : ''}`}
+                    onClick={() => setSummaryTab('core')}
+                  >
+                    핵심 요약
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.videoTab}${summaryTab === 'timeline' ? ` ${styles.videoTabActive}` : ''}`}
+                    onClick={() => setSummaryTab('timeline')}
+                  >
+                    시간대별 요약
+                  </button>
+                </div>
+
+                <div className={a.previewBody}>
+                  {aiLoading ? (
+                    <p className={a.paragraph}>AI가 회의록을 작성하고 있어요 — {aiStep}</p>
+                  ) : editingSummary ? (
+                    <textarea
+                      className={a.editArea}
+                      value={summaryInput}
+                      onChange={(e) => setSummaryInput(e.target.value)}
+                      placeholder="회의 내용을 입력하세요"
+                    />
+                  ) : hasSummary ? (
+                    summaryTab === 'timeline' ? (
+                      timeline.length > 0 ? (
+                        timeline.map((c, i) => {
+                          const end = timeline[i + 1]?.time ?? (duration > 0 ? duration : null);
+                          return (
+                            <button type="button" key={`${c.time}-${i}`} className={a.rangeItem} onClick={() => goToVideoAt(c.time)}>
+                              <span className={a.rangeTime}>
+                                {formatTimestamp(c.time)} {end !== null ? `~ ${formatTimestamp(end)}` : '~'}
+                              </span>
+                              <span className={a.paragraph}>
+                                <strong>{c.title}</strong>
+                                {c.summary ? ` - ${c.summary}` : ''}
+                              </span>
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <p className={`${a.paragraph} ${a.muted}`}>
+                          아직 시간대별 요약이 없어요. 왼쪽에서 AI 회의 요약을 다시 생성해 주세요.
+                        </p>
+                      )
+                    ) : (
+                      <p className={a.paragraph} style={{ whiteSpace: 'pre-wrap' }}>
+                        <SummaryWithTimestamps text={coreSummary} onSeek={goToVideoAt} />
+                      </p>
+                    )
+                  ) : (
+                    <p className={`${a.paragraph} ${a.muted}`}>
+                      아무 내용이 없습니다.{m.video_url ? ' 왼쪽 “AI 회의 요약”에서 생성을 누르면 요약이 만들어져요.' : ''}
+                    </p>
+                  )}
+                </div>
+
+                {/* 요약 수정 — 요약이 있을 때만. 편집 중에는 취소/저장 */}
+                <div className={a.previewFooter}>
+                  {editingSummary ? (
+                    <>
+                      <button type="button" className={a.textButton} onClick={() => { setSummaryInput(m.summary ?? ''); setEditingSummary(false); }}>
+                        취소
+                      </button>
+                      <button type="button" className={`${a.textButton} ${a.textButtonPrimary}`} onClick={saveSummary}>
+                        저장
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className={a.textButton}
+                      onClick={() => setEditingSummary(true)}
+                      disabled={!hasSummary || aiLoading}
+                    >
+                      수정
+                    </button>
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>
+        ) : (
+          /* =============== 회의 영상 탭 =============== */
+          <div className={`${a.grid} ${a.gridVideo}`}>
+            <section className={`${a.panel} ${a.videoPanel}`}>
+              {m.video_url && playbackUrl ? (
+                <video
+                  ref={videoRef}
+                  key={playbackUrl}
+                  src={playbackUrl}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  onLoadedMetadata={handleLoadedMetadata}
+                  onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+                  className={a.video}
+                />
+              ) : (
+                <div className={`${a.video} ${a.videoEmpty}`}>
+                  {m.video_url ? playbackError || videoStatusLabel || '녹화 파일 불러오는 중...' : '녹화 파일이 없어요'}
+                </div>
+              )}
+
+              {/* 회의 주제만 — 날짜·참석자 등은 제목 아래 줄에 이미 있습니다 */}
+              <div className={a.topicCard}>
+                <div className={a.topicLabel}>
+                  <Icon name="clipboard-list" />
+                  회의 주제
+                </div>
+                <p className={`${a.topicText}${topic ? '' : ` ${a.muted}`}`}>
+                  {topic || 'AI 요약을 생성하면 회의 주제가 여기에 표시돼요.'}
+                </p>
+              </div>
+            </section>
+
+            {/* 대화내역 — 제목 없이 탭(타임라인/채팅)부터. 탭 모양은 기존 AI 요약 페이지의 것을 그대로 씁니다 */}
+            <section className={a.panel}>
+              <div className={a.previewTabs}>
+                <button
+                  type="button"
+                  className={`${styles.videoTab}${chatTab === 'timeline' ? ` ${styles.videoTabActive}` : ''}`}
+                  onClick={() => setChatTab('timeline')}
+                >
+                  타임라인
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.videoTab}${chatTab === 'chat' ? ` ${styles.videoTabActive}` : ''}`}
+                  onClick={() => setChatTab('chat')}
+                >
+                  채팅
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.videoTab}${chatTab === 'speaker' ? ` ${styles.videoTabActive}` : ''}`}
+                  onClick={() => setChatTab('speaker')}
+                >
+                  발언자별
+                </button>
+              </div>
+
+              <div className={a.previewBody}>
+                {chatTab === 'timeline' ? (
+                  timeline.length > 0 ? (
+                    timeline.map((c, i) => (
+                      <button
+                        type="button"
+                        key={`${c.time}-${i}`}
+                        className={`${a.timelineItem}${i === activeIndex ? ` ${a.timelineItemActive}` : ''}`}
+                        onClick={() => void seekTo(c.time)}
+                      >
+                        <span className={a.timelineHead}>
+                          <Icon name="clock" />
+                          <span className={a.timelineTime}>{formatTimestamp(c.time)}</span>
+                          <span className={a.timelineTitle}>{c.title}</span>
+                        </span>
+                        {c.summary && <span className={a.timelineDesc}>{c.summary}</span>}
+                      </button>
                     ))
-                  ) : speakers.length > 0 ? (
-                    // 채팅 기록이 없는(음성만 있는) 회의는 AI가 추정한 화자별 요약으로 대신합니다.
-                    speakers.map((s, i) => (
-                      <div key={i}>
-                        <div className="ai-transcript-meta">
-                          <Icon name="circle-user" />
-                          <span className="ai-transcript-speaker">{s.speaker}</span>
+                  ) : (
+                    <p className={`${a.paragraph} ${a.muted}`}>
+                      {hasSummary
+                        ? '이 회의에는 타임라인이 없어요.'
+                        : '아직 타임라인이 없어요. AI 요약을 생성하면 구간별 내용이 여기에 표시됩니다.'}
+                    </p>
+                  )
+                ) : chatTab === 'chat' ? (
+                  hasChat ? (
+                    chatMessages.map((c) => (
+                      <div key={c.id} className={a.chatItem}>
+                        <div className={a.chatMeta}>
+                          <span className={a.chatSender}>{c.sender}</span>
+                          <span className={a.chatTime}>{c.time}</span>
                         </div>
-                        <p className="ai-transcript-text">{s.summary}</p>
+                        <p className={a.chatBubble}>{c.text}</p>
                       </div>
                     ))
                   ) : (
-                    <p className="ai-transcript-text" style={{ color: '#999' }}>
+                    <p className={`${a.paragraph} ${a.muted}`}>저장된 채팅 기록이 없어요.</p>
+                  )
+                ) : (
+                  chatBySpeaker.length > 0 ? (
+                    chatBySpeaker.map((s, i) => (
+                      <div key={i} className={a.chatItem}>
+                        <div className={a.chatMeta}>
+                          <span className={a.chatSender}>{s.speaker}</span>
+                        </div>
+                        <p className={a.chatBubble} style={{ whiteSpace: 'pre-wrap' }}>{s.text}</p>
+                      </div>
+                    ))
+                  ) : speakers.length > 0 ? (
+                    speakers.map((s, i) => (
+                      <div key={i} className={a.chatItem}>
+                        <div className={a.chatMeta}>
+                          <span className={a.chatSender}>{s.speaker}</span>
+                        </div>
+                        <p className={a.chatBubble}>{s.summary}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className={`${a.paragraph} ${a.muted}`}>
                       {hasSummary
                         ? '발언자별로 보여줄 채팅이나 화자 구분 정보가 없어요.'
                         : 'AI 요약을 생성하면 발언자별 내용이 여기에 표시됩니다.'}
                     </p>
                   )
-                ) : chatMessages.length > 0 ? (
-                  chatMessages.map((m, i) => (
-                    <div key={i}>
-                      <div className="ai-transcript-meta">
-                        <Icon name="clock" />
-                        <span className="ai-transcript-time">{formatClockTime(m.ts)}</span>
-                        <span className="ai-transcript-speaker">{m.name}</span>
-                      </div>
-                      <p className="ai-transcript-text" style={{ whiteSpace: 'pre-wrap' }}>{m.text}</p>
-                    </div>
-                  ))
-                ) : (
-                  <p className="ai-transcript-text" style={{ color: '#999' }}>
-                    이 회의에는 채팅 기록이 없어요.
-                  </p>
                 )}
               </div>
-            </div>
+            </section>
           </div>
-        </section>
-
-        {/* ---------- AI 요약 결과 ---------- */}
-        <section className="panel ai-summary-section">
-          <div className="ai-summary-title">
-            <span>AI 요약 결과</span>
-            {!aiLoading && !editingSummary && (
-              <div className="ai-summary-title-actions">
-                {canSummarize && (
-                  <button type="button" className="primary" onClick={generateAiSummary}>
-                    ✨ AI 요약 생성
-                  </button>
-                )}
-                {hasSummary && (
-                  <button type="button" onClick={() => setEditingSummary(true)}>
-                    ✏️ 수정
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="ai-summary-tabs">
-            <button
-              type="button"
-              className={`ai-summary-tab${summaryTab === 'core' ? ' active' : ''}`}
-              onClick={() => setSummaryTab('core')}
-            >
-              <span>핵심요약</span>
-            </button>
-            <button
-              type="button"
-              className={`ai-summary-tab${summaryTab === 'timeline' ? ' active' : ''}`}
-              onClick={() => setSummaryTab('timeline')}
-            >
-              <span>시간대별요약</span>
-            </button>
-          </div>
-
-          <div className="ai-summary-body">
-            <div className="ai-summary-left">
-              {aiLoading ? (
-                <p className="ai-summary-paragraph">🤖 AI가 회의록을 작성하고 있어요 — {aiStep}</p>
-              ) : editingSummary ? (
-                <textarea
-                  value={summaryInput}
-                  onChange={(e) => setSummaryInput(e.target.value)}
-                  rows={12}
-                  style={{ width: '100%', padding: '10px 12px', border: '1px solid #eee', borderRadius: 8, fontSize: 14, lineHeight: 1.6, resize: 'vertical', boxSizing: 'border-box', fontFamily: 'sans-serif' }}
-                  placeholder="회의 내용을 입력하세요"
-                />
-              ) : hasSummary ? (
-                summaryTab === 'timeline' ? (
-                  // 시간대별요약: 구간을 [시작~다음 구간 시작] 범위로 보여줍니다.
-                  timeline.length > 0 ? (
-                    <div>
-                      {timeline.map((c, i) => {
-                        const end = timeline[i + 1]?.time ?? (duration > 0 ? duration : null);
-                        return (
-                          <button
-                            type="button"
-                            key={`${c.time}-${i}`}
-                            onClick={() => void seekTo(c.time)}
-                            style={{ display: 'block', width: '100%', border: 'none', background: 'transparent', textAlign: 'left', padding: 0, marginBottom: 16, cursor: 'pointer' }}
-                          >
-                            <div style={{ fontSize: 12, fontWeight: 700, color: '#1D9E75', fontVariantNumeric: 'tabular-nums', marginBottom: 4 }}>
-                              {formatTimestamp(c.time)} {end !== null ? `~ ${formatTimestamp(end)}` : '~'}
-                            </div>
-                            <p className="ai-summary-paragraph" style={{ margin: 0 }}>
-                              <strong>{c.title}</strong>{c.summary ? ` - ${c.summary}` : ''}
-                            </p>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="ai-summary-paragraph" style={{ color: '#999' }}>
-                      아직 시간대별 요약이 없어요. “AI 요약 생성”을 다시 실행해 주세요.
-                    </p>
-                  )
-                ) : (
-                  // 핵심요약 탭: 회의 핵심 요약 문단만. 논의 내용·결정·할 일은 여기에 넣지 않습니다.
-                  <p className="ai-summary-paragraph" style={{ whiteSpace: 'pre-wrap' }}>
-                    <SummaryWithTimestamps text={coreSummaryText} onSeek={(s) => void seekTo(s)} />
-                  </p>
-                )
-              ) : (
-                <p className="ai-summary-paragraph" style={{ color: '#999' }}>
-                  아무 내용이 없습니다.
-                  {canSummarize ? ' 오른쪽 위 “AI 요약 생성”을 누르면 요약이 만들어집니다.' : ''}
-                </p>
-              )}
-
-              {/* 액션 버튼 — 스크린샷 순서: 복사 / PDF 다운로드 / 요약 문서로 변환 / 공유하기 */}
-              <div className="ai-action-buttons">
-                {editingSummary ? (
-                  <>
-                    <button type="button" className="ai-action-button" onClick={() => setEditingSummary(false)}>
-                      취소
-                    </button>
-                    <button type="button" className="ai-action-button ai-action-button-primary" onClick={saveSummary}>
-                      저장
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button type="button" className="ai-action-button" onClick={copySummary} disabled={!hasSummary}>
-                      <Icon name="copy" />
-                      복사
-                    </button>
-                    <button type="button" className="ai-action-button" onClick={downloadSummary} disabled={!hasSummary}>
-                      <Icon name="download" />
-                      PDF 다운로드
-                    </button>
-                    <button
-                      type="button"
-                      className="ai-action-button"
-                      onClick={() => alert('준비 중인 기능이에요.')}
-                      disabled={!hasSummary}
-                    >
-                      <Icon name="file-text" />
-                      요약 문서로 변환
-                    </button>
-                    <button
-                      type="button"
-                      className="ai-action-button ai-action-button-primary"
-                      onClick={shareMeeting}
-                    >
-                      <Icon name="share-2" />
-                      공유하기
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* 회의 정보 카드 — 그룹명, AI 한 줄, 참석자, 진행 시간, 열고 닫은 시각 */}
-            <aside className="meeting-info">
-              <div className="meeting-info-title">회의 정보</div>
-
-              <div className="meeting-info-item">
-                <Icon name="users" />
-                <span>회의 그룹명</span>
-                <span className="meeting-info-value">{groupName || '—'}</span>
-              </div>
-
-              <div className="meeting-info-item">
-                <Icon name="clipboard-list" />
-                <span>회의 날짜</span>
-                <span className="meeting-info-value">{dateLine}</span>
-              </div>
-
-              <div className="meeting-info-item">
-                <Icon name="pencil" />
-                <span>회의 주제</span>
-                <span className="meeting-info-value">{topicLine}</span>
-              </div>
-
-              <div className="meeting-info-item">
-                <Icon name="circle-user" />
-                <span>참석자</span>
-                <span className="meeting-info-value">
-                  {memberNames.length > 0 ? memberNames.join(', ') : '—'}
-                </span>
-              </div>
-
-              <div className="meeting-info-item">
-                <Icon name="clock" />
-                <span>회의 시간</span>
-                <span className="meeting-info-value">{durationLabel}</span>
-              </div>
-
-              <div className="meeting-info-item">
-                <Icon name="clock" />
-                <span>생성 시간</span>
-                <span className="meeting-info-value">{sessionLabel}</span>
-              </div>
-            </aside>
-          </div>
-        </section>
+        )}
       </>
     );
   }
-
-  // 녹화(마이크 유무 무관) 또는 채팅 기록 중 하나라도 있으면 요약을 만들 수 있습니다.
-  const canSummarize = !!meeting.video_url || hasUsableChatLog(meeting.chat_log);
+  // 위에서 'ai' 레이아웃은 회의가 없어도 그렸고, 단독 페이지는 회의가 있어야만 그립니다
+  if (!meeting) return null;
+  const videoStatusLabel = meetingVideoStatusLabel(meeting.video_status);
 
   return (
     <div style={{ maxWidth: 720, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 20px' }}>
@@ -1109,8 +1273,14 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
 
       {/* 영상 섹션 */}
       <div style={{ background: '#fff', border: '0.5px solid #eee', borderRadius: 12, padding: 24, marginBottom: 20 }}>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>🎬 회의 녹화</div>
-        {meeting.video_url ? (
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>
+          🎬 회의 녹화
+          {/* 업로드 대기 / 저장 완료. 예전 디스크 영상은 상태가 없어 이 글이 없습니다. */}
+          {videoStatusLabel ? (
+            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: '#888' }}>{videoStatusLabel}</span>
+          ) : null}
+        </div>
+        {meetingHasStoredVideo(meeting) ? (
           playbackUrl ? (
             <video
               ref={videoRef}
@@ -1125,7 +1295,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
             />
           ) : (
             <div style={{ textAlign: 'center', padding: '32px 0', color: '#888', fontSize: 13 }}>
-              {playbackError || '녹화 파일 불러오는 중...'}
+              {playbackError || videoStatusLabel || '녹화 파일 불러오는 중...'}
             </div>
           )
         ) : (
@@ -1208,7 +1378,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <div style={{ fontSize: 15, fontWeight: 600 }}>🤖 AI 회의록</div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {canSummarize && !aiLoading && (
+            {meeting.video_url && !aiLoading && (
               <button onClick={generateAiSummary}
                 style={{ fontSize: 12, padding: '5px 12px', background: '#1D9E75', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
                 ✨ AI 요약 생성
@@ -1269,9 +1439,9 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
             <div style={{ fontSize: 28, marginBottom: 8 }}>🤖</div>
             <div style={{ fontSize: 14 }}>아무 내용이 없습니다</div>
             <div style={{ fontSize: 12, marginTop: 4 }}>
-              {canSummarize
+              {meeting.video_url
                 ? '✨ AI 요약 생성 버튼을 누르면 요약이 만들어집니다.'
-                : '파일만 올린 문서이거나, 아직 녹화·채팅 기록이 없어요.'}
+                : '파일만 올린 문서이거나, 아직 녹화가 없어요.'}
             </div>
           </div>
         )}

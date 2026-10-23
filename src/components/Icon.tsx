@@ -27,7 +27,15 @@ type IconProps = {
     | 'clock'
     | 'copy'
     | 'download'
-    | 'share-2';
+    | 'share-2'
+    | 'search'
+    | 'chevron-down'
+    | 'mic'
+    | 'volume-2'
+    | 'image'
+    | 'info'
+    | 'message-circle'
+    | 'pin';
   className?: string;
 };
 
@@ -210,6 +218,62 @@ export default function Icon({ name, className }: IconProps) {
           <circle cx="6" cy="12" r="3" />
           <circle cx="18" cy="19" r="3" />
           <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+        </svg>
+      );
+    case 'search':
+      return (
+        <svg {...common}>
+          <circle cx="11" cy="11" r="7" />
+          <path d="m21 21-4.3-4.3" />
+        </svg>
+      );
+    case 'chevron-down':
+      return (
+        <svg {...common}>
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      );
+    case 'mic':
+      return (
+        <svg {...common}>
+          <rect x="9" y="2" width="6" height="12" rx="3" />
+          <path d="M5 10a7 7 0 0 0 14 0M12 19v3" />
+        </svg>
+      );
+    case 'volume-2':
+      return (
+        <svg {...common}>
+          <path d="M5 9v6h4l5 4V5L9 9H5Z" />
+          <path d="M18.5 8.5a5 5 0 0 1 0 7M21 6a9 9 0 0 1 0 12" />
+        </svg>
+      );
+    case 'image':
+      return (
+        <svg {...common}>
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <circle cx="8.5" cy="9.5" r="1.5" />
+          <path d="m21 15-5-5L5 21" />
+        </svg>
+      );
+    case 'info':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11v6M12 8v.01" />
+        </svg>
+      );
+    case 'message-circle':
+      return (
+        <svg {...common}>
+          <path d="M21 12a8.5 8.5 0 0 1-8.5 8.5c-1.3 0-2.5-.3-3.6-.8L3 21l1.3-5.6A8.5 8.5 0 1 1 21 12Z" />
+        </svg>
+      );
+    case 'pin':
+      // 압정 — 고정 공지 표시
+      return (
+        <svg {...common}>
+          <path d="M9 4h6l-1 6 3 3H7l3-3-1-6Z" />
+          <path d="M12 13v7" />
         </svg>
       );
     default:

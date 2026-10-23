@@ -13,22 +13,19 @@ export default function MeetingDetail() {
 
   if (!meetingId) return null;
 
+  // 회의록 목록 페이지를 없앴으므로, 문서 목록에서 온 게 아니면 그룹 상세로 돌아갑니다.
   const backToMeetings = () => {
     if (from === 'documents') {
       navigate('/documents');
       return;
     }
-    if (from === 'meetings') {
-      navigate('/meetings');
-      return;
-    }
-    navigate(`/group/${groupId}/meetings`);
+    navigate(`/group/${groupId}`);
   };
 
   return (
     <MeetingDetailView
       meetingId={meetingId}
-      backLabel={from === 'documents' ? '문서 목록' : '회의록 목록'}
+      backLabel={from === 'documents' ? '문서 목록' : '그룹'}
       onBack={backToMeetings}
     />
   );

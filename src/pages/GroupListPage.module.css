@@ -1,0 +1,423 @@
+/**
+ * 그룹 목록 페이지 — 피그마 "그룹" 화면(2048×1152 캔버스, 앱 기준 1440×810 → ×0.703).
+ * 큰 구조(여백/카드 크기)는 vh·% 로, 작은 요소는 ×0.703, 글자는 토큰으로 조금 크게 잡습니다.
+ */
+
+/* 설정 페이지(DefaultProfile)와 같은 방식 — 피그마는 제목 위치가 위에서 62px(88×0.703)인데
+   AppShell은 82px라 20px 끌어올리고, 그만큼 높이를 늘려 아래 크롬(122px → 102px)을 뺍니다.
+   스크롤은 카드 목록(.list)에만 두어서 페이지 전체엔 스크롤이 생기지 않습니다. */
+.page {
+  position: relative;
+  width: 100%;
+  /* 102px + 45px: 카드 목록 끝을 영역 끝에서 45px 위에 둡니다(그룹 상세 하단 패널과 같은 끝선) */
+  height: calc(var(--app-h, 100dvh) - 147px);
+  min-height: 0;
+  margin-top: -20px;
+
+  display: flex;
+  flex-direction: column;
+}
+
+/* "그룹 만들기" — 피그마 221×52.87px. 새 시안에서는 상단바 줄이 아니라 툴바 줄의
+   정렬 버튼 오른쪽(간격 25px × 0.703 ≈ 18px)에 놓여서 흐름 배치(.toolbarRight 안)로 옮겼습니다. */
+.createButton {
+  flex-shrink: 0;
+
+  width: 155px;
+  height: 37px;
+
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-primary-button);
+
+  font-size: var(--text-md);
+  font-weight: var(--weight-normal);
+  color: #ffffff;
+  cursor: pointer;
+
+  transition: filter var(--transition-fast);
+}
+
+.createButton:hover {
+  filter: brightness(0.95);
+}
+
+/* =========================================
+   머리말
+========================================= */
+
+.label {
+  margin: 0;
+
+  font-size: var(--text-4xl);
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+}
+
+/* 피그마 37.2px/500 → ×0.703 ≈ 26px. 라벨(끝 128)→헤드라인(136) 8px ÷ 1152px */
+.headline {
+  margin: calc(0.69 * var(--app-vh, 1vh)) 0 0;
+
+  font-size: 26px;
+  font-weight: var(--weight-medium);
+  line-height: 1.18;
+  color: var(--color-text);
+}
+
+/* 헤드라인(끝 180) → 부제목(201) 21px ÷ 1152px */
+.subtitle {
+  margin: calc(1.82 * var(--app-vh, 1vh)) 0 0;
+
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+
+/* =========================================
+   툴바: 전체 개수 배지 + 정렬
+========================================= */
+
+/* 부제목(끝 220) → 정렬 버튼(253) 33px, 정렬 버튼(끝 308) → 카드(336) 28px (÷ 1152px) */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  /* 시안 새 버전: 정렬 버튼(끝 306) → 첫 카드(약 365) 59px ÷ 1152px ≈ 5.1vh */
+  margin: calc(2.86 * var(--app-vh, 1vh)) 0 calc(5.1 * var(--app-vh, 1vh));
+}
+
+/* 정렬 버튼 + 그룹 만들기 버튼 묶음. 시안은 오른쪽 끝이 1974(콘텐츠 끝 2005에서 31px = 1.8%)이고,
+   그 바깥 약 2.6%는 목록 스크롤바(6px)가 들어갈 자리입니다. */
+.toolbarRight {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+
+  margin-right: 1.8%;
+}
+
+/* 피그마 143×39, #E6F4E8 배경, 글자 #427A2A */
+.countPill {
+  /* 피그마 "전체 (N)" 배지: 143×39px 고정 상자에 글자가 가운데(안쪽 5px 8px, 글자 사이 10px, 모서리 10px).
+     ×0.703 → 100×27px, 안쪽 6px, 글자 사이 7px, 모서리 7px. 글자 수(개수 자릿수)와 상관없이 같은 크기를 유지합니다. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+
+  box-sizing: border-box;
+  min-width: 100px;
+  height: 27px;
+  padding: 0 6px;
+  border-radius: 7px;
+  background: #e6f4e8;
+
+  /* 피그마 20px / 400 / 줄 높이 23px(≈ 1.15배) × 0.703 ≈ 14px */
+  font-size: var(--text-md);
+  line-height: 1.15;
+  font-weight: var(--weight-normal);
+  color: #427a2a;
+  white-space: nowrap;
+}
+
+.sortWrap {
+  position: relative;
+}
+
+/* 피그마 170×55, 1px #D9D9D9, radius 10 */
+.sortButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+
+  min-width: 120px;
+  height: 38px;
+  padding: 0 var(--space-7);
+
+  border: 1px solid #d9d9d9;
+  border-radius: 7px;
+  background: transparent;
+
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  color: #848a95;
+  cursor: pointer;
+}
+
+.sortChevron {
+  width: 14px;
+  height: 14px;
+}
+
+.sortMenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 2;
+
+  min-width: 100%;
+  margin: 0;
+  padding: var(--space-2);
+  list-style: none;
+
+  border: 1px solid #d9d9d9;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.sortOption {
+  display: block;
+  width: 100%;
+  padding: var(--space-4) var(--space-6);
+
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+
+  font-size: var(--text-md);
+  color: #848a95;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sortOption:hover {
+  background: var(--color-bg);
+}
+
+.sortOptionActive {
+  color: var(--color-primary);
+  font-weight: var(--weight-semibold);
+}
+
+/* =========================================
+   카드 목록 (이 영역만 스크롤)
+========================================= */
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+
+  /* 피그마 Scrollbar - Vertical: 6px 얇은 막대, rgba(0,0,0,.15) */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+}
+
+.list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.list::-webkit-scrollbar-thumb {
+  border-radius: 1000px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.empty {
+  margin: 0;
+  padding-top: calc(4 * var(--app-vh, 1vh));
+
+  font-size: var(--text-lg);
+  color: var(--color-text-faint);
+}
+
+/* 3열(새 시안). 카드 517.6×204 + 그림자 여백(×0.8) = 527.2×213.6 → 콘텐츠 폭(309 → 2005 = 1696px)의 31.1%,
+   카드 왼쪽 → 다음 카드 왼쪽 562.6px → 열 사이 간격 (562.6 − 527.2) ÷ 1696 ≈ 2.1%,
+   행 사이는 249 − 213.6 = 35.4px ÷ 1152px ≈ 3.07vh.
+   3열 합계가 97.4%라 남는 오른쪽 약 2.6%가 스크롤바 자리가 됩니다. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 31.1%);
+  column-gap: 2.1%;
+  row-gap: calc(3.07 * var(--app-vh, 1vh));
+  align-items: start;
+}
+
+/* 카드 배경은 새로 만든 group-list-card.svg(카드 647×255 + 그림자 여백, 좌표는 피그마 그대로).
+   MainPage의 group-card.svg는 395:240 비율이라 이 카드(647:255)에 늘려 쓰면 곡선이
+   찌그러져서, 같은 도안을 이 비율로 다시 그렸습니다. SVG와 같은 비율(659:267)로 카드를 만들어
+   배경 100% 100%가 왜곡 없이 맞고, 안의 요소는 SVG 좌표계의 %로 놓습니다:
+   왼쪽 = (4.36 + 시안 x) ÷ 659, 위 = (2.9 + 시안 y) ÷ 267, 글자/아이콘 크기는 cqw(= 카드 폭 1%) */
+.card {
+  position: relative;
+  aspect-ratio: 659 / 267;
+  /* SVG 안쪽으로 4.36px 들어가 있는 카드 왼쪽 선을 제목과 맞춥니다 */
+  margin-left: -0.66%;
+  container-type: inline-size;
+
+  background-image: url('../assets/group-list-card.svg');
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  overflow: hidden;
+
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+}
+
+/* (카드가 시안 새 버전에서 ×0.8로 작아져, 아래 max() 최소값을 한 단계씩 낮췄습니다) */
+/* 이니셜 "D": Archivo 700 140px(→ 21.24cqw), 왼쪽 52 / 위 51 */
+.badge {
+  position: absolute;
+  left: 8.56%;
+  top: 20.1%;
+
+  color: var(--color-primary);
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: 21.24cqw;
+  line-height: 1.086;
+
+  pointer-events: none;
+}
+
+/* 그룹명 24px/600 초록 — 왼쪽 203 / 위 34.5 */
+.name {
+  position: absolute;
+  left: 31.43%;
+  top: 14%;
+  width: 50%;
+
+  color: var(--color-primary);
+  font-size: max(14px, 3.64cqw);
+  font-weight: 600;
+  line-height: 1.17;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 초대코드 18px/500 #A2A2A2 — 위 69.5 */
+.invite {
+  position: absolute;
+  left: 31.43%;
+  top: 27.1%;
+  width: 50%;
+
+  color: var(--color-text-faint);
+  font-size: max(11px, 2.73cqw);
+  font-weight: 500;
+  line-height: 1.19;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 참석자 — 30px 원(→ 4.55cqw), 간격 5px(→ 0.76cqw), 흰 테두리, 배경 #E6F4E8. 왼쪽 206 / 위 117 */
+.members {
+  position: absolute;
+  left: 31.88%;
+  top: 44.9%;
+
+  display: flex;
+  align-items: center;
+  gap: 0.76cqw;
+}
+
+.members svg,
+.members img {
+  box-sizing: border-box;
+  width: max(18px, 4.55cqw);
+  height: max(18px, 4.55cqw);
+  flex-shrink: 0;
+
+  color: var(--color-primary);
+  background: #e6f4e8;
+  border: max(1.5px, 0.3cqw) solid #ffffff;
+  border-radius: 50%;
+  object-fit: cover; /* 프로필 이미지가 원 안에 꽉 차게 */
+}
+
+/* "+2" 22px/500, 검정 50% */
+.more {
+  margin-left: 0.5cqw;
+
+  color: #000000;
+  opacity: 0.5;
+  font-size: max(12px, 3.36cqw);
+  font-weight: 500;
+}
+
+/* 회의·문서 수 — 20px/400 초록, 아이콘 23px(→ 3.49cqw), 아이콘↔글자 11.5px, 항목 사이 24.5px. 왼쪽 206 / 위 188 */
+.stats {
+  position: absolute;
+  left: 31.88%;
+  top: 71.5%;
+
+  display: flex;
+  align-items: center;
+  gap: 3.7cqw;
+
+  color: var(--color-primary);
+  font-size: max(12px, 3.03cqw);
+  font-weight: 400;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 1.75cqw;
+}
+
+.stat svg {
+  width: max(12px, 3.49cqw);
+  height: max(12px, 3.49cqw);
+  flex-shrink: 0;
+}
+
+/* 즐겨찾기(왼쪽 572)·더보기(왼쪽 611) — 30px(→ 4.55cqw), 위 19.5 */
+.favoriteButton,
+.moreButton {
+  position: absolute;
+  top: 8.4%;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  width: max(18px, 4.55cqw);
+  height: max(18px, 4.55cqw);
+  padding: 0;
+
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.favoriteButton {
+  left: 87.5%;
+
+  color: var(--color-primary);
+}
+
+.favoriteButton svg {
+  width: 100%;
+  height: 100%;
+
+  /* 꺼짐 = 윤곽선만, 켜짐 = 채움 */
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+}
+
+.favoriteOn svg {
+  fill: currentColor;
+}
+
+.moreButton {
+  left: 93.4%;
+}
+
+.moreButton img {
+  width: 100%;
+  height: 100%;
+}

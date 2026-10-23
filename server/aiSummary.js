@@ -10,9 +10,10 @@ const path = require('path')
 const { execFile } = require('child_process')
 
 /**
- * npm 의존성(groq-sdk, ffmpeg-static)은 처음 쓸 때 불러옵니다.
+ * groq-sdk 는 처음 쓸 때 불러옵니다.
  * Netlify 번들러는 server/ 폴더 안의 require 를 함수 번들에 넣지 못해 실행 시 "Cannot find module" 이 나므로,
  * Netlify 함수는 직접 import 한 모듈을 configureAiSummaryDeps 로 넘겨줍니다. Express 는 아래 require 를 그대로 씁니다.
+ * 음성 추출 ffmpeg 는 서버에 설치된 바이너리를 child_process 로 실행합니다. ffmpeg-static 은 여기서 불러오지 않습니다.
  */
 let deps = null
 
@@ -24,25 +25,64 @@ function configureAiSummaryDeps(next) {
 function getDeps() {
   if (!deps) {
     const groqSdk = require('groq-sdk')
-    let ffmpegPath = null
-    try {
-      ffmpegPath = require('ffmpeg-static')
-    } catch {
-      /* ffmpeg-static 미설치 → FFMPEG_PATH 또는 PATH 의 ffmpeg 사용 */
-    }
-    deps = { Groq: groqSdk, toFile: groqSdk.toFile, ffmpegPath }
+    // Express 는 시스템 ffmpeg 만 씁니다. Netlify 가 넘긴 경로는 아래 getFfmpegPath 에서 유지됩니다.
+    deps = { Groq: groqSdk, toFile: groqSdk.toFile, ffmpegPath: null }
   }
   return deps
 }
 
-// 오디오 추출용 ffmpeg. ffmpeg-static 을 우선 쓰고,
-// 없으면 FFMPEG_PATH 환경변수, 그것도 없으면 PATH 의 ffmpeg 를 씁니다.
+// FFMPEG_PATH 가 있으면 그 경로, Netlify 가 넣어 준 경로, 없으면 PATH 의 ffmpeg.
 function getFfmpegPath() {
-  return getDeps().ffmpegPath || process.env.FFMPEG_PATH || 'ffmpeg'
+  return process.env.FFMPEG_PATH || getDeps().ffmpegPath || 'ffmpeg'
 }
 
-// Groq Whisper 업로드 한도 (초과 시 친절히 안내)
+function ffmpegMissingError() {
+  const err = new Error(
+    '서버에 ffmpeg가 설치되어 있지 않습니다. 회의 영상에서 음성을 추출할 수 없어요. 서버에 ffmpeg를 설치한 뒤 다시 시도해 주세요.',
+  )
+  err.code = 'FFMPEG_MISSING'
+  return err
+}
+
+// 한 프로세스에서 설치 여부를 반복 확인하지 않습니다. 실패하면 다음 요청에서 다시 봅니다.
+let ffmpegReadyPromise = null
+function assertFfmpegAvailable() {
+  if (!ffmpegReadyPromise) {
+    ffmpegReadyPromise = new Promise((resolve, reject) => {
+      execFile(getFfmpegPath(), ['-version'], { timeout: 15000 }, (err) => {
+        if (err) {
+          ffmpegReadyPromise = null
+          reject(ffmpegMissingError())
+          return
+        }
+        resolve()
+      })
+    })
+  }
+  return ffmpegReadyPromise
+}
+
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    execFile(getFfmpegPath(), args, { timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 * 10 }, (err, stdout, stderr) => {
+      if (!err) {
+        resolve({ stdout: stdout || '', stderr: stderr || '' })
+        return
+      }
+      if (err.code === 'ENOENT') {
+        reject(ffmpegMissingError())
+        return
+      }
+      reject(new Error(String(stderr || err.message || 'ffmpeg 실행 실패')))
+    })
+  })
+}
+
+// Groq Whisper 업로드 한도. 넘으면 약 10분 단위로 겹쳐 잘라 전사합니다.
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024
+const AUDIO_CHUNK_SECONDS = 10 * 60
+// 경계에 걸린 말이 잘리지 않게, 다음 조각 앞에 이 길이만큼 겹칩니다.
+const AUDIO_CHUNK_OVERLAP_SECONDS = 30
 
 // Groq은 모델을 자주 교체·폐기합니다(llama 계열은 이미 전부 내려갔습니다).
 // 모델명이 404가 나면 코드를 고치지 말고 환경변수 GROQ_MODEL만 바꾸세요.
@@ -357,53 +397,177 @@ function buildSummaryText(result, chapters, topics = []) {
 
 /**
  * 녹화 파일에서 오디오만 뽑아 16kHz mono MP3(32kbps)로 변환합니다.
- * 회의 녹화(webm, 영상+음성)는 금방 25MB(Whisper 업로드 한도)를 넘지만,
- * 이렇게 줄이면 1시간짜리도 약 14MB 안쪽이라 한도 문제가 사라집니다.
+ * 영상 원본은 Groq로 보내지 않습니다. 시스템 ffmpeg 가 없으면 설치 안내로 끝냅니다.
  *
  * @param {string} inputPath 로컬 파일 경로 (없으면 buffer 사용)
  * @param {Buffer|null} inputBuffer 경로가 없을 때 임시 파일로 쓸 원본 버퍼
  * @returns {Promise<Buffer>} 변환된 mp3 버퍼
  */
-function extractAudio(inputPath, inputBuffer) {
+async function extractAudio(inputPath, inputBuffer) {
+  await assertFfmpegAvailable()
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const outPath = path.join(os.tmpdir(), `grop-audio-${stamp}.mp3`)
+
+  // 경로가 없으면(HTTP fallback 등) 버퍼를 임시 파일로 떨어뜨려 입력으로 씁니다.
+  let tmpInPath = null
+  let realInput = inputPath
+  if (!realInput) {
+    if (!Buffer.isBuffer(inputBuffer)) {
+      throw new Error('오디오 추출 입력이 없습니다')
+    }
+    tmpInPath = path.join(os.tmpdir(), `grop-src-${stamp}.webm`)
+    fs.writeFileSync(tmpInPath, inputBuffer)
+    realInput = tmpInPath
+  }
+
+  try {
+    await runFfmpeg(['-y', '-i', realInput, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', outPath])
+    return fs.readFileSync(outPath)
+  } catch (err) {
+    if (err && err.code === 'FFMPEG_MISSING') throw err
+    throw new Error(`오디오 추출 실패: ${err.message}`)
+  } finally {
+    if (tmpInPath) fs.rmSync(tmpInPath, { force: true })
+    fs.rmSync(outPath, { force: true })
+  }
+}
+
+/** ffmpeg -i 는 정보를 stderr에 찍고 실패 코드로 끝나므로, Duration 줄만 읽습니다. */
+function probeDurationSeconds(filePath) {
   return new Promise((resolve, reject) => {
-    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const outPath = path.join(os.tmpdir(), `grop-audio-${stamp}.mp3`)
-
-    // 경로가 없으면(HTTP fallback 등) 버퍼를 임시 파일로 떨어뜨려 입력으로 씁니다.
-    let tmpInPath = null
-    let realInput = inputPath
-    if (!realInput) {
-      if (!Buffer.isBuffer(inputBuffer)) {
-        reject(new Error('오디오 추출 입력이 없습니다'))
+    execFile(getFfmpegPath(), ['-hide_banner', '-i', filePath], { timeout: 60 * 1000 }, (err, stdout, stderr) => {
+      if (err && err.code === 'ENOENT') {
+        reject(ffmpegMissingError())
         return
       }
-      tmpInPath = path.join(os.tmpdir(), `grop-src-${stamp}.webm`)
-      fs.writeFileSync(tmpInPath, inputBuffer)
-      realInput = tmpInPath
-    }
-
-    const cleanup = () => {
-      if (tmpInPath) fs.rmSync(tmpInPath, { force: true })
-      fs.rmSync(outPath, { force: true })
-    }
-
-    const args = ['-y', '-i', realInput, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', outPath]
-    execFile(getFfmpegPath(), args, { timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 * 10 }, (err) => {
-      if (err) {
-        cleanup()
-        reject(new Error(`오디오 추출 실패: ${err.message}`))
+      const text = `${stdout || ''}\n${stderr || ''}`
+      const match = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(text)
+      if (!match) {
+        reject(new Error('음성 길이를 확인하지 못했습니다'))
         return
       }
-      try {
-        const out = fs.readFileSync(outPath)
-        resolve(out)
-      } catch (readErr) {
-        reject(readErr)
-      } finally {
-        cleanup()
+      const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        reject(new Error('음성 길이를 확인하지 못했습니다'))
+        return
       }
+      resolve(seconds)
     })
   })
+}
+
+/** 10분보다 짧으면 한 조각. 길면 30초씩 겹치게 잘라 경계 시각을 맞춥니다. */
+function chunkWindows(durationSec) {
+  if (durationSec <= AUDIO_CHUNK_SECONDS) {
+    return [{ start: 0, length: durationSec }]
+  }
+  const step = AUDIO_CHUNK_SECONDS - AUDIO_CHUNK_OVERLAP_SECONDS
+  const windows = []
+  for (let start = 0; start < durationSec - 0.25; start += step) {
+    const length = Math.min(AUDIO_CHUNK_SECONDS, durationSec - start)
+    windows.push({ start, length })
+    if (start + length >= durationSec - 0.25) break
+  }
+  return windows
+}
+
+function cutAudioChunk(srcPath, destPath, startSec, lengthSec) {
+  // -ss 를 입력 뒤에 두어, 겹치는 구간의 시작 시각이 밀리지 않게 합니다.
+  return runFfmpeg([
+    '-y',
+    '-i', srcPath,
+    '-ss', String(startSec),
+    '-t', String(lengthSec),
+    '-vn',
+    '-ac', '1',
+    '-ar', '16000',
+    '-b:a', '32k',
+    destPath,
+  ])
+}
+
+/**
+ * 조각 전사를 한 녹취록으로 합칩니다.
+ * 두 번째 조각부터는 앞과 겹친 30초를 버리고, 남은 구간 시각에 조각 시작(초)을 더합니다.
+ */
+function mergeChunkTranscriptions(parts, durationSec) {
+  const segments = []
+  for (let i = 0; i < parts.length; i += 1) {
+    const offsetSec = parts[i].offsetSec
+    const transcription = parts[i].transcription
+    const raw = Array.isArray(transcription.segments) ? transcription.segments : []
+    const kept = raw.filter((seg) => {
+      const rel = Number(seg.start) || 0
+      return i === 0 || rel >= AUDIO_CHUNK_OVERLAP_SECONDS
+    })
+    if (kept.length > 0) {
+      for (const seg of kept) {
+        const relStart = Number(seg.start) || 0
+        const relEnd = Number(seg.end)
+        segments.push({
+          ...seg,
+          start: relStart + offsetSec,
+          end: (Number.isFinite(relEnd) ? relEnd : relStart) + offsetSec,
+        })
+      }
+      continue
+    }
+    const text = String(transcription.text || '').trim()
+    const chunkDur = Number(transcription.duration) || 0
+    // 구간 시각이 없는 응답은 한 줄로 두고, 겹친 앞부분만큼 시작만 밀어 둡니다.
+    if (text && (i === 0 || chunkDur > AUDIO_CHUNK_OVERLAP_SECONDS)) {
+      const skip = i === 0 ? 0 : AUDIO_CHUNK_OVERLAP_SECONDS
+      segments.push({
+        start: offsetSec + skip,
+        end: offsetSec + Math.max(chunkDur, skip),
+        text,
+      })
+    }
+  }
+  const text = segments.map((seg) => String(seg.text || '').trim()).filter(Boolean).join(' ')
+  return { text, segments, duration: durationSec }
+}
+
+/** 25MB를 넘는 음성만 나눠 전사합니다. 조각 파일은 성공·실패와 관계없이 지웁니다. */
+async function transcribeInChunks(audioBuffer) {
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const srcPath = path.join(os.tmpdir(), `grop-audio-full-${stamp}.mp3`)
+  const chunkPaths = []
+  try {
+    fs.writeFileSync(srcPath, audioBuffer)
+    const durationSec = await probeDurationSeconds(srcPath)
+    const windows = chunkWindows(durationSec)
+    console.log(
+      `오디오 ${(audioBuffer.length / 1024 / 1024).toFixed(1)}MB, `
+      + `${durationSec.toFixed(0)}초 → ${windows.length}조각으로 나눠 전사합니다`,
+    )
+    const parts = []
+    for (const window of windows) {
+      const chunkPath = path.join(os.tmpdir(), `grop-audio-chunk-${stamp}-${parts.length}.mp3`)
+      chunkPaths.push(chunkPath)
+      await cutAudioChunk(srcPath, chunkPath, window.start, window.length)
+      const chunkBuf = fs.readFileSync(chunkPath)
+      if (chunkBuf.length > MAX_AUDIO_BYTES) {
+        const err = new Error(
+          `10분 음성 조각이 여전히 ${(chunkBuf.length / 1024 / 1024).toFixed(1)}MB입니다. `
+          + `한도는 ${MAX_AUDIO_BYTES / 1024 / 1024}MB입니다.`,
+        )
+        err.code = 'AUDIO_CHUNK'
+        throw err
+      }
+      const transcription = await transcribeAudio(chunkBuf, true)
+      parts.push({ offsetSec: window.start, transcription })
+    }
+    return mergeChunkTranscriptions(parts, durationSec)
+  } catch (err) {
+    if (err && (err.code === 'FFMPEG_MISSING' || err.code === 'AUDIO_CHUNK')) throw err
+    const wrapped = new Error(`긴 회의 음성을 나누지 못했습니다: ${err.message}`)
+    wrapped.code = 'AUDIO_CHUNK'
+    throw wrapped
+  } finally {
+    fs.rmSync(srcPath, { force: true })
+    for (const chunkPath of chunkPaths) fs.rmSync(chunkPath, { force: true })
+  }
 }
 
 /**
@@ -422,9 +586,12 @@ async function summarizeMeeting({ loadVideo, chatLog, meetingDateLabel = '' }) {
   let transcriptForLlm = ''
   let durationSec = 0
   let usedChatFallback = false
+  // 영상을 읽다 실패한 이유. 채팅으로도 못 메우면 이 메시지를 그대로 돌려줍니다.
+  let videoLoadError = null
 
   // 1. 영상이 있으면 먼저 오디오 → 텍스트를 시도합니다.
   //    (마이크 없이 진행했거나 처리 중 문제가 생기면 던지지 않고 채팅 기록으로 넘어갑니다.)
+  //    ffmpeg 가 없거나 긴 음성을 나누다 실패하면, 채팅으로 숨기지 않고 그 오류를 반환합니다.
   if (loadVideo) {
     try {
       const source = await loadVideo()
@@ -436,21 +603,18 @@ async function summarizeMeeting({ loadVideo, chatLog, meetingDateLabel = '' }) {
         audioBuffer = await extractAudio(source.filePath || null, source.buffer || null)
         console.log('오디오 추출 완료! 크기:', audioBuffer.length)
       } catch (audioErr) {
+        if (audioErr && audioErr.code === 'FFMPEG_MISSING') throw audioErr
         // 영상 webm을 Whisper에 그대로 올리면 Groq가 400을 주는 경우가 많아, 추출 실패는 여기서 멈추고
         // (바깥 catch가 잡아서) 채팅 기록 대체로 넘어갑니다.
         throw new Error(`오디오를 추출하지 못했습니다: ${audioErr.message}`)
       }
 
-      if (audioBuffer.length > MAX_AUDIO_BYTES) {
-        throw new Error(
-          `오디오가 여전히 너무 큽니다 (${(audioBuffer.length / 1024 / 1024).toFixed(1)}MB). `
-          + `현재 한도는 ${MAX_AUDIO_BYTES / 1024 / 1024}MB 입니다. 회의를 나눠서 녹화해 주세요.`,
-        )
-      }
-
       // 2. Groq Whisper로 음성 → 텍스트 (구간별 타임스탬프 포함, 400이면 옵션을 낮춰 재시도)
+      //    25MB를 넘으면 약 10분씩 겹쳐 자르고, 구간 시각을 원래 위치로 되돌린 뒤 한 녹취록으로 합칩니다.
       console.log('음성 변환 중...')
-      const transcription = await transcribeAudio(audioBuffer, true)
+      const transcription = audioBuffer.length > MAX_AUDIO_BYTES
+        ? await transcribeInChunks(audioBuffer)
+        : await transcribeAudio(audioBuffer, true)
 
       const transcript = transcription.text || ''
       const segments = Array.isArray(transcription.segments) ? transcription.segments : []
@@ -464,6 +628,10 @@ async function summarizeMeeting({ loadVideo, chatLog, meetingDateLabel = '' }) {
         console.log('오디오에서 텍스트를 뽑지 못했습니다 (마이크 없이 진행한 회의일 수 있음) — 채팅 기록으로 대체를 시도합니다.')
       }
     } catch (audioPathErr) {
+      if (audioPathErr && (audioPathErr.code === 'FFMPEG_MISSING' || audioPathErr.code === 'AUDIO_CHUNK')) {
+        throw audioPathErr
+      }
+      videoLoadError = audioPathErr
       // 영상/음성 처리 중 어떤 이유로든 실패해도 바로 에러를 내지 않고, 채팅 기록으로 대체를 시도합니다.
       console.warn('영상/음성 처리 실패, 채팅 기록으로 대체를 시도합니다:', audioPathErr.message)
     }
@@ -481,6 +649,7 @@ async function summarizeMeeting({ loadVideo, chatLog, meetingDateLabel = '' }) {
   }
 
   if (!transcriptForLlm.trim()) {
+    if (videoLoadError) throw videoLoadError
     throw new Error('요약할 내용이 없습니다. 마이크 음성도, 채팅 기록도 확인되지 않았어요.')
   }
 

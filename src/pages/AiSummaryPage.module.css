@@ -1,0 +1,15 @@
+/**
+ * AiSummaryPage(AI 요약 상세) — 페이지 틀만 정의합니다. 탭/제목/패널은 MeetingDetailAi.module.css 가 맡습니다.
+ *
+ * 문서/회의록/멤버/AI 목록 페이지(DocumentList.module.css .docPage)와 같은 틀입니다:
+ * · 높이: 화면 − (.main 위 패딩 28 + 상단바 28 + 간격 26 + 아래 패딩 40 = 122px)
+ * · 위 48px / 아래 45px 는 전역 .page 기본값 그대로(탭 줄·구분선이 다른 페이지와 같은 높이에 옵니다)
+ * · 오른쪽만 22px 더 바깥으로(문서 페이지와 같은 피그마 기준 오른쪽 여백)
+ * 넘치는 내용은 페이지 전체가 아니라 각 패널 안에서만 스크롤됩니다(overflow: hidden).
+ */
+:global(.page).aiDetailPage {
+  height: calc(var(--app-h, 100dvh) - 122px);
+  min-height: 0;
+  overflow: hidden;
+  margin-right: -22px;
+}

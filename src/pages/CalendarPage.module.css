@@ -1,0 +1,1155 @@
+/**
+ * CalendarPage 전용 스타일 — 사용자가 보내준 피그마 변환 코드(Component5.tsx/.module.css,
+ * 2048x1152 캔버스)를 기준으로 맞췄습니다. 두 종류 값을 구분해서 옮겼습니다:
+ *   · 큰 구조(패널 높이, 좌/우 칼럼 사이 공백 등) → 화면 비율(vh/vw)로 환산
+ *     (예: 월 달력 패널 906px ÷ 캔버스 높이 1152px = 78.65% → 78.65vh)
+ *   · 버튼/아이콘처럼 작은 고정 크기 요소 → 캔버스 비율(1440÷2048 ≈ 0.703)을 곱한
+ *     px 값. 화면 크기와 무관하게 늘 비슷한 크기여야 자연스러운 요소들이라 vh/vw
+ *     대신 이렇게 처리했습니다.
+ * 알림/프로필 아이콘, 사이드바는 AppShell이 이미 공통으로 그려서 여기선 안 다룹니다.
+ * "다가오는 일정" 박스는 원본 코드에도 내용 없이 빈 배경 박스(frameChild4)만 있었는데,
+ * 실제로 회의 "예약" 기능이 없어 데이터가 늘 비어 있을 수 있어서 빈 상태 문구를 넣었습니다.
+ */
+
+.calendarPage {
+  width: auto;
+  /* 페이지 전체에 스크롤이 생기던 문제 수정: 예전엔 height:100%였는데 .main의 높이가 정해져 있지 않아서(.app이
+     min-height만 있음) 내용 높이로 계산됐고, 거기에 달력 패널의 min-height(78.65vh)와 오른쪽 열 높이(vh 합)가
+     더해져 "화면 높이"를 넘겼습니다. 다른 페이지(AI 요약/문서 등)처럼 화면 높이에서 AppShell 위아래 크롬
+     (.main 위 패딩 28 + 상단바 28 + 간격 26 + 아래 패딩 40 = 122px)을 뺀 값으로 고정하고,
+     안쪽(달력 칸·오른쪽 박스)이 남는 높이를 나눠 갖게 합니다.
+     세로 위치는 피그마(2048×1152 → ×0.703) 기준으로 맞춥니다: 상단바 줄 ≈ 67px, 달력 카드 위 ≈ 116px·아래 ≈ 753px.
+     · 위: .main의 간격 26px만큼 위로 끌어올리고(상단바와는 겹치지 않음) 위 padding을 10px만 둡니다 → 상단바 줄이 66px.
+     · 아래: 아래 padding을 17px로 줄입니다(카드 그림자가 아래로 약 11px 번져서 그 이하로는 줄이지 않음).
+     그만큼 높이는 122px이 아니라 96px(= 28 + 28 + 40)을 빼고, 달력 카드 아래 끝을 영역 끝에서 45px 위
+     (그룹 상세 하단 패널과 같은 끝선)에 두려고 28px(= 45 − 아래 padding 17)을 더 뺍니다 → 124px. */
+  flex: none;
+  height: calc(var(--app-h, 100dvh) - 124px);
+  box-sizing: border-box;
+
+  /* 좌우 12px padding + 같은 음수 margin은 패널 그림자(옆 8px 번짐)를 가장자리에서 자르지 않게 하는 여유입니다 */
+  margin: -26px -12px 0;
+  padding: 10px 12px 17px 12px;
+
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+
+  /* 높이를 화면에 고정했으니 페이지 스크롤은 없습니다(수정 영역은 안쪽에서만 스크롤) */
+  overflow: hidden;
+}
+
+/* ---------------- 상단: 오늘 버튼 + 월 이동 ---------------- */
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.todayNavGroup {
+  display: flex;
+  align-items: center;
+  /* 피그마: 화살표 묶음 → 오늘 12px × 0.703 ≈ 8px (오늘 → 월 라벨은 아래 .monthPicker의 margin이 17px을 더해 25px) */
+  gap: 8px;
+}
+
+/* 이전/다음 달 화살표 — 피그마(Frame 11): 122×45 → 86×32, 테두리 #D9D9D9, 모서리 10px → 7px,
+   안쪽 여백 좌우 14px → 10px, 아이콘 35px → 25px, 아이콘 사이 25px → 18px. 세로 구분선은 시안에 없습니다. */
+.arrowGroup {
+  box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+
+  width: 86px;
+  height: 32px;
+  padding: 0 10px;
+
+  border: 1px solid #d9d9d9;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.arrowButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 25px;
+  height: 100%;
+
+  border: none;
+  background: transparent;
+
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.arrowButton:hover {
+  background: var(--color-surface-alt);
+}
+
+.arrowButton svg {
+  /* 피그마 35px 아이콘 박스 안의 화살표 모양 폭 약 22px × 0.703 ≈ 15px */
+  width: 15px;
+  height: 15px;
+}
+
+.todayButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 53px;
+  height: 30px;
+
+  /* 피그마: 테두리 #D9D9D9, 글자 #848A95 */
+  border: 1px solid #d9d9d9;
+  border-radius: 7px;
+  background: transparent;
+
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: var(--weight-medium);
+  color: #848a95;
+
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.todayButton:hover {
+  background: var(--color-surface-alt);
+  border-color: var(--color-border-hover);
+}
+
+/* 연/월 라벨 + 드롭다운 — 눌러서 열면 연도/월을 바로 골라 한 번에 여러 달을 건너뜁니다 */
+.monthPicker {
+  position: relative;
+  /* 오늘 → 월 라벨 35px × 0.703 ≈ 25px (위 .todayNavGroup gap 8px + 17px) */
+  margin-left: 17px;
+}
+
+.monthPickerButton {
+  display: flex;
+  align-items: center;
+  /* 피그마: 라벨 끝 → 화살표 15px × 0.703 ≈ 10px */
+  gap: 10px;
+
+  border: none;
+  background: transparent;
+  padding: 0;
+
+  cursor: pointer;
+}
+
+.monthLabel {
+  min-width: 84px;
+
+  font-family: var(--font-sans);
+  /* 피그마 24px × 0.703 ≈ 17px */
+  font-size: 17px;
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+  text-align: center;
+}
+
+.monthPickerCaret {
+  /* 피그마 18px × 0.703 ≈ 13px, 색 #0A0A0A */
+  width: 13px;
+  height: 13px;
+  color: var(--color-text);
+}
+
+.menuBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+
+.monthPickerDropdown {
+  position: absolute;
+  top: calc(100% + var(--space-3));
+  left: 0;
+  z-index: 21;
+
+  display: flex;
+  gap: var(--space-4);
+
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+
+  padding: var(--space-5);
+}
+
+.monthPickerSelect {
+  border: 1.1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+
+  padding: var(--space-3) var(--space-5);
+
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+
+  cursor: pointer;
+}
+
+/* ---------------- 본문: 왼쪽 달력 + 오른쪽 오늘/다가오는 일정 ---------------- */
+.contentArea {
+  flex: 1;
+  min-height: 0;
+
+  display: flex;
+  align-items: stretch;
+  /* dashboardContainer gap 52px ÷ 캔버스 너비 2048px */
+  gap: calc(2.54 * var(--app-vw, 1vw));
+}
+
+.calendarPanel {
+  flex: 1;
+  min-width: 0;
+
+  display: flex;
+  flex-direction: column;
+
+  background: var(--color-surface);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow, 0 3px 8px rgba(0, 0, 0, 0.12));
+  padding: 9px 6px 6px 8px;
+}
+
+/* 피그마: 헤더 줄 높이 31px → 22px. 요일 칸은 흰 배경 + #E8E8E8 테두리이고(줄 배경 #FAFAFA는 칸에 가려져
+   보이지 않음) 날짜 칸과 같은 방식으로 이어집니다. */
+.weekHeader {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.weekdayCell {
+  box-sizing: border-box;
+  /* 테두리 1px × 2 + 줄 높이 20px = 22px. 좌우 padding 8px은 아래 날짜 칸(.dayCell)과 같아서
+     요일 글자와 날짜 숫자의 시작선이 세로로 맞습니다 */
+  padding: 0 8px;
+  line-height: 20px;
+
+  border: 1px solid #e8e8e8;
+  background: var(--color-surface);
+
+  font-family: var(--font-sans);
+  /* 피그마 24px × 0.703 ≈ 17px, 색 #737373 */
+  font-size: 17px;
+  font-weight: var(--weight-medium);
+  color: #737373;
+  /* 가운데 정렬이 아니라 칸 왼쪽 정렬 */
+  text-align: left;
+}
+
+.dayGrid {
+  flex: 1;
+  min-height: 0;
+
+  display: grid;
+  /* 1fr은 최소 크기가 내용물(긴 일정 이름, nowrap)이라 칸이 늘어나며 위젯까지 밀렸습니다.
+     minmax(0, 1fr)로 최소 크기를 0으로 두어 칸 크기를 고정하고, 긴 이름은 아래 말줄임으로 처리합니다. */
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: repeat(5, minmax(0, 1fr));
+}
+
+.dayCell {
+  /* 그리드 아이템의 기본 min-width:auto 때문에 내용물만큼 늘어나는 것을 막습니다 */
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* 피그마: 날짜 숫자 → 일정 영역 10px × 0.703 ≈ 7px */
+  gap: 7px;
+
+  padding: 8px;
+
+  /* 피그마 테두리 #E8E8E8 */
+  border: 1px solid #e8e8e8;
+}
+
+/* 피그마: 이전/다음 달 날짜 칸은 배경만 #F8F8F8이고 숫자는 같은 검정입니다 */
+.dayCellOutside {
+  background: #f8f8f8;
+}
+
+.dayCell {
+  cursor: pointer;
+}
+
+/* 마지막으로 누른 날짜 — 칸 테두리 없이 숫자만 진한 초록 원으로 강조합니다.
+   원은 숫자 뒤에 깔리는 ::before로 그립니다. 예전엔 숫자 칸 자체를 원으로 키우고 음수 마진으로 폭을 줄였는데,
+   마진이 한 자리 숫자 폭에만 맞아서 두 자리 날짜(10~31)는 선택하면 숫자가 왼쪽으로 4~5px 밀리고,
+   원이 숫자 한가운데에 오지 않으며 줄 높이도 1~2px 달라졌습니다. ::before는 레이아웃에 전혀 영향을 주지 않아
+   선택해도 숫자 위치는 그대로이고, 원은 숫자(한 자리/두 자리 모두) 정중앙에 옵니다. */
+.dayCellSelected .dayNumberText {
+  position: relative;
+  /* z-index: -1인 원이 칸 배경 뒤로 숨지 않게, 이 숫자 안에서만 쌓임 순서를 가둡니다 */
+  isolation: isolate;
+  color: #fff;
+}
+
+.dayCellSelected .dayNumberText::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 50%;
+  /* 17px 두 자리 숫자(≈19px 폭)가 여유 있게 들어가는 크기 */
+  width: 26px;
+  height: 26px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--color-primary-deep);
+}
+
+.dayCellToday {
+  background: var(--color-primary-tint);
+}
+
+.dayNumber {
+  font-family: var(--font-sans);
+  /* 피그마 24px / 줄 높이 28px → 17px / 20px, 검정. 정렬은 칸 왼쪽 위 그대로 둡니다(가운데 정렬 아님) */
+  font-size: 17px;
+  line-height: 20px;
+  font-weight: var(--weight-medium);
+  color: #000;
+}
+
+/* 마지막 줄에서 5주 밖으로 밀려나 "24/31"처럼 겹쳐 보이는 뒤쪽 날짜 */
+.dayNumberOverflow {
+  margin-left: 1px;
+
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-normal);
+  color: var(--color-text-placeholder);
+
+  /* 앞 숫자보다 살짝 아래로 내려 층을 줍니다 */
+  position: relative;
+  top: 3px;
+}
+
+.dayCellToday .dayNumber {
+  color: var(--color-primary);
+  font-weight: var(--weight-bold);
+}
+
+/* 오늘이면서 선택된 날짜는 원 안의 글자를 흰색으로 유지(위 오늘 색보다 우선) */
+.dayCellToday.dayCellSelected .dayNumberText {
+  color: #fff;
+}
+
+.dayMeetings {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* 피그마: Items 안 일정 줄 사이 6px × 0.703 ≈ 4px */
+  gap: 4px;
+}
+
+.dayMeetingItem {
+  width: 100%;
+
+  /* 그룹 색 테두리 — 배경(--stack-bg)보다 진한 --stack-fg로 윤곽을 줍니다 */
+  border: 1px solid var(--stack-fg, var(--color-primary));
+  border-radius: 4px;
+  /* 그룹별 색 — CalendarPage.tsx가 --stack-bg/--stack-fg를 인라인으로 넘깁니다 */
+  background: var(--stack-bg, var(--color-primary-tint));
+
+  padding: 2px 6px;
+
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  color: var(--stack-fg, var(--color-primary));
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  cursor: pointer;
+}
+
+.dayMeetingItem:hover {
+  background: var(--stack-fg, var(--color-primary-soft));
+  color: #fff;
+}
+
+.dayMeetingMore {
+  /* 이제 누를 수 있는 버튼이라 기본 버튼 모양만 지우고 예전 글자 스타일을 유지합니다 */
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+
+.dayMeetingMore:hover {
+  color: var(--color-primary);
+}
+
+/* ---------------- 오른쪽: 오늘 일정 / 다가오는 일정 ---------------- */
+.sideColumn {
+  /* 피그마 패널 폭 454 ÷ 콘텐츠 폭 1694 = 26.8% — 예전 고정 360px은 환산값(약 319px)보다 넓어 달력이 좁아졌습니다.
+     비율로 두면 화면 폭이 달라도 달력 : 패널 비율이 유지됩니다 */
+  width: 26.8%;
+  flex-shrink: 0;
+
+  display: flex;
+  flex-direction: column;
+  /* 피그마: 오늘 일정 419 + 간격 71 + 다가오는 일정 416 = 달력 카드 높이 906px → 간격은 열 높이의 71/906 */
+  gap: 7.84%;
+}
+
+/* ---------------- 일정 수정 영역 (오른쪽 열) ----------------
+   시안 기준: 카드로 따로 떼지 않고 페이지 배경 위에 올리며, 달력과는 세로 구분선 한 줄로만 나눕니다.
+   · 열 폭은 평소(.sideColumn 폭) 그대로라 달력 크기는 변하지 않습니다(왼쪽으로 24px 당겨 구분선을 달력 쪽에 붙임).
+   · 위로 끌어올려 "일정 수정" 제목이 상단바("2026년 10월")와 같은 줄에 오고, 구분선은 페이지 위~아래 끝까지 이어집니다
+     (위 = 상단바 30px + 간격 20px + 페이지 위 padding 10px, 아래 = 페이지 아래 padding 17px 만큼 음수 margin). */
+.sideColumnEdit {
+  box-sizing: border-box;
+  /* 평소 폭(.sideColumn) + 왼쪽으로 당긴 24px */
+  width: calc(26.8% + 24px);
+  margin: calc(-60px) 0 -17px -24px;
+  padding: 10px 0 17px 34px;
+  border-left: 1px solid var(--color-border);
+}
+
+.editPanel {
+  flex: 1;
+  min-height: 0;
+
+  display: flex;
+  flex-direction: column;
+}
+
+/* 입력 영역만 스크롤되고, 아래 버튼 줄은 고정 */
+.editBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+
+  display: flex;
+  flex-direction: column;
+  /* gap은 항목 사이 "최소" 간격이고, 패널이 남는 높이는 space-between으로 제목 묶음 · 각 항목 사이에
+     똑같이 나눠 늘려서 아래에 빈 공백이 생기지 않게 합니다(높이가 모자라면 gap만 남고 스크롤). */
+  gap: 16px;
+  justify-content: space-between;
+  /* 카드 그림자가 스크롤 영역 가장자리에서 잘리지 않게 하는 여유 */
+  padding: 0 6px 6px 0;
+}
+
+/* 제목 + 안내 문구 묶음 — 아래 입력 항목들과 구분되도록 최소 간격을 더 넓게 둡니다 */
+.editHeading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.editTitle {
+  font-size: 22px;
+  font-weight: var(--weight-bold);
+  /* 상단바 높이(30px)와 같게 둬서 "2026년 10월" 라벨과 세로 중심이 맞게 합니다 */
+  line-height: 30px;
+}
+
+.editSub {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--color-text-secondary);
+}
+
+.editField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.editLabel {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+
+/* 입력칸/카드 공통 — 흰 바탕 + 테두리만(그림자 없음) */
+.editInput,
+.editCard {
+  box-sizing: border-box;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.editInput {
+  width: 100%;
+  height: 38px;
+  padding: 0 14px;
+
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  color: var(--color-text);
+}
+
+.editInput:focus,
+.editPill:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.editSelectWrap {
+  position: relative;
+}
+
+.editSelect {
+  appearance: none;
+  padding-right: 36px;
+  cursor: pointer;
+}
+
+.editSelectCaret {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+.editCard {
+  padding: 10px 12px;
+}
+
+/* 회의 시간 카드 — 시작/종료 두 줄 */
+.editTimeCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editTimeRow {
+  display: grid;
+  /* 날짜 : 시간 ≈ 1.15 : 1 — 고정 96px였을 때 시간("오전 10:00" + 선택기 아이콘)과 날짜가 잘렸습니다.
+     카드 안쪽 폭(약 320px)에서 날짜 약 149px · 시간 약 129px가 나옵니다. */
+  grid-template-columns: 30px minmax(0, 1.15fr) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.editTimeTag {
+  font-size: var(--text-md);
+  color: var(--color-text-secondary);
+}
+
+.editPill {
+  min-width: 0;
+  height: 32px;
+  box-sizing: border-box;
+
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  padding: 0 6px;
+
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--color-text);
+}
+
+.editError {
+  font-size: var(--text-sm);
+  color: #d14343;
+}
+
+.editHint {
+  /* 문구가 없어도 한 줄 높이를 유지합니다(반복 카드 높이 고정) */
+  display: block;
+  min-height: 1.5em;
+  line-height: 1.5;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+/* 반복 카드 — 4칸 버튼, (매주일 때) 요일 원, 안내 문구 */
+.editRepeatCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editSegment {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+}
+
+.editSegBtn {
+  height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.editSegBtnActive,
+.editDayChipActive {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+.editWeekdays {
+  display: flex;
+  justify-content: space-between;
+}
+
+/* 요일은 동그란 버튼 */
+.editDayChip {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  background: var(--color-surface);
+
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+/* 매주가 아닐 때(요일 선택이 필요 없을 때)는 흐리게 하고 누를 수 없게 합니다 */
+.editDayChip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 알림 카드 — 왼쪽에 값, 오른쪽에 − / + 동그란 버튼(우측 정렬) */
+.editRemindCard {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 8px 14px;
+}
+
+.editRemindValue {
+  flex: 1;
+  font-size: var(--text-md);
+}
+
+.editStepBtn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  background: var(--color-surface);
+
+  font-size: 16px;
+  line-height: 1;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.editStepBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 아래 버튼 줄 — 위에 구분선 한 줄. 취소 : 저장 ≈ 37 : 63 */
+.editFooter {
+  flex-shrink: 0;
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 14px 6px 0 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.editCancel,
+.editSave {
+  height: 40px;
+  border-radius: 8px;
+
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+.editCancel {
+  flex: 37;
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text);
+}
+
+.editSave {
+  flex: 63;
+  border: none;
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.editSave:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.todayScheduleBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+
+  /* 피그마 419px(제목 포함) : 416px(제목 46 + 박스 370)를 고정 vh 대신 비율로 두어, 남는 높이 안에서
+     나눠 갖습니다(고정 vh 합이 달력 높이보다 커서 페이지가 넘치던 문제). 예전엔 다가오는 일정에 박스 높이
+     370만 넣고 제목 줄을 빼서 아래 박스가 더 작았습니다. */
+  flex: 419 1 0;
+  min-height: 0;
+}
+
+.upcomingBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+
+  /* 위 오늘 일정 박스와 419 : 416(거의 같은 높이) */
+  flex: 416 1 0;
+  min-height: 0;
+}
+
+.sideHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.sideHeadTitle {
+  font-size: 18px;
+  font-weight: var(--weight-bold);
+}
+
+.sideList {
+  flex: 1;
+  min-height: 0;
+
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+
+  background: var(--color-surface);
+  border-radius: 11px;
+  box-shadow: var(--card-shadow, 0 3px 8px rgba(0, 0, 0, 0.12));
+  /* 위·아래 안쪽 여백을 같게(19px) — 예전엔 위 16px / 아래 22px이었습니다. 카드는 개수와 상관없이 위에서부터 채웁니다 */
+  padding: 19px 21px 19px 22px;
+
+  overflow-y: auto;
+}
+
+.sideEmpty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+  text-align: center;
+}
+
+.scheduleItem {
+  /* 피그마 카드(392×64): 왼쪽 제목+시간 / 가운데 인원 / 오른쪽 진행 상태 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px auto;
+  align-items: center;
+  column-gap: var(--space-5);
+
+  box-sizing: border-box;
+  width: 100%;
+  /* 피그마 카드 64px × 0.703 ≈ 45px 고정 — 목록 박스(약 260px)에 4장이 딱 맞는 높이입니다
+     (위 padding 16 + 카드 4×45 + 간격 3×14 + 아래 22). 글자 크기와 무관하게 높이를 고정합니다. */
+  height: 45px;
+  flex-shrink: 0;
+
+  /* 피그마: 흰 테두리 + 그림자(1.47 2.93 5.86 / 0.25 × 0.703) */
+  border: 1px solid #fff;
+  border-radius: 10px;
+  background: #fffefe;
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.25);
+
+  padding: 4px 14px;
+  text-align: left;
+
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+
+.scheduleItem:hover {
+  border-color: var(--color-primary);
+}
+
+/* 제목(위) + 날짜·시간(아래) */
+.scheduleItemMain {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 피그마: 제목 18px / 500 / #000 → 앱 기준 15px */
+.scheduleItemTitle {
+  min-width: 0;
+
+  font-size: var(--text-lg);
+  line-height: 18px;
+  font-weight: var(--weight-medium);
+  color: #000;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 피그마: 날짜 14px / 400 / #000 → 앱 기준 12px */
+.scheduleItemTime {
+  font-size: var(--text-sm);
+  line-height: 15px;
+  color: #000;
+  white-space: nowrap;
+}
+
+/* 피그마: 사용자 아이콘 20px + 인원 16px / 500 / #737373 → 아이콘 14px, 숫자 13px */
+.scheduleItemCount {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: #737373;
+}
+
+.scheduleItemCount svg {
+  width: 14px;
+  height: 14px;
+  color: #000;
+}
+
+/* 진행 상태 pill — 피그마: 카드 안 제목 영역 높이(42px)를 채우는 5px 모서리 상자, 글자 14px / 400 */
+.scheduleStatus {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  min-width: 48px;
+  padding: 0 8px;
+  border-radius: 5px;
+
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.statusProgress {
+  background: #dce1f5;
+  color: #2a4f7a;
+}
+
+.statusDone {
+  background: #e6f4e8;
+  color: #427a2a;
+}
+
+/* 시안에 없는 상태(시작 전) — 회색 계열로 구분합니다 */
+.statusPlanned {
+  background: #efeeec;
+  color: #5e5e5e;
+}
+
+/* ---------------- 팝업 배경(일정 상세 팝업이 사용) ----------------
+   등록/수정은 오른쪽 패널(.editPanel)로 옮겨져서 더 이상 팝업이 아닙니다. */
+.composeBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: rgba(0, 0, 0, 0.38);
+}
+
+/* ---------------- 일정 상세 팝업 (새 디자인: 초록 카드) ----------------
+   피그마(2048) 600×637 → ×0.703 ≈ 422×448. 글자는 앱 기준으로 조금 크게 잡았습니다. */
+/* 팝업 + 양옆 슬라이드 화살표를 같이 묶는 래퍼(화살표를 팝업 바깥 양옆에 붙이려고 relative) */
+.detailWrap {
+  position: relative;
+  width: 422px;
+  max-width: calc(100% - 32px);
+}
+
+.detailCard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+
+  background: var(--color-primary);
+  border-radius: 15px;
+  box-shadow: 1.5px 3px 6px rgba(0, 0, 0, 0.25);
+  color: #fff;
+
+  /* 왼쪽 27px(→19px)보다 조금 넉넉하게, 위 32px → 22px */
+  padding: 24px 22px 20px;
+}
+
+/* "일정 상세" 26px */
+.detailHeading {
+  margin: 0;
+  font-size: var(--text-3xl);
+  font-weight: var(--weight-medium);
+  line-height: 1.5;
+  color: #fff;
+}
+
+/* 그룹 칩 — 연한 배경(#FAF8F6) + 초록 글자 */
+.detailGroupChip {
+  margin-top: 22px;
+  padding: 4px 14px;
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-primary);
+  font-size: var(--text-base);
+}
+
+/* 일정 제목 36px → 26px */
+.detailTitle {
+  margin-top: 14px;
+  font-size: 26px;
+  font-weight: var(--weight-medium);
+  line-height: 1.2;
+  color: #fff;
+  word-break: break-word;
+}
+
+/* 날짜 20px → 15px */
+.detailDateLine {
+  margin-top: 6px;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  color: #fff;
+}
+
+/* 시작/종료/반복/알림 카드 — 545×271 → 383×190, 흰 테두리 + 그림자, 줄은 #A2A2A2 */
+.detailInfoCard {
+  align-self: stretch;
+  margin: 18px 0 0;
+  padding: 0 18px;
+
+  background: var(--color-bg);
+  border: 1px solid #fff;
+  border-radius: 15px;
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.25);
+}
+
+.detailInfoRow {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+
+  height: 47px;
+  border-bottom: 1px solid #a2a2a2;
+}
+
+.detailInfoRow:last-child {
+  border-bottom: none;
+}
+
+.detailInfoRow dt {
+  width: 34px;
+  flex-shrink: 0;
+
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  color: var(--color-primary);
+}
+
+.detailInfoRow dd {
+  margin: 0;
+  font-size: var(--text-base);
+  color: #000;
+  white-space: nowrap;
+}
+
+/* 아래 줄: 왼쪽 삭제(글자만, 흰색) / 오른쪽 수정(연한 배경 버튼) */
+.detailActions {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+}
+
+/* 삭제 — 시안은 배경 없는 흰 글자 */
+.detailDelete {
+  border: none;
+  background: transparent;
+  padding: 4px 2px;
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.detailDelete:hover {
+  text-decoration: underline;
+}
+
+/* 수정(저장된 회의에서는 "회의방으로 이동") — 100×32 → 70×22.5, 연한 배경 + 초록 글자 */
+.detailEdit {
+  margin-left: auto;
+  min-width: 72px;
+  height: 30px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.detailEdit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 팝업 양옆의 큰 원형 화살표 */
+.detailSideBtn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 50%;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25);
+
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.detailSideBtnLeft {
+  left: -52px;
+}
+
+.detailSideBtnRight {
+  right: -52px;
+}
+
+.detailSideBtn:hover:not(:disabled) {
+  color: var(--color-primary);
+}
+
+/* 첫/끝 스택에서는 흐리게 */
+.detailSideBtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 화면이 좁아 팝업 바깥에 둘 자리가 없으면 화살표를 팝업 모서리 위에 걸쳐 둡니다 */
+@media (max-width: 560px) {
+  .detailSideBtnLeft {
+    left: -10px;
+  }
+
+  .detailSideBtnRight {
+    right: -10px;
+  }
+}
+
+/* 아래 점 표시 — 초록 카드 위라 흰색 계열 */
+.detailDots {
+  align-self: center;
+  display: flex;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-7);
+}
+
+.detailDot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+}
+
+.detailDotActive {
+  background: #fff;
+}
+
+/* ---------------- 우클릭 "일정 추가" 작은 메뉴 ---------------- */
+.ctxBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.ctxMenu {
+  position: fixed;
+
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+
+  padding: var(--space-2);
+}
+
+.ctxItem {
+  display: block;
+  width: 100%;
+
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+
+  padding: 7px 16px;
+
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  color: var(--color-text);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ctxItem:hover {
+  background: var(--color-primary-tint);
+  color: var(--color-primary);
+}

@@ -1,0 +1,336 @@
+/**
+ * 회의방 오른쪽 사이드바 — 참여자 카드 + 채팅 카드
+ * 원래 grop/css/meeting.css(전역)에 있던 스타일을 이 컴포넌트 전용으로 이전.
+ * 피그마 WhiteBoard 디자인 기준으로 카드 배경색(#667c55 = --color-primary)과
+ * 카드 모서리(15px)를 맞췄습니다. (이전엔 --color-primary-soft, 14px)
+ */
+
+.chatPanel {
+  /* 피그마 사이드 패널 폭 379px × 0.703 ≈ 266px (예전 300px) */
+  width: 266px;
+  flex-shrink: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  color: white;
+}
+
+/* 참가자 / 채팅 스택 */
+.sideStack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* 두 카드 사이 15px × 0.703 ≈ 10.5px */
+  gap: 10.5px;
+  /* 위/아래/오른쪽 여백은 없앴습니다 — 피그마에선 두 카드가 캔버스와 같은 높이(953px)를
+     위아래로 꽉 채웁니다(예전엔 10px씩 안쪽으로 들어가 캔버스와 높이가 안 맞았습니다) */
+  padding: 0;
+}
+
+.participantCard,
+.chatCard {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 10.5px;
+  background: var(--color-primary);
+  color: white;
+  overflow: hidden;
+}
+
+/* 높이 비율: 피그마 참여자 카드 320px : 채팅 카드 618px (≈ 34 : 66, 사이 간격 제외).
+   기존엔 참여자 카드가 내용 높이(최대 42%)라 사람 수에 따라 채팅 카드 크기가 계속 바뀌었습니다.
+   참여자가 많으면 카드 안 목록에서 스크롤됩니다. */
+.participantCard {
+  flex: 320 1 0;
+}
+
+.chatCard {
+  flex: 618 1 0;
+}
+
+/* ===== 그룹명 ===== */
+.groupNameRow {
+  padding: var(--space-7) var(--space-7) var(--space-3);
+}
+
+.groupNameButton {
+  /* 피그마: 연필 아이콘이 그룹명 바로 오른쪽(간격 8px → 약 6px)에 붙습니다.
+     예전엔 버튼이 가로 전체를 차지하고 아이콘이 카드 맨 오른쪽 끝에 있었습니다 */
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-3);
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.groupNameText {
+  min-width: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.groupNameEdit {
+  /* 피그마 16px × 0.703 ≈ 11px */
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.groupNameInput {
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-4);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+  outline: none;
+}
+
+/* ===== 참여자 리스트 ===== */
+.participantList {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-5) var(--space-6);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.participantRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-2);
+}
+
+.participantIdentity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.participantAvatar {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.28);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  flex-shrink: 0;
+  overflow: hidden;
+  /* 피그마: 테두리 2px → 약 1.4px, 평소 흰색 / 말하는 중엔 초록(#59FF00) */
+  box-sizing: border-box;
+  border: 1.4px solid #ffffff;
+}
+
+.participantAvatar.isSpeaking {
+  border-color: #59ff00;
+}
+
+.participantAvatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.participantName {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.participantControls {
+  display: flex;
+  align-items: center;
+  /* 피그마: 아이콘 박스 28px(×0.703≈20px), 두 아이콘 간격 40px(×0.703≈28px) → 박스 20px + 간격 8px */
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+
+.participantCtrl {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.95);
+  cursor: pointer;
+  padding: 0;
+}
+
+.participantCtrl svg {
+  /* 피그마 헤드셋/마이크 박스 28px × 0.703 ≈ 20px (기존 16px은 실제 글리프가 피그마보다 작았음) */
+  width: 20px;
+  height: 20px;
+}
+
+.participantCtrl.isOff {
+  opacity: 0.55;
+}
+
+.participantCtrl:disabled {
+  cursor: default;
+}
+
+.participantCtrl:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* ===== 채팅 ===== */
+.chatSectionTitle {
+  margin: 0;
+  padding: var(--space-7) var(--space-8) var(--space-3);
+  /* 전역 h2 규칙(base.css)이 어두운 글자색을 지정해서 제목만 색이 달랐습니다.
+     카드 글자색(흰색)을 그대로 따르도록 상속시킵니다 */
+  color: inherit;
+  /* 피그마 24px × 0.703 ≈ 17px (예전 15px) */
+  font-size: 17px;
+  font-weight: var(--weight-bold);
+}
+
+.chatMessages {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-4) var(--space-7) var(--space-5);
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.55) transparent;
+}
+
+.chatMessages::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chatMessages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.45);
+  border-radius: var(--radius-md);
+}
+
+.chatMessages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 말풍선 위에 보낸 사람 이름을 따로 둡니다.
+   (기존엔 meeting.css 기본값을 index.css가 덮어써서 최종적으로 아래 값으로 보였음 — 그 결과를 그대로 반영) */
+.chatRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: 85%;
+  gap: var(--space-2);
+}
+
+.chatRow.isOwn {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.chatSender {
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: rgba(255, 255, 255, 0.9);
+  opacity: 0.85;
+}
+
+/* 채팅 말풍선 (남 = 반투명 흰색, 나는 진한 흰색) */
+.chatMessage {
+  align-self: flex-start;
+  /* chatRow가 이미 85%로 폭을 제한하므로, 안쪽은 그 폭을 꽉 채웁니다 */
+  max-width: 100%;
+  padding: 8px 11px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.25);
+  font-size: var(--text-base);
+  word-break: break-word;
+}
+
+.chatMessage a {
+  color: inherit;
+}
+
+/* 내가 보낸 말풍선 — 오른쪽 정렬 */
+.chatMessage.ownMessage {
+  align-self: flex-end;
+  background: rgba(255, 255, 255, 0.85);
+  color: #2b3a24;
+}
+
+/* ===== 채팅 입력 ===== */
+.chatInputArea {
+  display: flex;
+  align-items: center;
+  /* 피그마: 입력창·전송 사이 약 6px, 좌우 약 16px, 아래 약 12px */
+  gap: 6px;
+  padding: var(--space-5) var(--space-8) var(--space-6);
+  flex-shrink: 0;
+}
+
+.chatInputArea input[type='text'] {
+  flex: 1;
+  min-width: 0;
+  /* 피그마 35px → 약 25px, 모서리 6px → 약 4px */
+  height: 25px;
+  padding: 0 var(--space-5);
+  border: 1px solid white;
+  border-radius: 4px;
+  outline: none;
+  background: transparent;
+  color: white;
+  font-size: var(--text-base);
+}
+
+.chatInputArea input[type='text']::placeholder {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.chatInputArea button {
+  /* 피그마 50×35 → 약 35×25, 모서리 4px → 약 3px */
+  width: 35px;
+  height: 25px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: white;
+  color: #222;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.chatInputArea button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import shell from '../styles/meetingShell.module.css';
 import CanvasBoard, { type CanvasBoardHandle } from '../CanvasBoard';
 import MeetingDrawingTools, { type MeetingDrawAction } from '../components/MeetingDrawingTools';
 import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
@@ -11,7 +12,7 @@ import { syncMeetingAttachmentsDoc } from '../utils/meetingDocs';
 import { notifyDocumentUpload } from '../utils/notifications';
 
 const SHAPE_TOOLS: ExcalidrawTool[] = [
-  'rectangle', 'ellipse', 'diamond', 'triangle', 'pentagon', 'hexagon', 'star', 'arrow', 'line', 'elbowArrow', 'curveArrow',
+  'rectangle', 'ellipse', 'diamond', 'triangle', 'pentagon', 'hexagon', 'octagon', 'star', 'arrow', 'line', 'elbowArrow', 'curveArrow',
 ];
 
 /**
@@ -158,19 +159,19 @@ export default function CanvasPage() {
   const goBack = () => navigate(groupId ? `/group/${groupId}` : '/main');
 
   if (!authReady) {
-    return <div className="meeting-loading">로그인 확인 중…</div>;
+    return <div className={shell.meetingLoading}>로그인 확인 중…</div>;
   }
 
   return (
     <div className="meeting-page stage">
-      <header className="meeting-header">
+      <header className={shell.meetingHeader}>
         <Link to="/main" className="logo">GROP</Link>
-        <span className="meeting-title">{groupName || '캔버스'}</span>
+        <span className={shell.meetingTitle}>{groupName || '캔버스'}</span>
         <NotificationBell />
       </header>
 
-      <main className="meeting-main">
-        <div className="whiteboard">
+      <main className={shell.meetingMain}>
+        <div className={shell.whiteboard}>
           <CanvasBoard
             ref={canvasBoardRef}
             embedded
@@ -208,7 +209,7 @@ export default function CanvasPage() {
         </div>
       </main>
 
-      <footer className="bottom-bar">
+      <footer className={shell.bottomBar}>
         <MeetingDrawingTools
           active={drawTool}
           onPick={handlePick}
@@ -302,8 +303,8 @@ export default function CanvasPage() {
             canvasBoardRef.current?.setTextDecor(style);
           }}
         />
-        <div className="call-controls">
-          <button type="button" className="leave-button" onClick={goBack}>
+        <div className={shell.callControls}>
+          <button type="button" className={shell.leaveButton} onClick={goBack}>
             나가기
           </button>
         </div>

@@ -4,11 +4,16 @@ const dotenv = require('dotenv')
 const { AccessToken, RoomServiceClient } = require('livekit-server-sdk')
 const multer = require('multer')
 const fs = require('fs')
+const { execFile } = require('child_process')
 
 // node-fetch dynamic import
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args))
 
+const os = require('os')
 const path = require('path')
+const { pipeline } = require('stream/promises')
+const { S3Client, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand } = require('@aws-sdk/client-s3')
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner')
 const { startOauthFallback, rememberOauthOrigin, getOauthOrigin } = require('./oauthFallback')
 // AI 요약(오디오 추출 → Whisper → LLM) 로직은 Netlify 함수와 함께 쓰려고 별도 모듈로 분리했습니다.
 const { getChatModel, getTranscribeModel, summarizeMeeting, summaryErrorMessage } = require('./aiSummary')
@@ -20,7 +25,8 @@ app.use(express.json({ limit: '50mb' }))
 
 
 // ─────────────────────────────────────────────────────────────
-// 회의 녹화 영상 저장 (Supabase Storage 대신 이 컴퓨터 디스크에 저장)
+// 회의 녹화 영상
+// 새 녹화는 Cloudflare R2에 올리고, 이 디스크 폴더는 예전 /videos 영상용으로 남깁니다.
 // Supabase meetings.video_url 에는 이 폴더 기준 상대경로만 저장됩니다.
 // ─────────────────────────────────────────────────────────────
 const MEETING_VIDEOS_DIR = path.resolve(__dirname, 'uploads', 'meeting-videos')
@@ -107,6 +113,93 @@ function checkUploadToken(req, res, next) {
     return res.status(401).json({ error: '업로드 권한이 없습니다' })
   }
   next()
+}
+
+// 브라우저가 R2로 직접 올리는 주소는 15분, 재생 주소는 1시간만 유효합니다.
+const R2_PUT_EXPIRES_SEC = 15 * 60
+const R2_GET_EXPIRES_SEC = 60 * 60
+const MAX_MEETING_VIDEO_BYTES = 1024 * 1024 * 1024
+
+let r2Client = null
+
+/** R2는 S3 호환이라 같은 SDK를 씁니다. 비밀값은 .env에서만 읽습니다. */
+function getR2Client() {
+  const accountId = process.env.R2_ACCOUNT_ID
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY
+  const bucket = process.env.R2_BUCKET
+  if (!accountId || !accessKeyId || !secretAccessKey || !bucket) {
+    const err = new Error(
+      'R2 저장소 설정이 없습니다. R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET 을 .env에 넣어 주세요.',
+    )
+    err.statusCode = 500
+    throw err
+  }
+  if (!r2Client) {
+    r2Client = new S3Client({
+      region: 'auto',
+      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId, secretAccessKey },
+      // 체크섬 헤더까지 서명에 넣으면 브라우저 PUT이 서명 불일치로 거절됩니다.
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+    })
+  }
+  return r2Client
+}
+
+/**
+ * R2 객체 키. meeting-videos/ 로 시작하고 .. 가 없어야 합니다.
+ * 통과하면 디코드된 키를, 아니면 null을 돌려줍니다.
+ */
+function normalizeMeetingVideoKey(raw) {
+  if (typeof raw !== 'string') return null
+  let key = raw.trim()
+  if (!key) return null
+  try {
+    key = decodeURIComponent(key)
+  } catch {
+    return null
+  }
+  if (!key.startsWith('meeting-videos/')) return null
+  if (key.includes('..') || key.includes('\\') || key.includes('\0')) return null
+  if (key.split('/').some((part) => part.length === 0)) return null
+  return key
+}
+
+/** 서명에 넣는 Content-Type과 브라우저 PUT 헤더가 같아야 해서, 코덱 꼬리는 떼고 표준 값만 씁니다. */
+function meetingUploadContentType(mimeType) {
+  const mime = typeof mimeType === 'string' ? mimeType.split(';')[0].trim().toLowerCase() : ''
+  if (mime === 'video/webm' || mime === 'audio/webm' || mime === 'video/mp4' || mime === 'audio/mp4') {
+    return mime
+  }
+  return 'video/webm'
+}
+
+/** 요약용으로 R2 원본을 임시 파일에 받습니다. 호출한 쪽이 처리 후 지웁니다. */
+async function downloadMeetingVideoFromR2(key, destPath) {
+  const client = getR2Client()
+  let obj
+  try {
+    obj = await client.send(new GetObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+    }))
+  } catch (err) {
+    throw new Error(`R2에서 영상을 내려받지 못했습니다: ${err.message}`)
+  }
+  if (!obj.Body) throw new Error('R2에서 영상을 내려받지 못했습니다')
+  // 긴 회의도 메모리에 통째로 올리지 않고 파일로 흘려 보냅니다.
+  if (typeof obj.Body.pipe === 'function') {
+    await pipeline(obj.Body, fs.createWriteStream(destPath))
+    return
+  }
+  if (typeof obj.Body.transformToByteArray === 'function') {
+    const bytes = await obj.Body.transformToByteArray()
+    fs.writeFileSync(destPath, Buffer.from(bytes))
+    return
+  }
+  throw new Error('R2 응답을 파일로 저장하지 못했습니다')
 }
 
 // 최종 폴더(groupId/날짜)는 업로드 핸들러에서 만듭니다. 여기는 임시 수신만.
@@ -297,7 +390,171 @@ app.post('/api/livekit-remove-participant', async (req, res) => {
   }
 })
 
-// 클라이언트(Room.tsx)가 녹화 종료 시 이 엔드포인트로 webm blob 을 보냅니다.
+// 예전 직접 업로드용 주소. 브라우저는 더 이상 이 주소로 PUT하지 않고 /api/meetings/upload-r2 로 보냅니다.
+app.post('/api/meetings/upload-url', checkUploadToken, async (req, res) => {
+  try {
+    const groupId = req.body?.groupId
+    const dateStr = req.body?.dateStr
+    // 예전 디스크 업로드는 잘못된 폴더명을 unknown으로 바꿨지만,
+    // 여기서는 그 값이 R2 키로 남으므로 안전한 조각이 아니면 거절합니다.
+    if (!isSafePathSegment(groupId) || !isSafePathSegment(dateStr)) {
+      return res.status(400).json({ error: 'groupId와 날짜가 올바르지 않습니다' })
+    }
+    const size = Number(req.body?.size)
+    if (!Number.isFinite(size) || size <= 0) {
+      return res.status(400).json({ error: '파일 크기가 올바르지 않습니다' })
+    }
+    if (size > MAX_MEETING_VIDEO_BYTES) {
+      return res.status(413).json({ error: '파일이 너무 큽니다. 1GB 이하만 올릴 수 있어요.' })
+    }
+
+    const contentType = meetingUploadContentType(req.body?.mimeType)
+    const key = `meeting-videos/${groupId}/${dateStr}/${Date.now()}.webm`
+    const client = getR2Client()
+    const command = new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+      ContentType: contentType,
+    })
+    const uploadUrl = await getSignedUrl(client, command, { expiresIn: R2_PUT_EXPIRES_SEC })
+    console.log('회의 녹화 업로드 주소 발급:', key)
+    res.json({ uploadUrl, key, contentType })
+  } catch (err) {
+    console.error('업로드 주소 발급 실패:', err.message)
+    res.status(err.statusCode || 500).json({ error: err.message || '업로드 주소를 만들지 못했습니다' })
+  }
+})
+
+// 브라우저는 파일을 이 서버로 보냅니다. 서버가 R2에 넣은 뒤 임시 파일은 지웁니다.
+// 브라우저가 R2로 직접 PUT하면 Failed to fetch로 끊겨 녹화가 저장되지 않았습니다.
+app.post('/api/meetings/upload-r2', checkUploadToken, uploadMeetingVideo.single('video'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: '업로드된 파일이 없습니다' })
+  }
+
+  const groupId = req.body?.groupId
+  const dateStr = req.body?.dateStr
+  // 키에 그대로 들어가므로 폴더명으로 쓸 수 없는 값은 디스크에 남기지 않고 거절합니다.
+  if (!isSafePathSegment(groupId) || !isSafePathSegment(dateStr)) {
+    try { fs.unlinkSync(req.file.path) } catch { /* 거절된 임시 파일은 남기지 않습니다 */ }
+    return res.status(400).json({ error: 'groupId와 날짜가 올바르지 않습니다' })
+  }
+
+  const contentType = meetingUploadContentType(req.body?.mimeType || req.file.mimetype)
+  const key = `meeting-videos/${groupId}/${dateStr}/${Date.now()}.webm`
+  try {
+    const client = getR2Client()
+    await client.send(new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+      Body: fs.createReadStream(req.file.path),
+      ContentType: contentType,
+      ContentLength: req.file.size,
+    }))
+    console.log('회의 녹화 R2 저장 완료:', key)
+    res.json({ key, contentType, sizeBytes: req.file.size })
+  } catch (err) {
+    console.error('서버 경유 R2 업로드 실패:', err.message)
+    res.status(err.statusCode || 500).json({ error: err.message || '저장소에 영상을 올리지 못했습니다' })
+  } finally {
+    try { fs.unlinkSync(req.file.path) } catch { /* 임시 파일 삭제는 실패해도 응답은 이미 끝났습니다 */ }
+  }
+})
+
+/** 예전 디스크 영상 주소에서 이 서버 폴더 안의 파일만 고릅니다. 폴더 밖은 null입니다. */
+function meetingVideoDiskPath(raw) {
+  if (typeof raw !== 'string') return null
+  let rel = raw.trim()
+  if (!rel) return null
+  const marker = '/videos/'
+  const idx = rel.indexOf(marker)
+  if (idx >= 0) {
+    try {
+      rel = decodeURIComponent(rel.slice(idx + marker.length).split('?')[0] ?? '')
+    } catch {
+      return null
+    }
+  }
+  rel = rel.replace(/^\/+/, '')
+  if (!rel || rel.includes('..') || rel.includes('\\') || rel.includes('\0')) return null
+  const full = path.resolve(MEETING_VIDEOS_DIR, rel)
+  if (full !== MEETING_VIDEOS_DIR && !full.startsWith(MEETING_VIDEOS_DIR + path.sep)) return null
+  return full
+}
+
+// 재생용 GET 주소. 키는 meeting-videos/ 아래만 허용합니다.
+app.get('/api/meetings/video-url', async (req, res) => {
+  try {
+    const key = normalizeMeetingVideoKey(typeof req.query.key === 'string' ? req.query.key : '')
+    if (!key) return res.status(400).json({ error: '잘못된 영상 키입니다' })
+    const client = getR2Client()
+    const command = new GetObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+    })
+    const url = await getSignedUrl(client, command, { expiresIn: R2_GET_EXPIRES_SEC })
+    res.json({ url, expiresIn: R2_GET_EXPIRES_SEC })
+  } catch (err) {
+    console.error('재생 주소 발급 실패:', err.message)
+    res.status(err.statusCode || 500).json({ error: err.message || '재생 주소를 만들지 못했습니다' })
+  }
+})
+
+// 요약 화면의 전체 용량. meeting-videos/ 아래 파일 크기만 모읍니다.
+app.get('/api/meetings/storage', checkUploadToken, async (req, res) => {
+  try {
+    const client = getR2Client()
+    let token
+    let totalBytes = 0
+    const files = []
+    do {
+      const listed = await client.send(new ListObjectsV2Command({
+        Bucket: process.env.R2_BUCKET,
+        Prefix: 'meeting-videos/',
+        ContinuationToken: token,
+      }))
+      for (const item of listed.Contents || []) {
+        if (!item.Key) continue
+        const size = item.Size || 0
+        totalBytes += size
+        files.push({ key: item.Key, size })
+      }
+      token = listed.IsTruncated ? listed.NextContinuationToken : undefined
+    } while (token)
+    res.json({ totalBytes, files })
+  } catch (err) {
+    console.error('녹화 용량 조회 실패:', err.message)
+    res.status(err.statusCode || 500).json({ error: err.message || '용량을 읽지 못했습니다' })
+  }
+})
+
+// 요약 화면의 삭제. R2 원본과 예전 디스크 파일을 지웁니다. 회의 행은 클라이언트가 비웁니다.
+app.delete('/api/meetings/video', checkUploadToken, async (req, res) => {
+  const key = normalizeMeetingVideoKey(typeof req.query.key === 'string' ? req.query.key : '')
+  const diskPath = meetingVideoDiskPath(typeof req.query.path === 'string' ? req.query.path : '')
+  if (!key && !diskPath) return res.status(400).json({ error: '지울 영상이 없습니다' })
+
+  try {
+    if (key) {
+      const client = getR2Client()
+      await client.send(new DeleteObjectCommand({
+        Bucket: process.env.R2_BUCKET,
+        Key: key,
+      }))
+      console.log('회의 녹화 R2 삭제:', key)
+    }
+    if (diskPath && fs.existsSync(diskPath)) {
+      fs.unlinkSync(diskPath)
+      console.log('회의 녹화 디스크 삭제:', diskPath)
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('회의 녹화 삭제 실패:', err.message)
+    res.status(err.statusCode || 500).json({ error: err.message || '영상을 지우지 못했습니다' })
+  }
+})
+
+// 예전 녹화 호환. 클라이언트(Room.tsx)가 녹화 종료 시 이 엔드포인트로 webm blob 을 보냅니다.
 // 저장 위치는 Supabase Storage 가 아니라 이 서버 컴퓨터의 디스크입니다.
 app.post('/api/meetings/upload', checkUploadToken, uploadMeetingVideo.single('video'), (req, res) => {
   if (!req.file) {
@@ -561,19 +818,38 @@ app.get('/api/meeting-docs', (req, res) => {
 })
 
 // AI 요약 엔드포인트 — 타임스탬프가 붙은 챕터까지 생성합니다.
-// 실제 요약 흐름은 aiSummary.js 에 있고, 여기서는 "영상을 이 서버 디스크에서 어떻게 읽는지"만 정합니다.
+// R2 키(videoKey)면 원본을 내려받고, 예전 videoUrl(/videos/...)이면 디스크에서 읽습니다.
+// 음성 추출과 요약은 aiSummary.js 가 합니다. 영상 파일 자체는 Groq로 보내지 않습니다.
 app.post('/api/summarize', async (req, res) => {
+  // R2에서 받은 원본은 요약이 끝나거나 실패해도 임시 폴더에 남기지 않습니다.
+  let r2TempPath = null
   try {
-    const { videoUrl, chatLog, meetingDateLabel } = req.body
+    const rawVideoKey = typeof req.body?.videoKey === 'string' ? req.body.videoKey.trim() : ''
+    const videoKey = rawVideoKey ? normalizeMeetingVideoKey(rawVideoKey) : ''
+    if (rawVideoKey && !videoKey) {
+      return res.status(400).json({ error: '잘못된 영상 키입니다' })
+    }
+    const videoUrl = typeof req.body?.videoUrl === 'string' ? req.body.videoUrl : ''
+    const { chatLog, meetingDateLabel } = req.body
     const hasChatLog = Array.isArray(chatLog) && chatLog.length > 0
-    if ((!videoUrl || typeof videoUrl !== 'string') && !hasChatLog) {
-      return res.status(400).json({ error: 'videoUrl 또는 chatLog 중 하나는 필요합니다' })
+    if (!videoKey && !String(videoUrl || '').trim() && !hasChatLog) {
+      return res.status(400).json({ error: 'videoKey, videoUrl, chatLog 중 하나는 필요합니다' })
     }
 
-    const loadVideo = videoUrl && typeof videoUrl === 'string'
+    const loadVideo = videoKey || String(videoUrl || '').trim()
       ? async () => {
-          console.log('AI 요약 요청 (영상):', videoUrl)
-          // 영상은 HTTPS로 다시 받지 않고, 이 컴퓨터에 저장된 파일을 읽습니다.
+          if (videoKey) {
+            console.log('AI 요약 요청 (R2):', videoKey)
+            r2TempPath = path.join(
+              os.tmpdir(),
+              `grop-r2-${Date.now()}-${Math.random().toString(36).slice(2)}.webm`,
+            )
+            await downloadMeetingVideoFromR2(videoKey, r2TempPath)
+            return { filePath: r2TempPath }
+          }
+
+          console.log('AI 요약 요청 (디스크 영상):', videoUrl)
+          // 예전 영상은 HTTPS로 다시 받지 않고, 이 컴퓨터에 저장된 파일을 읽습니다.
           // (Vite mkcert 인증서를 Node가 검증하지 못해 unable to verify the first certificate 가 납니다.)
           const localFile = resolveMeetingVideoFile(videoUrl)
           if (localFile) {
@@ -610,6 +886,10 @@ app.post('/api/summarize', async (req, res) => {
     const message = summaryErrorMessage(err)
     console.error('AI 요약 실패:', message)
     res.status(500).json({ error: message })
+  } finally {
+    if (r2TempPath) {
+      try { fs.rmSync(r2TempPath, { force: true }) } catch { /* 임시 파일 삭제가 실패해도 응답은 이미 끝났습니다 */ }
+    }
   }
 })
 
@@ -626,9 +906,20 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`서버 실행중: port ${PORT}`)
   console.log(`  요약 모델: ${getChatModel()}`)
   console.log(`  음성 모델: ${getTranscribeModel()}`)
-  console.log(`  녹화본 저장 경로: ${MEETING_VIDEOS_DIR}`)
+  console.log(`  녹화본 저장 경로(예전 영상): ${MEETING_VIDEOS_DIR}`)
+  console.log(`  R2 버킷: ${process.env.R2_BUCKET || '(미설정 — 새 녹화 업로드 주소를 발급할 수 없음)'}`)
   console.log(`  채팅 첨부 경로: ${CHAT_FILES_DIR}`)
   console.log(`  회의 문서(첨부목록) 경로: ${MEETING_DOCS_DIR}`)
+  // 요약은 시스템 ffmpeg로 음성만 뽑습니다. 없어도 서버는 켜 두고, 요약 요청 때 이유를 돌려줍니다.
+  const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg'
+  execFile(ffmpegBin, ['-version'], { timeout: 10000 }, (err, stdout) => {
+    if (err) {
+      console.warn('  ffmpeg: 없음. 영상 요약은 서버에 ffmpeg를 설치한 뒤에 됩니다.')
+      return
+    }
+    const first = String(stdout || '').split('\n')[0].trim()
+    console.log(`  ffmpeg: ${first || '사용 가능'}`)
+  })
   // 로컬 개발용 OAuth 폴백(127.0.0.1:3000). 클라우드에서는 불필요해 건너뜁니다.
   if (!process.env.RENDER && process.env.ENABLE_OAUTH_FALLBACK !== '0') {
     startOauthFallback()

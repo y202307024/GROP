@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
+import Icon from '../components/Icon';
 import s from './MeetingList.module.css';
 
 type Meeting = {
@@ -10,13 +11,22 @@ type Meeting = {
   date: string;
   summary: string | null;
   video_url: string | null;
+  video_key?: string | null;
+  video_status?: string | null;
   group_id: string;
   group_name?: string | null;
+  /** 회의에 첨부(사용)된 문서 파일 이름들 — meetings.attachments(jsonb)에서 이름만 뽑습니다 */
+  fileNames: string[];
 };
 
-type GroupedMeetings = {
-  [date: string]: Meeting[];
-};
+/** DB jsonb 첨부에서 파일 이름만 안전하게 꺼냅니다(DocumentList의 normalizeAttachments와 같은 기준: path·name이 문자열인 항목). */
+function attachmentNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((it): it is Record<string, unknown> => Boolean(it) && typeof it === 'object')
+    .filter((it) => typeof it.path === 'string' && typeof it.name === 'string')
+    .map((it) => String(it.name));
+}
 
 /**
  * 회의록 목록
@@ -28,7 +38,6 @@ export default function MeetingList() {
   const navigate = useNavigate();
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
-  const [openDates, setOpenDates] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let mounted = true;
@@ -68,17 +77,45 @@ export default function MeetingList() {
         if (g?.id && typeof g.name === 'string') nameById.set(g.id, g.name);
       }
 
-      const { data } = await supabase
+      // video_key 칸이 아직 없는 배포에서는 예전 칸만으로 목록을 보여 줍니다.
+      const withStatus = await supabase
         .from('meetings')
-        .select('id, title, date, summary, video_url, group_id')
+        .select('id, title, date, summary, video_url, video_key, video_status, group_id')
+        .in('group_id', targetGroupIds)
+        .order('date', { ascending: false });
+      if (withStatus.error) console.warn('회의록 목록을 불러오지 못했습니다:', withStatus.error.message);
+
+      // attachments 컬럼이 있으면 함께 읽고, 없으면 기본 컬럼만 다시 조회합니다(DocumentList와 같은 방식).
+      type Row = Omit<Meeting, 'group_name' | 'fileNames'> & { attachments?: unknown };
+      let rows: Row[];
+      const withAttach = await supabase
+        .from('meetings')
+        .select('id, title, date, summary, video_url, group_id, attachments')
         .in('group_id', targetGroupIds)
         .order('date', { ascending: false });
 
+      if (withAttach.error && /attachments/i.test(withAttach.error.message)) {
+        const fallback = await supabase
+          .from('meetings')
+          .select('id, title, date, summary, video_url, group_id')
+          .in('group_id', targetGroupIds)
+          .order('date', { ascending: false });
+        rows = (fallback.data as Row[] | null) ?? [];
+      } else {
+        rows = (withAttach.data as Row[] | null) ?? [];
+      }
+
       if (!mounted) return;
       setMeetings(
-        (data ?? []).map((m) => ({
-          ...m,
+        rows.map((m) => ({
+          id: m.id,
+          title: m.title,
+          date: m.date,
+          summary: m.summary,
+          video_url: m.video_url,
+          group_id: m.group_id,
           group_name: nameById.get(m.group_id) ?? null,
+          fileNames: attachmentNames(m.attachments),
         })),
       );
       setLoading(false);
@@ -90,101 +127,103 @@ export default function MeetingList() {
     };
   }, [groupId, navigate]);
 
-  const groupByDate = (rows: Meeting[]): GroupedMeetings => {
-    return rows.reduce((acc, meeting) => {
-      const d = new Date(meeting.date);
-      const dateKey = `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일`;
-      if (!acc[dateKey]) acc[dateKey] = [];
-      acc[dateKey].push(meeting);
-      return acc;
-    }, {} as GroupedMeetings);
-  };
-
   const formatTime = (dateStr: string) => {
     const d = new Date(dateStr);
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   };
 
-  const toggleDate = (date: string) => {
-    setOpenDates((prev) => {
-      const next = new Set(prev);
-      if (next.has(date)) next.delete(date);
-      else next.add(date);
-      return next;
-    });
+  const formatDate = (dateStr: string) => {
+    const d = new Date(dateStr);
+    return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
   };
 
-  const grouped = groupByDate(meetings);
-  const dates = Object.keys(grouped);
+  /** 「첨부 문서」 칸 문구: 첫 파일 이름 + (여럿이면) "외 N개", 없으면 "문서 없음" */
+  const fileLabel = (names: string[]) =>
+    names.length === 0 ? '문서 없음' : names.length > 1 ? `${names[0]} 외 ${names.length - 1}개` : names[0];
+
+  // 하단 요약용 — 회의 수와, 그 회의들에 첨부된 문서 파일 수
+  const docCount = meetings.reduce((sum, m) => sum + m.fileNames.length, 0);
 
   return (
-    <AppShell activePage="meeting">
-      <div className="page">
+    <AppShell activePage="main">
+      {/* 페이지 높이를 화면에 고정하고, 날짜 폴더가 많아지면 목록(.list) 안에서만 스크롤됩니다 */}
+      <div className={`page ${s.fixedPage}`}>
         {loading ? (
           <div>불러오는 중...</div>
         ) : (
           <>
-            <div className="page-header">
-              <h1>회의록</h1>
+            {/* 문서 페이지처럼 왼쪽 탭 제목 + 오른쪽 버튼 줄. "그룹으로"는 그룹 상세에서 들어온 경우(/group/:id/meetings)에만
+                돌아갈 그룹이 있어서 그때만 보여줍니다 */}
+            <div className={s.docHeader}>
+              <div className={s.tabs}>
+                <span className={s.tab}>회의록</span>
+              </div>
+              {groupId ? (
+                <div className={s.toolbar}>
+                  <button
+                    className={s.backButton}
+                    type="button"
+                    aria-label="그룹으로"
+                    title="그룹으로"
+                    onClick={() => navigate(`/group/${groupId}`)}
+                  >
+                    <Icon name="chevron-left" />
+                  </button>
+                </div>
+              ) : null}
             </div>
 
-            {dates.length === 0 ? (
+            {meetings.length === 0 ? (
               <div className={s.empty}>
                 <div>아직 회의록이 없어요</div>
                 <div>회의가 끝나면 자동으로 저장돼요</div>
               </div>
             ) : (
-              <div className={s.list}>
-                {dates.map((date) => {
-                  const isOpen = openDates.has(date);
-                  const dayMeetings = grouped[date];
-
-                  return (
-                    <div key={date} className={s.folder}>
-                      <div className={s.folderHead} onClick={() => toggleDate(date)}>
-                        <span>{isOpen ? '📂' : '📁'}</span>
-                        <div>
-                          <div className={s.folderTitle}>{date}</div>
-                          <div className={s.folderMeta}>회의 {dayMeetings.length}개</div>
+              <div className={s.meetingCard}>
+                {/* 헤더(sticky) + 행들이 이 영역 안에서만 스크롤됩니다 */}
+                <div className={s.meetingBody}>
+                  <div className="list-row list-head meeting-row">
+                    <span>회의록 / 사용된 문서</span>
+                    <span>날짜</span>
+                    <span>첨부 문서</span>
+                    <span>구분</span>
+                  </div>
+                  {meetings.map((m) => (
+                    <div
+                      key={m.id}
+                      className={`list-row meeting-row ${s.meetingRow}`}
+                      onClick={() =>
+                        navigate(`/group/${m.group_id}/meeting/${m.id}`, {
+                          state: { from: groupId ? 'group-meetings' : 'meetings' },
+                        })
+                      }
+                    >
+                      <div className={s.titleCell}>
+                        <span className={s.rowIcon}>{m.video_url ? '🎬' : '📄'}</span>
+                        <div className={s.titleText}>
+                          <span className={s.titleName}>{formatTime(m.date)} 회의</span>
+                          {/* 전체 회의록(/meetings)에서는 어느 그룹 회의인지도 함께 보여줍니다 */}
+                          {(m.summary || (!groupId && m.group_name)) && (
+                            <span className={s.titleSub}>
+                              {!groupId && m.group_name ? `${m.group_name}${m.summary ? ' · ' : ''}` : ''}
+                              {m.summary ?? ''}
+                            </span>
+                          )}
                         </div>
-                        <span className={s.chevron}>{isOpen ? '▲' : '▼'}</span>
                       </div>
-
-                      {isOpen && (
-                        <div className={s.meetings}>
-                          {dayMeetings.map((m) => (
-                            <div
-                              key={m.id}
-                              className={s.meeting}
-                              onClick={() =>
-                                navigate(`/group/${m.group_id}/meeting/${m.id}`, {
-                                  state: { from: groupId ? 'group-meetings' : 'meetings' },
-                                })
-                              }
-                            >
-                              <span>{m.video_url ? '🎬' : '📄'}</span>
-                              <div>
-                                <div className={s.meetingTitle}>
-                                  {formatTime(m.date)} 회의
-                                  {!groupId && m.group_name ? (
-                                    <span style={{ marginLeft: 8, color: '#888', fontWeight: 400, fontSize: 13 }}>
-                                      · {m.group_name}
-                                    </span>
-                                  ) : null}
-                                </div>
-                                {m.summary && <div className={s.meetingSummary}>{m.summary}</div>}
-                              </div>
-                              <div className={s.pills}>
-                                {m.video_url && <span className={`${s.pill} ${s.pillInfo}`}>영상</span>}
-                                {m.summary && <span className={s.pill}>메모</span>}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                      <span>{formatDate(m.date)}</span>
+                      <span className={m.fileNames.length === 0 ? s.noFile : s.fileName}>{fileLabel(m.fileNames)}</span>
+                      <span className={s.pills}>
+                        {m.video_url && <span className={`${s.pill} ${s.pillInfo}`}>영상</span>}
+                        {m.summary && <span className={s.pill}>메모</span>}
+                      </span>
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
+                {/* 하단 요약 — 문서 페이지의 "문서 N개" 줄과 같은 자리 */}
+                <div className={s.listFooter}>
+                  {groupId ? '이 그룹 ' : ''}회의록 {meetings.length}개 · 사용된 문서 {docCount}개
+                </div>
               </div>
             )}
           </>

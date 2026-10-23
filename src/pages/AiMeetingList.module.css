@@ -1,0 +1,82 @@
+/**
+ * AI 요약 첫 화면(그룹 탭 + 회의록 목록) 전용 — 틀은 DocumentList.module.css 를 그대로 쓰고,
+ * 여기서는 그룹 탭 스크롤, 행 누르기 표시, 오른쪽 화살표만 정의합니다.
+ */
+
+/* 그룹이 많을 때 탭 줄 안에서만 가로 스크롤(스크롤바는 숨김). 탭이 줄어들어 글자가 잘리지 않게 합니다 */
+.tabsScroll {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabsScroll::-webkit-scrollbar {
+  display: none;
+}
+
+.groupTab {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 행 전체를 눌러 들어갑니다 */
+.meetingRow {
+  cursor: pointer;
+}
+
+.go {
+  display: flex;
+  justify-content: flex-end;
+  color: var(--color-text-faint);
+}
+
+.go svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 5칸(회의|날짜|참석자|AI 요약|›) 컬럼 — 전역 .doc-row는 4칸(2fr 1.3fr 1fr 0.6fr)이라 5번째 칸(›)이
+   다음 줄로 밀리고 행이 늘어났습니다. 전역 클래스보다 우선하도록 두 클래스 선택자로 덮어씁니다 */
+:global(.list-row).aiRow {
+  grid-template-columns: 2fr 1.3fr 1fr 1fr 32px;
+  column-gap: var(--space-4, 8px);
+}
+
+/* 참석자 아바타 — 전역 .attendees는 svg(임시 아이콘)만 크기를 정해서 <img>가 원본 크기로 커졌습니다.
+   MainPage.module.css의 .attendees와 같은 크기·겹침으로 맞춥니다 */
+.attendees {
+  display: flex;
+  align-items: center;
+}
+
+.attendees svg {
+  width: 20px;
+  height: 20px;
+  margin-left: -6px;
+  stroke-width: 1.5;
+  color: var(--gray-text, #5e5e5e);
+}
+
+.attendees img {
+  width: 20px;
+  height: 20px;
+  margin-left: -6px;
+  box-sizing: border-box;
+  border: 1.5px solid #fff;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #e6f4e8;
+}
+
+.attendees svg:first-child,
+.attendees img:first-child {
+  margin-left: 0;
+}
+
+/* 글자 크기 — 메인 페이지 회의 목록과 맞춤: 회의 제목 14px/500(시안 20px×0.703), 날짜 13px, 머리글 12px, 상태 pill 12px.
+   전역 .list-row가 13px 하나로 통일해 제목이 날짜와 구분되지 않던 것을 분리합니다 */
+.meetingRow > span:first-child {
+  font-size: var(--text-md);
+  font-weight: 500;
+}

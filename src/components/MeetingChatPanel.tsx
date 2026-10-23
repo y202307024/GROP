@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import { RoomEvent, Track, type RemoteParticipant } from 'livekit-client';
+import { RoomEvent, type RemoteParticipant } from 'livekit-client';
 import { useLocalParticipant, useParticipants, useRoomContext } from '@livekit/components-react';
+import styles from './MeetingChatPanel.module.css';
 import { supabase } from '../services/supabaseClient';
 import {
   MEETING_CHAT_TOPIC,
@@ -17,16 +18,10 @@ type Props = {
   groupName?: string;
   /** 이름 저장 후 부모(헤더 등) 상태를 맞출 때 사용 */
   onGroupNameChange?: (name: string) => void;
-  /** false면 그룹 이름 인라인 편집 비활성 (방장만 true) */
-  canEditGroupName?: boolean;
   /** 로컬 헤드셋(스피커) 음소거 — RoomAudioRenderer volume과 연동 */
   speakerMuted?: boolean;
   onSpeakerMutedChange?: (muted: boolean) => void;
-  /**
-   * 최신 채팅 목록을 부모(Room)와 공유하는 ref.
-   * 녹화 저장 시 meetings.chat_log 로 함께 저장해, 마이크 없는 회의도
-   * 채팅 기록으로 AI 요약을 만들 수 있게 합니다.
-   */
+  /** 부모(Room)가 채팅 기록을 녹화 저장에 쓸 수 있게 최신 메시지를 미러링합니다. */
   chatLogRef?: RefObject<MeetingChatMessage[]>;
 };
 
@@ -145,7 +140,6 @@ export default function MeetingChatPanel({
   groupId: _groupId,
   groupName = '',
   onGroupNameChange,
-  canEditGroupName = true,
   speakerMuted = false,
   onSpeakerMutedChange,
   chatLogRef,
@@ -162,8 +156,6 @@ export default function MeetingChatPanel({
   const [savingName, setSavingName] = useState(false);
   /** identity(userId) → 프로필 아바타(key 또는 URL) */
   const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
-  /** 지금 말하고 있는 참가자 — 캐릭터 아바타 초록 테두리 */
-  const [speakingIds, setSpeakingIds] = useState<Set<string>>(() => new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -218,84 +210,6 @@ export default function MeetingChatPanel({
     return () => {
       room.off(RoomEvent.DataReceived, onData);
       room.off(RoomEvent.ParticipantDisconnected, onLeft);
-    };
-  }, [room]);
-
-  // 내 목소리는 Web Audio로 바로 재고, 상대는 LiveKit 레벨을 짧게 읽습니다.
-  useEffect(() => {
-    const SPEAK_ON = 0.02;
-    const SPEAK_OFF = 0.01;
-    let prevKey = '';
-    const wasSpeaking = new Set<string>();
-    let localRms = 0;
-    let cleanupAnalyser: (() => void) | undefined;
-
-    const hookLocalMic = () => {
-      cleanupAnalyser?.();
-      cleanupAnalyser = undefined;
-      localRms = 0;
-      if (!room.localParticipant.isMicrophoneEnabled) return;
-      const media = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.track?.mediaStreamTrack;
-      if (!media || media.readyState === 'ended') return;
-
-      const ctx = new AudioContext();
-      const source = ctx.createMediaStreamSource(new MediaStream([media]));
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.08;
-      source.connect(analyser);
-      const samples = new Uint8Array(analyser.fftSize);
-      const read = () => {
-        analyser.getByteTimeDomainData(samples);
-        let sum = 0;
-        for (let i = 0; i < samples.length; i += 1) {
-          const v = (samples[i] - 128) / 128;
-          sum += v * v;
-        }
-        localRms = Math.sqrt(sum / samples.length);
-      };
-      const readTimer = window.setInterval(read, 32);
-      if (ctx.state === 'suspended') void ctx.resume();
-      cleanupAnalyser = () => {
-        window.clearInterval(readTimer);
-        source.disconnect();
-        void ctx.close();
-      };
-    };
-
-    hookLocalMic();
-    room.on(RoomEvent.LocalTrackPublished, hookLocalMic);
-    room.on(RoomEvent.LocalTrackUnpublished, hookLocalMic);
-    room.on(RoomEvent.TrackMuted, hookLocalMic);
-    room.on(RoomEvent.TrackUnmuted, hookLocalMic);
-
-    const collect = () => {
-      const next = new Set<string>();
-      const list = [room.localParticipant, ...room.remoteParticipants.values()];
-      for (const p of list) {
-        if (!p?.identity || p.isMicrophoneEnabled === false) continue;
-        const livekitLevel = Number(p.audioLevel) || 0;
-        const level = p.isLocal ? Math.max(livekitLevel, localRms) : livekitLevel;
-        const keep = wasSpeaking.has(p.identity) && level > SPEAK_OFF;
-        if (level >= SPEAK_ON || keep) next.add(p.identity);
-      }
-      const key = [...next].sort().join(',');
-      if (key === prevKey) return;
-      prevKey = key;
-      wasSpeaking.clear();
-      next.forEach((id) => wasSpeaking.add(id));
-      setSpeakingIds(new Set(next));
-    };
-
-    collect();
-    const timer = window.setInterval(collect, 32);
-    return () => {
-      window.clearInterval(timer);
-      cleanupAnalyser?.();
-      room.off(RoomEvent.LocalTrackPublished, hookLocalMic);
-      room.off(RoomEvent.LocalTrackUnpublished, hookLocalMic);
-      room.off(RoomEvent.TrackMuted, hookLocalMic);
-      room.off(RoomEvent.TrackUnmuted, hookLocalMic);
     };
   }, [room]);
 
@@ -432,7 +346,7 @@ export default function MeetingChatPanel({
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
 
-  // 부모(Room)가 녹화 저장 시 최신 채팅을 읽어갈 수 있도록 ref에 계속 반영합니다.
+  // 녹화 저장(Room)이 채팅 내용을 함께 남길 수 있게, 최신 메시지를 부모의 ref에 미러링합니다.
   useEffect(() => {
     if (chatLogRef) chatLogRef.current = messages;
   }, [messages, chatLogRef]);
@@ -494,14 +408,14 @@ export default function MeetingChatPanel({
   };
 
   return (
-    <aside className="chat-panel">
-      <div className="side-stack">
-        <section className="participant-card">
-          <div className="group-name-row">
+    <aside className={styles.chatPanel}>
+      <div className={styles.sideStack}>
+        <section className={styles.participantCard}>
+          <div className={styles.groupNameRow}>
             {editingName ? (
               <input
                 ref={nameInputRef}
-                className="group-name-input"
+                className={styles.groupNameInput}
                 value={nameDraft}
                 disabled={savingName}
                 aria-label="그룹 이름"
@@ -518,49 +432,46 @@ export default function MeetingChatPanel({
                   }
                 }}
               />
-            ) : canEditGroupName ? (
+            ) : (
               <button
                 type="button"
-                className="group-name-button"
+                className={styles.groupNameButton}
                 title="이름 변경"
                 onClick={() => setEditingName(true)}
               >
-                <span className="group-name-text">{groupName || '그룹'}</span>
-                <svg className="group-name-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <span className={styles.groupNameText}>{groupName || '그룹'}</span>
+                <svg className={styles.groupNameEdit} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                   <path d="M12 20h9" />
                   <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
                 </svg>
               </button>
-            ) : (
-              <span className="group-name-text">{groupName || '그룹'}</span>
             )}
           </div>
 
-          <ul className="participant-list">
+          <ul className={styles.participantList}>
             {participants.map((p) => {
               const isLocal = p.isLocal;
               const name = readableName(p.name) || (isLocal ? '나' : '참여자');
               const micOn = p.isMicrophoneEnabled;
-              const speaking = micOn && speakingIds.has(p.identity);
-              // 원격 참가자는 그 사람이 데이터 채널로 보낸 값으로 헤드셋 상태를 표시합니다.
               const headsetMuted = isLocal ? speakerMuted : Boolean(remoteHeadsetOff[p.identity]);
               return (
-                <li key={p.identity} className="participant-row">
-                  <div className="participant-identity">
-                    <div className={`participant-avatar${speaking ? ' is-speaking' : ''}`} title={name}>
+                <li key={p.identity} className={styles.participantRow}>
+                  <div className={styles.participantIdentity}>
+                    {/* 말하는 중이면 아바타 테두리를 초록으로 (isSpeaking은 LiveKit이 제공) */}
+                    <div className={`${styles.participantAvatar}${p.isSpeaking ? ` ${styles.isSpeaking}` : ''}`} title={name}>
                       {avatarByUserId[p.identity] ? (
                         <img src={getAvatarSrc(avatarByUserId[p.identity])} alt="" />
                       ) : (
                         participantInitial(name)
                       )}
                     </div>
-                    <span className="participant-name">{name}</span>
+                    <span className={styles.participantName}>{name}</span>
                   </div>
-                  <div className="participant-controls">
+                  <div className={styles.participantControls}>
                     <button
                       type="button"
-                      className={`participant-ctrl${headsetMuted ? ' is-off' : ''}`}
-                      title={isLocal ? (headsetMuted ? '헤드셋 켜기' : '헤드셋 끄기') : (headsetMuted ? '헤드셋 꺼짐' : '헤드셋 켜짐')}
+                      className={`${styles.participantCtrl}${headsetMuted ? ` ${styles.isOff}` : ''}`}
+                      title={headsetMuted ? '헤드셋 켜기' : '헤드셋 끄기'}
                       aria-label={`${name} 헤드셋`}
                       disabled={!isLocal}
                       onClick={() => { if (isLocal) toggleLocalHeadset(); }}
@@ -569,8 +480,8 @@ export default function MeetingChatPanel({
                     </button>
                     <button
                       type="button"
-                      className={`participant-ctrl${!micOn ? ' is-off' : ''}`}
-                      title={isLocal ? (micOn ? '마이크 끄기' : '마이크 켜기') : (speaking ? '말하는 중' : (micOn ? '마이크 켜짐' : '마이크 꺼짐'))}
+                      className={`${styles.participantCtrl}${!micOn ? ` ${styles.isOff}` : ''}`}
+                      title={isLocal ? (micOn ? '마이크 끄기' : '마이크 켜기') : (micOn ? '말하는 중' : '마이크 꺼짐')}
                       aria-label={`${name} 마이크`}
                       disabled={!isLocal}
                       onClick={() => { if (isLocal) void toggleLocalMic(); }}
@@ -584,20 +495,20 @@ export default function MeetingChatPanel({
           </ul>
         </section>
 
-        <section className="chat-card">
-          <h2 className="chat-section-title">채팅</h2>
+        <section className={styles.chatCard}>
+          <h2 className={styles.chatSectionTitle}>채팅</h2>
 
-          <div className="chat-messages" ref={listRef}>
+          <div className={styles.chatMessages} ref={listRef}>
             {messages.length === 0 ? (
-              <div className="chat-message">아직 채팅이 없어요.</div>
+              <div className={styles.chatMessage}>아직 채팅이 없어요.</div>
             ) : (
               messages.map((m) => {
                 const own = m.from === localParticipant.identity;
                 const sender = senderLabel(m, localParticipant.identity, participants);
                 return (
-                  <div key={m.id} className={`chat-row${own ? ' is-own' : ''}`}>
-                    <span className="chat-sender">{sender} · {formatChatTime(m.ts)}</span>
-                    <div className={`chat-message${own ? ' own-message' : ''}`}>
+                  <div key={m.id} className={`${styles.chatRow}${own ? ` ${styles.isOwn}` : ''}`}>
+                    <span className={styles.chatSender}>{sender} · {formatChatTime(m.ts)}</span>
+                    <div className={`${styles.chatMessage}${own ? ` ${styles.ownMessage}` : ''}`}>
                       {m.text}
                     </div>
                   </div>
@@ -607,7 +518,7 @@ export default function MeetingChatPanel({
           </div>
 
           <form
-            className="chat-input-area"
+            className={styles.chatInputArea}
             onSubmit={(e) => {
               e.preventDefault();
               sendMessage();

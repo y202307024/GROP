@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createScaledPortal } from './AppScaleLayer';
 import { supabase } from '../supabaseClient';
 import Icon from './Icon';
 import { AVATAR_OPTIONS, DEFAULT_AVATAR_KEY, getAvatarSrc } from '../utils/avatarOptions';
@@ -122,7 +123,9 @@ export default function ProfileEditModal({ open, onClose, onSaved, required = fa
     onClose();
   };
 
-  return (
+  // createPortal로 body에 직접 그립니다 — AppShell의 .app이 transform: scale()을 가져서 그 안의
+  // position: fixed 배경(.modal-overlay)이 화면이 아니라 .app 기준이 되어 화면을 다 못 덮었습니다.
+  return createScaledPortal(
     <div className="modal-overlay" onClick={required ? undefined : onClose}>
       <div className="profile-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <div className="profile-modal-header">
@@ -199,6 +202,6 @@ export default function ProfileEditModal({ open, onClose, onSaved, required = fa
           </>
         )}
       </div>
-    </div>
+    </div>,
   );
 }

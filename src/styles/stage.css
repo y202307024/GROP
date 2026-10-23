@@ -1,0 +1,41 @@
+/**
+ * 고정 캔버스 스케일 시스템
+ * ─────────────────────────────────────────────────────────────
+ * grop/css/common.css 를 그대로 옮겼습니다. (:root 변수는 tokens.css 로 옮기고,
+ * box-sizing/margin 리셋은 reset.css 와 겹쳐서 여기서는 뺐습니다)
+ *
+ * 가로/세로를 --stage-width/--stage-height(1440x810, 16:9)로 고정해 두고,
+ * 실제 창 크기에 맞춘 가로/세로 배율(--stage-scale-x/--stage-scale-y)로 각각 늘립니다
+ * (스트레치). 배율은 src/hooks/useStageScale.ts가 계산합니다.
+ *
+ * 그래서 창 비율이 16:9와 달라도 빈 여백(레터박스)도, 화면 밖으로 잘리는 부분도 없이
+ * 항상 창에 정확히 꽉 채워집니다. 대신 가로/세로 배율이 서로 다른 만큼 UI가 아주
+ * 살짝 눌리거나 늘어나 보일 수 있습니다(16:9에서 크게 벗어나지 않는 한 거의 눈에
+ * 띄지 않습니다).
+ */
+
+html,
+body {
+  /* .stage가 창 크기에 맞춰 통째로 축소/확대되므로, 문서 자체는 스크롤되지 않습니다 */
+  overflow: hidden;
+}
+
+/* 리액트 마운트 지점 — .stage를 화면 정중앙에 놓기 위한 뷰포트 크기의 플렉스 박스.
+   base.css의 #root(min-height:100%; isolation:isolate)와 함께 적용됩니다. */
+#root {
+  width: 100%;
+  height: 100%;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stage {
+  width: var(--stage-width);
+  height: var(--stage-height);
+  flex: none;
+
+  transform: scale(var(--stage-scale-x), var(--stage-scale-y));
+  transform-origin: center center;
+}

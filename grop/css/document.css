@@ -5,14 +5,18 @@
 ========================================= */
 
 .page {
-    width: 100%;
+    /* 좌우 padding 12px + 같은 만큼 음수 margin — 본문 위치는 .main의 40px 그대로(메인 페이지 간격)이고,
+       overflow-y: auto/hidden이 카드 그림자(옆 8px 번짐)를 가장자리에서 자르지 않도록 12px 여유를 둡니다.
+       (document/member/setting.css 세 파일이 똑같은 .page를 갖고 있어 마지막에 불러오는 쪽이 이기므로 셋 다 같게 맞춥니다) */
+    width: auto;
     height: 100%;
+    margin: 0 -12px;
 
     padding:
         48px
-        58px
+        12px
         45px
-        62px;
+        12px;
 
     display: flex;
     flex-direction: column;
@@ -190,7 +194,7 @@
 
 .doc-attach-modal {
     width: min(480px, 100%);
-    max-height: min(72vh, 560px);
+    max-height: min(calc(72 * var(--app-vh, 1vh)), 560px);
     display: flex;
     flex-direction: column;
     border-radius: 12px;

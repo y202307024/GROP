@@ -1,0 +1,87 @@
+/**
+ * 회의방(Room)과 캔버스 단독 화면(CanvasPage)이 함께 쓰는 공통 셸.
+ * src/styles/pageLayout.module.css 와 같은 패턴 — 여러 페이지가 같이 쓰는
+ * 레이아웃은 각 파일 옆이 아니라 공유 모듈로 둡니다.
+ *
+ * 원래 grop/css/meeting.css + src/styles/index.css(전역)에 있던 스타일을 이전.
+ */
+
+.meetingHeader {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: relative;
+}
+
+.meetingTitle {
+  margin-left: 24px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.meetingMain {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+  overflow: hidden;
+}
+
+/* 캔버스 화이트보드 영역 — 원래 index.css의 .meeting-page .whiteboard 재정의를
+   여기서 합쳐서 하나의 규칙으로 정리했습니다 (실제 계산된 최종값 기준) */
+.whiteboard {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  background: #ffffff;
+  border: 1px solid #cccccc;
+  border-radius: 15px;
+  overflow: hidden;
+}
+
+.meetingLoading {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  color: var(--color-text-muted);
+  font-size: 16px;
+}
+
+/* ===== 하단바 ===== */
+.bottomBar {
+  height: auto;
+  min-height: 55px;
+  padding: 8px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.callControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 나가기 — 빨간 강조 버튼 */
+.leaveButton {
+  height: 36px;
+  padding: 0 16px;
+  line-height: 1;
+  border: none;
+  border-radius: 6px;
+  background: var(--color-danger);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.leaveButton:hover {
+  background: #9a4c4c;
+}

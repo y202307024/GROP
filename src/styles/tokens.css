@@ -74,7 +74,10 @@
   --color-dark-text-faint: #9d9ea0;
 
   /* ===== 타이포그래피 (grop: Archivo Black + Roboto) ===== */
-  --font-sans: 'Roboto', Arial, 'Noto Sans KR', sans-serif;
+  /* 한글: Roboto에는 한글 글리프가 없어 대체 글꼴로 그려집니다. 피그마 시안은 Mac에서 작업돼 Apple SD Gothic Neo로
+     보이므로 그것을 먼저 두고(Mac에서는 시안과 동일), 없는 PC(Windows 등)는 index.html에서 불러오는 웹폰트
+     Noto Sans KR로 시안과 가장 가깝게 보이게 합니다. 맑은 고딕은 마지막 안전망입니다. */
+  --font-sans: 'Roboto', Arial, 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
   --font-display: 'Archivo Black', 'Roboto', sans-serif;
   --font-heading: 'Archivo', 'Roboto', sans-serif;
   --font-mono: ui-monospace, Consolas, monospace;
@@ -148,4 +151,12 @@
   /* ===== 모션 ===== */
   --transition-fast: 0.15s ease;
   --transition-base: 0.3s ease;
+
+  /* 고정 캔버스 크기 (디자인 기준 화면, 16:9). src/styles/stage.css의 .stage가 이 값으로
+   너비/높이를 고정하고, src/hooks/useStageScale.ts가 창 크기에 맞춘 배율을 계산해
+   --stage-scale-x/--stage-scale-y 에 채웁니다. */
+--stage-width: 1440px;
+--stage-height: 810px;
+--stage-scale-x: 1;
+--stage-scale-y: 1;
 }

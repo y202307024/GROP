@@ -1,0 +1,430 @@
+/**
+ * 회의/캔버스 하단 그리기 툴바 (기본 도구 + 도구별 옵션 + 첨부파일)
+ * 원래 grop/css/meeting.css(전역)에 있던 스타일을 이 컴포넌트 전용으로 이전.
+ *
+ * --s : 시안(2048px) → 화면 배율. 기본 1, 회의방(compact)은 0.703(= 1440 ÷ 2048).
+ *       시안의 px 값을 calc(Npx * var(--s))로 적으면 두 화면 모두 같은 비율이 됩니다.
+ */
+
+.drawingTools {
+  --s: 1;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding-left: 10px;
+  min-width: 0;
+  flex: 1;
+  max-width: none;
+}
+
+.drawingToolsPrimary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding-right: 10px;
+  border-right: 1px solid #cfcfcf;
+}
+
+/* 도구별 옵션 줄. 시안: 구분선 → 첫 옵션 간격 19px */
+.drawingToolsSubmenu {
+  display: flex;
+  align-items: center;
+  gap: calc(15px * var(--s));
+  min-width: 0;
+  flex: 1;
+  padding-left: calc(19px * var(--s));
+  /* 위로 뜨는 드롭다운이 잘리지 않도록 */
+  overflow: visible;
+}
+
+/* ===== 기본 도구 버튼 ===== */
+.toolButton {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #000000;
+  cursor: pointer;
+}
+
+/* SVG를 currentColor로 칠하는 아이콘 — 크기는 SVG 원래 크기 × --s */
+.maskIcon {
+  display: block;
+  flex-shrink: 0;
+  width: calc(var(--icon-w) * 1px * var(--s));
+  height: calc(var(--icon-h) * 1px * var(--s));
+  background-color: currentColor;
+  -webkit-mask: var(--icon-url) center / 100% 100% no-repeat;
+  mask: var(--icon-url) center / 100% 100% no-repeat;
+  pointer-events: none;
+  user-select: none;
+}
+
+.toolButton:hover {
+  background: #f0f0f0;
+}
+
+/* 선택된 도구: 시안처럼 배경 없이 아이콘만 초록 */
+.toolButton.active {
+  background: transparent;
+  color: var(--color-primary);
+}
+
+/* 툴팁 */
+.toolButton::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: #333333;
+  color: white;
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+  z-index: 100;
+}
+
+.toolButton::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 3px);
+  transform: translateX(-50%);
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid #333333;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 100;
+}
+
+.toolButton:hover::after,
+.toolButton:hover::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* ===== 회의방용 compact 툴바 (--s = 0.703) =====
+   시안: 아이콘 간격 44px → 약 31px(버튼 28px + 간격 3px). 첫 아이콘이 화면 왼쪽 여백(30px)에
+   맞도록 버튼 안쪽 여백만큼 당깁니다. 구분선은 시안의 #737373. */
+.drawingToolsCompact {
+  --s: 0.703;
+  padding-left: 0;
+}
+
+.drawingToolsCompact .drawingToolsPrimary {
+  gap: 3px;
+  margin-left: -5px;
+  /* 시안: 마지막 아이콘과 구분선 사이 13px → 약 9px (버튼 안쪽 여백 5px 포함) */
+  padding-right: 4px;
+  border-right-color: #737373;
+}
+
+.drawingToolsCompact .toolButton {
+  width: 28px;
+  height: 28px;
+}
+
+/* ===== 옵션 공통 ===== */
+.optGroup {
+  --opt-gap: calc(4px * var(--s));
+  display: flex;
+  align-items: center;
+  gap: var(--opt-gap);
+  flex-shrink: 0;
+}
+
+/* 줄마다 시안의 아이콘 간격이 달라서 버튼(30px) 사이 간격을 따로 둡니다 */
+.optGroupText {
+  --opt-gap: calc(3px * var(--s));
+}
+
+.optGroupShapes {
+  --opt-gap: calc(8px * var(--s));
+}
+
+.optBtn {
+  width: calc(30px * var(--s));
+  height: calc(30px * var(--s));
+  min-width: 20px;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: calc(5px * var(--s));
+  background: transparent;
+  color: #000000;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.optBtn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* 선택된 옵션: 시안처럼 아이콘만 초록 */
+.optBtn.active {
+  background: transparent;
+  color: var(--color-primary);
+}
+
+/* 아이콘 + 아래(위) 화살표가 붙은 드롭다운 버튼 (글자 크기, 정렬) */
+.optBtnDropdown {
+  width: auto;
+  padding: 0 calc(4px * var(--s));
+  gap: calc(8px * var(--s));
+}
+
+/* 드롭다운은 위로 열리므로 화살표를 거꾸로(위쪽) 돌려 씁니다 */
+.chevronUp {
+  color: #737373;
+  transform: rotate(180deg);
+}
+
+.optDivider {
+  width: 1px;
+  height: calc(24px * var(--s));
+  background: #737373;
+  flex-shrink: 0;
+}
+
+/* 드롭다운 버튼 + 위로 뜨는 팝오버 */
+.optPopWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.optPopover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+}
+
+.optPxInput {
+  width: 56px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+  text-align: right;
+}
+
+.optPxUnit {
+  font-size: 12px;
+  color: #666;
+}
+
+/* 글꼴 선택 (모양만) */
+.optFontFamily {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(8px * var(--s));
+  height: calc(36px * var(--s));
+  min-height: 24px;
+  padding: 0 calc(10px * var(--s));
+  border: none;
+  background: transparent;
+  color: #000000;
+  font-family: 'Roboto', sans-serif;
+  font-size: max(11px, calc(14px * var(--s)));
+  font-weight: 400;
+  line-height: 1;
+  cursor: default;
+  flex-shrink: 0;
+}
+
+/* 가운데·오른쪽 정렬 아이콘 (SVG 파일이 없어 기존 선 아이콘 사용) — 왼쪽 정렬 SVG(15×13)와 비슷한 크기 */
+.inlineAlignIcon {
+  width: calc(18px * var(--s));
+  height: calc(18px * var(--s));
+  flex-shrink: 0;
+}
+
+/* ===== 굵기 슬라이더 (시안: 길이 116px, 트랙 2px #737373, 손잡이 12px 초록 원) ===== */
+.optSlider {
+  --thumb: calc(12px * var(--s));
+  --track: max(1.4px, calc(2px * var(--s)));
+  display: flex;
+  align-items: center;
+  width: calc(116px * var(--s));
+  flex-shrink: 0;
+  /* 시안에선 슬라이더와 색 칩 사이에 무지개 버튼이 있어서 그만큼 간격이 더 넓었습니다 */
+  margin-right: calc(9px * var(--s));
+}
+
+.optSlider input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: var(--thumb);
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.optSlider input[type='range']::-webkit-slider-runnable-track {
+  height: var(--track);
+  border-radius: 999px;
+  background: #737373;
+}
+
+.optSlider input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--thumb);
+  height: var(--thumb);
+  margin-top: calc((var(--track) - var(--thumb)) / 2);
+  border: none;
+  border-radius: 50%;
+  background: var(--color-primary);
+}
+
+.optSlider input[type='range']::-moz-range-track {
+  height: var(--track);
+  border-radius: 999px;
+  background: #737373;
+}
+
+.optSlider input[type='range']::-moz-range-thumb {
+  width: var(--thumb);
+  height: var(--thumb);
+  border: none;
+  border-radius: 50%;
+  background: var(--color-primary);
+}
+
+/* ===== 색 칩 (펜 색 / 메모 배경색) — 시안: 24px, 간격 10px, 테두리 1px 초록, 모서리 5px ===== */
+.optSwatches {
+  display: flex;
+  align-items: center;
+  gap: calc(10px * var(--s));
+  flex-shrink: 0;
+}
+
+.swatch {
+  box-sizing: border-box;
+  width: calc(24px * var(--s));
+  height: calc(24px * var(--s));
+  min-width: 14px;
+  min-height: 14px;
+  padding: 0;
+  border: 1px solid #667c55;
+  border-radius: calc(5px * var(--s));
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* 지금 고른 색 표시 (시안엔 없어서 보조로 링만 둡니다) */
+.swatch.active {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+/* ===== 첨부파일 ===== */
+.submenuAttachments {
+  display: flex;
+  align-items: center;
+  gap: calc(12px * var(--s));
+  min-width: 0;
+  /* 칩의 그림자가 잘리지 않도록 위아래 여백을 둡니다 */
+  overflow-x: auto;
+  padding: 6px 4px;
+}
+
+.submenuEmpty {
+  font-size: 12px;
+  color: #888;
+  white-space: nowrap;
+}
+
+.attachmentAddBtn {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px dashed var(--color-primary, #667c55);
+  border-radius: 999px;
+  background: #f3f7f0;
+  color: var(--color-primary-deep, #47603c);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.attachmentAddBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 파일 칩: 시안 높이 26px, 좌우 12px, 아이콘-글자 간격 10px, 모서리 10px, 그림자 */
+.attachmentChip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(10px * var(--s));
+  max-width: 200px;
+  height: calc(26px * var(--s));
+  min-height: 22px;
+  padding: 0 calc(12px * var(--s));
+  border: none;
+  border-radius: calc(10px * var(--s));
+  background: #ffffff;
+  color: #000000;
+  text-decoration: none;
+  font-family: 'Roboto', sans-serif;
+  font-size: max(11px, calc(14px * var(--s)));
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  box-shadow: 1.47px 2.93px 5.86px rgba(0, 0, 0, 0.21);
+}
+
+.attachmentChipIcon {
+  color: #667c55;
+}
+
+.attachmentChip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}

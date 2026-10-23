@@ -1,0 +1,521 @@
+/**
+ * DefaultProfile(설정 > 계정설정 탭) 전용 스타일
+ * 피그마 "설정 페이지" export(계정설정 탭)를 반영했습니다.
+ *
+ * profile-modal.css의 .profile-modal/.avatar-grid/.avatar-option 등은 GroupModal,
+ * ProfileEditModal, GroupSettings, GroupProfile, SetupProfile도 함께 쓰는 전역 클래스라
+ * 여기서는 건드리지 않고, 이 페이지 전용 카드형 레이아웃을 새 클래스로 따로 만들었습니다.
+ * .page는 원래 grop/css/member.css(및 document.css)의 전역 클래스였습니다.
+ * 공유 kit 파일을 만들지 않는 마이그레이션 규칙에 따라 여기서도 그대로 복제해 둡니다.
+ */
+
+.page {
+  /* .page의 overflow(스크롤)가 안쪽 카드의 그림자·모서리를 잘라 먹어서, 좌우·아래로 12px씩
+     (--shadow-card 0 3px 8px는 옆 8px · 아래 11px 번짐) 여유를 주고 같은 만큼 음수 마진으로 되돌려
+     카드 위치/크기는 그대로 둡니다. */
+  width: calc(100% + 24px);
+  /* 설정 페이지 전체에 스크롤이 생기던 문제 수정: 예전엔 height:100%였는데 .main이 내용만큼 늘어나서
+     (AppShell .app의 min-height) 결국 "화면 높이 + 위/아래 여백"만큼 페이지 전체가 스크롤됐습니다.
+     이제 화면 높이(100dvh)에서 AppShell 위아래 크롬(위 패딩 28 + 상단바 28 + 간격 26 + 아래 패딩 40
+     = 122px, 아래에서 20px 끌어올린 만큼 102px)을 뺀 높이로 고정하고, 카드(.card)가 남는 공간을 채웁니다. */
+  /* 90px + 45px: 카드 아래 끝을 영역 끝에서 45px 위에 둡니다(그룹 상세 하단 패널과 같은 끝선) */
+  /* 135px → 122px: 카드 아래 끝이 피그마 위치(화면 끝에서 72px 위)에 오려면 페이지 높이가 화면 높이 − 122px 여야 합니다
+     (페이지 위 62px + 높이 + 아래 끝이 화면 끝 − 60px, 그 안에서 아래 padding 12px 제외). 135px일 땐 13px이 모자라
+     카드(실제 아래 끝 약 672px)가 들어갈 자리가 9px 부족해 페이지 전체에 스크롤이 생겼습니다. */
+  height: calc(var(--app-h, 100dvh) - 122px);
+  min-height: 0;
+  /* 피그마는 "설정" 제목 위치가 위에서 62px(88×0.703)인데, AppShell은 위 패딩 28 + 상단바 28 + 간격 26 =
+     82px라 20px 더 내려와 있었습니다. 제목 줄은 상단바 아이콘(오른쪽 정렬)과 가로로 겹치지 않으니
+     20px 끌어올려 피그마 위치에 맞추고, 그만큼 페이지 높이를 늘립니다(122 → 102). */
+  margin: -20px -12px -12px;
+
+  /* 좌우/위 여백은 0 — AppShell의 .main이 이미 padding 28px 40px 40px(+ 상단바와 26px gap)을
+     갖고 있어서, 여기서 또 62px/30px/48px을 더하면 이중으로 들어갑니다.
+     피그마 전체 화면 기준: 사이드바 구분선(268) → 본문 시작(311)이 43px ≈ 30px, 카드 끝(2005) →
+     화면 끝(2048)이 43px ≈ 30px인데, .main의 40px만으로도 거의 맞습니다(±10px).
+     아래 여백은 카드 끝(1050) → 화면 끝(1152) 102px × 0.703 ≈ 72px인데, 높이가 모자란 화면에서도
+     스크롤이 안 생기도록 .main의 40px만 쓰고 여기 추가 여백은 두지 않습니다. */
+  padding: 0 12px 12px;
+  box-sizing: border-box;
+
+  display: flex;
+  flex-direction: column;
+
+  overflow-y: auto;
+}
+
+.header {
+  /* 부제목 → 탭 글자: 피그마 177 → 224 = 47px ÷ 캔버스 높이 1152px */
+  margin-bottom: calc(4.08 * var(--app-vh, 1vh));
+}
+
+.title {
+  /* 제목 → 부제목: 피그마 128 → 156 = 28px ÷ 1152px */
+  margin: 0 0 calc(2.43 * var(--app-vh, 1vh));
+
+  /* 피그마 24px × 0.703 ≈ 17px (예전엔 토큰 22px로 소제목 18px과 차이가 거의 없었음) */
+  font-size: 17px;
+  /* 피그마 제목 박스 높이 40px × 0.703 ≈ 28px. h1 기본 줄 높이(1.3배)면 22px라 부제목이 6px 위로 올라붙습니다 */
+  line-height: 1.65;
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+}
+
+.subtitle {
+  margin: 0;
+  /* 피그마 부제목 줄 높이 21px / 글자 18px(≈ 1.17배). 앱 기본 1.6배면 21px(시안 15px)라 아래 탭·카드가 6px씩 밀립니다 */
+  line-height: 1.17;
+
+  /* 피그마 18px × 0.703 ≈ 13px (예전엔 15px) */
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-secondary);
+}
+
+/* =========================================
+   탭 (계정설정 / 음성)
+========================================= */
+
+/* 피그마: 탭 두 개가 같은 너비(128px × 0.703 ≈ 91px)로 붙어 있고, 밑줄도 탭 너비만큼만 있습니다
+   (활성=초록, 비활성=회색). 예전처럼 카드 폭 전체를 가로지르는 선이 아닙니다.
+   탭 밑줄 → 카드 사이는 50px ÷ 1152px. */
+.tabs {
+  display: flex;
+  align-items: flex-end;
+
+  margin: 0 0 calc(4.34 * var(--app-vh, 1vh));
+}
+
+.tab {
+  min-width: 91px;
+  /* 피그마: 탭 글자 윗면(224) → 밑줄(253) = 29px × 0.703 ≈ 20px = 글자 줄(16px) + 여백 2.5px + 밑줄 1.5px.
+     줄 높이를 안 정하면 앱 기본 1.6배(14px → 22px)라 탭 줄이 8px 높아져 카드가 그만큼 내려갔습니다 */
+  line-height: 1.17;
+  padding: 0 var(--space-4) 2.5px;
+  white-space: nowrap;
+  text-align: center;
+
+  border: none;
+  background: transparent;
+  border-bottom: 1.5px solid var(--color-border-strong);
+
+  /* 피그마 20px × 0.703 ≈ 14px (예전엔 피그마 원본 20px을 그대로 써서 가장 크게 보였음) */
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-faint);
+
+  cursor: pointer;
+
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.tabActive {
+  /* 피그마: 활성 탭 글자도 초록(#667C55) — 예전엔 검정이고 밑줄만 초록이었음 */
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+/* =========================================
+   계정설정 카드
+========================================= */
+
+.card {
+  background: var(--color-surface);
+
+  /* 피그마 Rectangle 34: radius 16.33px × 0.703 ≈ 11.5px → radius-xl(12px).
+     그림자는 다른 페이지 카드와 같은 --shadow-card로 통일합니다. */
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+
+  /* 피그마 기준 카드 안쪽 여백: 왼쪽 102px · 오른쪽 104px(카드 폭 1694px의 6.02% / 6.14%),
+     위쪽은 카드 맨 위~"프로필 관리" 27px × 0.703 ≈ 19px. 가로는 카드 폭에 비례해 늘고 줄도록 %로 환산 */
+  /* 위아래 안쪽 여백은 같은 값(18px)으로 맞춥니다 — 아래쪽이 더 컸을 때 내용이 위로 쏠려 보였습니다 */
+  padding: var(--space-9) 6.14% var(--space-9) 6.02%;
+
+  /* 카드가 내용보다 높을 때(큰 화면, 또는 음성 탭처럼 내용이 짧을 때) 남는 높이를 내용 위·아래에
+     똑같이 나눠 갖도록 세로 flex로 만들고, 내용 묶음에 margin: auto를 줍니다(아래 .formGrid / .voiceCard) */
+  display: flex;
+  flex-direction: column;
+
+  /* .page(header/tabs와 함께 flex-column)에서 남는 공간을 채우되(flex-grow:1) 내용보다 작아지진
+     않게(flex-basis:auto, min-height 기본값) 합니다. 이 비율이 피그마 카드 높이(747px ÷ 캔버스
+     1152px = 64.84vh)와 거의 같아서, 예전처럼 min-height: 64.84vh로 따로 고정하지 않습니다 —
+     고정하면 화면이 낮을 때 페이지 전체가 스크롤됐습니다. */
+  flex: 1 0 auto;
+  box-sizing: border-box;
+}
+
+.formGrid {
+  display: flex;
+  flex-wrap: wrap;
+
+  /* 두 열 사이 간격: 피그마 49px ÷ 카드 안쪽 폭(1694 - 206 = 1488px) ≈ 3.3% */
+  column-gap: 3.3%; /* 피그마 열 사이 49px ÷ 콘텐츠 폭 1488px ≈ 3.3% */
+  row-gap: var(--space-12);
+
+  /* 카드 안에서 위·아래 남는 공간을 균등하게 나눔. 예전 아래쪽 padding-bottom(12px)은 위아래 여백을
+     비대칭으로 만들어서 뺐습니다(열이 줄바꿈될 때 간격은 위 row-gap이 맡습니다) */
+  margin: auto 0;
+}
+
+.fieldsColumn {
+  flex: 1 1 420px;
+  min-width: 0;
+
+  display: flex;
+  flex-direction: column;
+
+  /* 필드 묶음 사이: 피그마 25px × 0.703 ≈ 18px (기존 10px보다 넓음) */
+  gap: var(--space-9);
+}
+
+.sectionTitle {
+  /* 글자 크기: 피그마 24px × 0.703 ≈ 17px (위 .title과 같은 값). 이 카드 안 글자/입력칸은 전부
+     피그마 값 × 0.703에 맞춰 줄였습니다 — 예전 값(16~20px)은 피그마 환산값보다 커서
+     1440×810 화면에서 내용이 카드 높이(525px)를 넘겨 스크롤이 생겼습니다. */
+  /* 제목-설명 사이는 피그마 11px(≈ 위 gap 18px - 7px)로 좁게 붙입니다 */
+  margin: 0 0 -7px;
+
+  /* 피그마 줄 높이 28px / 글자 24px(≈ 1.17배). 안 정하면 앱 기본 1.6배라 제목 줄이 29px(시안 20px)이 됩니다 */
+  line-height: 1.17;
+  font-size: 17px;
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+}
+
+.sectionDesc {
+  /* 설명-아바타 줄 사이 피그마 19px × 0.703 ≈ 14px(= gap 18px - 4px) */
+  margin: 0 0 -4px;
+
+  /* 피그마 줄 높이 21px / 글자 18px(≈ 1.17배) — 1.6배면 설명 줄이 21px(시안 15px)이 됩니다 */
+  line-height: 1.17;
+
+  /* 18px × 0.703 ≈ 13px */
+  font-size: var(--text-base);
+  color: var(--color-text);
+}
+
+/* 프로필 사진 + 닉네임 */
+.avatarRow {
+  display: flex;
+  align-items: flex-end;
+
+  /* 아바타-닉네임 사이 26px × 0.703 ≈ 18px. 아래 간격은 .fieldsColumn gap이 맡습니다 */
+  gap: var(--space-9);
+}
+
+.avatarPreview {
+  /* 버튼으로 바뀌면서 생기는 기본 테두리/패딩 제거 + 누를 수 있다는 표시 */
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  /* 피그마 큰 프로필 사진 167.71px × 0.703 ≈ 118px (기존 72px) */
+  width: 118px;
+  height: 118px;
+
+  border-radius: var(--radius-full);
+  overflow: hidden;
+
+  background: var(--color-primary-tint);
+}
+
+.avatarPreview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.nicknameField {
+  flex: 1;
+  min-width: 200px;
+}
+
+/* 이름 / 이메일 / 닉네임 / 연락처 / 소속 — 라벨+인풋 공용 스타일.
+   이름·이메일·연락처·소속은 지금 profiles 테이블에 저장할 컬럼이 없어서
+   화면에만 반영하고 입력은 저장되지 않습니다 (이메일은 로그인 계정 이메일을
+   읽기 전용으로 보여줍니다). */
+.field {
+  display: flex;
+  flex-direction: column;
+
+  /* 라벨 → 입력칸: 피그마 라벨 아래 10px × 0.703 ≈ 7px */
+  gap: 7px;
+}
+
+.fieldLabel {
+  /* 피그마 라벨 글자 18px / 줄 높이 21px(≈ 1.17배). 줄 높이를 안 정하면 앱 기본 1.6배(13px → 21px)가 되어
+     라벨 한 줄이 시안(약 15px)보다 6px씩 높아지고, 입력칸마다 쌓여서 두 열 모두 시안보다 길어집니다. */
+  line-height: 1.17;
+
+  /* 18px × 0.703 ≈ 13px */
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.fieldInput {
+  width: 100%;
+  /* 피그마 입력칸 높이 44px × 0.703 ≈ 31px */
+  min-height: 31px;
+  box-sizing: border-box;
+
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+
+  /* 입력칸 높이 43.88px × 0.703 ≈ 31px, 안쪽 글자 16px × 0.703 ≈ 11~12px */
+  padding: var(--space-3) var(--space-6);
+
+  font-family: var(--font-sans);
+  /* 피그마 입력 글자 16px × 0.703 ≈ 11.25px → 가장 가까운 text-xs(11px) */
+  font-size: var(--text-xs);
+  color: var(--color-text);
+
+  outline: none;
+
+  transition: border-color var(--transition-fast);
+}
+
+.fieldInput:focus {
+  border-color: var(--color-primary);
+}
+
+.fieldInput::placeholder {
+  color: var(--color-text-placeholder);
+}
+
+.fieldInput[disabled] {
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+/* =========================================
+   아바타 선택
+========================================= */
+
+/* 스크린샷 기준: 오른쪽 열은 아바타 선택 박스 → 비밀번호 변경 → 취소/저장하기 버튼이
+   세로로 쌓이는 하나의 열입니다. 왼쪽 열(fieldsColumn)에는 닉네임/이름/이메일/연락처/소속을
+   전부 세로로 모아둡니다. */
+.avatarSelection {
+  flex: 1 1 420px;
+  min-width: 0;
+
+  display: flex;
+  flex-direction: column;
+
+  /* 아바타 박스 → 비밀번호 → 버튼 사이: 피그마 27px × 0.703 ≈ 19px */
+  gap: var(--space-9);
+}
+
+/* 아바타 선택 박스: 보라색 점선 → 회색 실선 테두리 (입력창 등과 같은 회색 계열 토큰) */
+.avatarPickerBox {
+  /* 피그마 박스 713 × 409px 비율 그대로(폭을 따라 높이가 정해짐) */
+  aspect-ratio: 713 / 409;
+
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xs);
+
+  /* 안쪽 여백: 왼쪽 24px ÷ 713px ≈ 3.4%, 위/아래 11px ÷ 713px ≈ 1.6% (세로 %도 폭 기준) */
+  padding: 1.6% 3.4%;
+
+  /* 피그마는 4열 × 3행으로 아이콘이 박스 안에 고르게 퍼져 있습니다(열 사이/행 사이 균등 분배) */
+  display: grid;
+  grid-template-columns: repeat(4, 14.87%);
+  grid-template-rows: repeat(3, auto);
+  grid-auto-flow: column; /* 피그마처럼 위→아래로 한 열씩 채움 */
+  justify-content: space-between;
+  align-content: space-between;
+}
+
+.avatarChip {
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+
+  /* 아이콘 지름 99.05px ÷ 박스 안쪽 폭(≈ 666px) ≈ 14.87%. 원형이라 높이는 폭과 같게 */
+  width: 100%;
+  aspect-ratio: 1;
+
+  padding: 2px;
+
+  cursor: pointer;
+
+  transition: box-shadow var(--transition-fast);
+}
+
+.avatarChip img {
+  width: 100%;
+  height: 100%;
+
+  border-radius: var(--radius-full);
+  object-fit: cover;
+}
+
+.avatarChipActive {
+  box-shadow: 0 0 0 3px var(--color-primary);
+}
+
+/* =========================================
+   비밀번호 변경
+========================================= */
+
+.passwordSection {
+  /* 피그마엔 구분선이 없고, 아바타 박스와의 간격이 45px × 0.703 ≈ 32px
+     (위 .avatarSelection gap 18px + 이 margin 14px) */
+  margin-top: var(--space-7);
+}
+
+.passwordSectionTitle {
+  /* 피그마: "비밀번호 변경" 줄 아래(808) → 새 비밀번호 라벨(823) 15px × 0.703 ≈ 10px */
+  margin: 0 0 var(--space-5);
+  /* 글자 18px / 줄 높이 21px(≈ 1.17배), 라벨과 같은 값 */
+  line-height: 1.17;
+
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.passwordRow {
+  display: flex;
+  flex-wrap: wrap;
+
+  align-items: flex-end;
+  /* 두 입력칸 사이 43.5px ÷ 713px ≈ 6.1% — 아래 취소/저장하기 버튼 줄과 같은 값이라 세로로 정렬됩니다 */
+  column-gap: 6.1%;
+  row-gap: var(--space-8);
+}
+
+/* 피그마: 새 비밀번호/비밀번호 확인 라벨은 weight 500 (다른 라벨은 600) */
+.passwordRow .fieldLabel {
+  font-weight: var(--weight-medium);
+}
+
+.passwordRow > .field {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* =========================================
+   취소 / 저장하기 — 스크린샷처럼 아바타 열 맨 아래에서 폭을 나눠 갖습니다
+========================================= */
+
+.actionButtons {
+  display: flex;
+  /* 비밀번호 입력칸 아래 → 버튼 윗면: 피그마 897.94 → 925 = 27px × 0.703 ≈ 19px.
+     .avatarSelection의 gap(18px)에 1px을 더해 19px로 맞춥니다. 예전엔 margin-top: auto로 버튼을
+     열 맨 아래에 붙여서 왼쪽 열 높이에 따라 이 간격이 19px보다 벌어졌습니다(피그마도 버튼 아래 끝이
+     왼쪽 열 끝(소속 입력칸)보다 약 4px 위라 완전히 같은 높이는 아닙니다). */
+  margin-top: 1px;
+  /* 비밀번호 입력칸 줄과 같은 6.1% 간격 + 같은 반반 너비 */
+  column-gap: 6.1%;
+}
+
+.cancelButton,
+.saveButton {
+  flex: 1;
+
+  border-radius: var(--radius-sm);
+
+  /* 버튼 높이 52.87px × 0.703 ≈ 37px로 고정합니다 — 버튼은 부모 줄 높이를 물려받지 않아서
+     높이를 안 정하면 폰트/환경에 따라 달라지고, 테두리 있는 취소와 없는 저장하기 높이도 어긋납니다.
+     글자 20px × 0.703 ≈ 14px */
+  box-sizing: border-box;
+  height: 37px;
+  padding: 0 var(--space-7);
+
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  text-align: center;
+
+  cursor: pointer;
+  white-space: nowrap;
+
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.cancelButton {
+  /* 피그마: 테두리 #7F8D72 */
+  border: 1px solid var(--color-primary-button);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.cancelButton:hover {
+  background: var(--color-bg);
+  border-color: var(--color-border-hover);
+}
+
+.saveButton {
+  border: none;
+  /* 피그마: 채움 #7F8D72 (기존엔 회색 border-strong이라 색이 달랐음) */
+  background: var(--color-primary-button);
+  color: #fff;
+}
+
+.saveButton:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.saveButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 음성 탭 카드 — 계정설정 카드(.card)와 같은 틀을 쓰고, 안쪽은 세로로 쌓습니다.
+   간격은 피그마(×0.703): 제목 → 설명 16px ≈ 11px, 설명 → 첫 라벨 20px ≈ 14px */
+.voiceCard {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 음성 탭은 제목~마지막 버튼까지가 한 묶음 — 첫 줄(제목)의 위, 마지막 요소(VoiceSettingsPanel)의 아래에
+   margin: auto를 줘서 남는 높이가 위·아래로 똑같이 나뉘게 합니다(내용이 카드보다 길면 0이 됩니다) */
+.voiceCard > :first-child {
+  margin-top: auto;
+}
+
+.voiceCard > :last-child {
+  margin-bottom: auto;
+}
+
+.voiceTitleRow {
+  display: flex;
+  align-items: center;
+  /* 아이콘(32px) → 글자 16px ≈ 11px */
+  gap: 11px;
+  /* 피그마: 아이콘 박스(32px) 아래 → 설명 14px × 0.703 ≈ 10px */
+  margin: 0 0 10px;
+  /* 계정설정 카드 제목과 같은 17px / 줄 높이 1.17배 */
+  font-size: 17px;
+  line-height: 1.17;
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+}
+
+/* 피그마 icon-Volume 2 32px × 0.703 ≈ 22px — 마스크 아이콘이라 글자색(검정)을 따릅니다 */
+.voiceTitleIcon {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  background-color: currentColor;
+  -webkit-mask: var(--icon-url) center / 100% 100% no-repeat;
+  mask: var(--icon-url) center / 100% 100% no-repeat;
+}
+
+.voiceDesc {
+  margin: 0 0 14px;
+  /* 피그마 줄 높이 21px / 글자 18px(≈ 1.17배) */
+  line-height: 1.17;
+  font-size: var(--text-base);
+  color: var(--color-text);
+}
+
+@media screen and (max-width: 1024px) {
+  .card {
+    padding: var(--space-10);
+  }
+}
