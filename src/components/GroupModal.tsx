@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createScaledPortal } from './AppScaleLayer';
 import Icon from './Icon';
 
 type Props = {
@@ -33,7 +34,9 @@ export default function GroupModal({
 
   if (!open) return null;
 
-  return (
+  // createPortal로 body에 직접 그립니다 — AppShell의 .app이 transform: scale()을 가져서 그 안의
+  // position: fixed 배경(.modal-overlay)이 화면이 아니라 .app 기준이 되어 화면을 다 못 덮었습니다.
+  return createScaledPortal(
     <div className="modal-overlay" onClick={onClose}>
       <div className="group-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <div className="profile-modal-header">
@@ -98,6 +101,6 @@ export default function GroupModal({
           </div>
         )}
       </div>
-    </div>
+    </div>,
   );
 }

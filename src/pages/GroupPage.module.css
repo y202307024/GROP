@@ -1,159 +1,460 @@
-/* 그룹 상세 — grop/css/group-detail.css */
+/**
+ * 그룹 상세 페이지에서 새로 추가된 부분만 담당합니다.
+ * 뒤로가기/아바타/멤버 스택/회의방 버튼 등 기존 틀은 grop/css/group-detail.css
+ * 전역 클래스(.group-detail-*)를 그대로 쓰고, 여기서는 피그마 새 디자인에 맞춰
+ * 늘어난 부분(편집+회의방 버튼 묶음, 메모 배너, 통계 카드, 멤버/공지 미리보기 줄)만 다룹니다.
+ *
+ * [크기 기준] 작업 전 시안(2배율)과 같은 px/토큰 값입니다. 앱 전체가 창 폭에 맞춰 통째로 확대되므로(AppShell scale)
+ * 화면 높이 비례(vh)로 따로 줄이지 않습니다.
+ */
 
-.page {
-  max-width: 860px;
+/* 그룹 이름(왼쪽) + 편집/회의방 버튼(오른쪽)을 한 줄에 — 줄 높이가 버튼 높이(34px)라 이름이 버튼과 같은 가운데에 옵니다 */
+.identityText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.loading {
-  padding: 40px;
-  color: var(--color-text-muted);
-}
-
-.profileRow {
+.nameRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 14px;
+  gap: var(--space-10);
+  min-height: calc(34px * var(--gz, 1));
 }
 
-.identity {
+/* "그룹 편집" + "회의방으로 이동" 버튼을 한 줄에 묶습니다 */
+.headerActions {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
-.avatar {
-  width: 76px;
-  height: 76px;
-  flex-shrink: 0;
-  border-radius: 18px;
-  background: var(--color-primary-button);
-  color: white;
+/* =========================================
+   메모 배너
+========================================= */
+
+.memoBanner {
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 28px;
-  font-weight: 700;
-  overflow: hidden;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-}
+  gap: var(--space-5);
 
-.avatar img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
+  background: var(--color-info-soft);
+  border-radius: var(--radius-lg);
 
-.name {
-  font-size: 20px;
-  font-weight: 800;
+  /* 위아래 12px → 8px: 글자만 들어올 때(아이콘 없음) 글자 줄 높이가 박스 높이를 정하므로 여백을 줄이고,
+     줄인 만큼을 아래 .heroPanel 아래 여백으로 옮겼습니다 */
+  padding: var(--space-4) var(--space-8);
+  margin-bottom: var(--space-10);
+
+  font-size: calc(12px * var(--gz, 1));
   color: var(--color-text);
 }
 
-.invite {
+/* 아직 메모가 없을 때 — 안내 문구라 톤을 한 단계 낮춥니다 */
+.memoBannerMuted {
+  background: var(--color-primary-subtle);
+  color: var(--color-text-faint);
+}
+
+.memoIcon {
+  width: calc(16px * var(--gz, 1));
+  height: calc(16px * var(--gz, 1));
+  flex-shrink: 0;
+
+  color: var(--color-info);
+}
+
+.memoBannerMuted .memoIcon {
+  color: var(--color-text-faint);
+}
+
+.memoText {
+  flex: 1;
+  min-width: 0;
+}
+
+/* =========================================
+   통계 카드 — 기존엔 카드 3개였지만, 디자인이 구분선 있는 카드 1개로 바뀌었습니다
+========================================= */
+
+.statsCard {
+  display: flex;
+  align-items: stretch;
+
+  background: var(--color-surface);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-sm);
+
+  padding: var(--space-8) var(--space-10);
+  margin-bottom: var(--space-8);
+}
+
+.statItem {
+  flex: 1;
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  font-size: 12px;
-  color: #666;
-}
+  gap: var(--space-6);
 
-.copyBtn {
   border: none;
-  border-radius: 5px;
-  background: #eeeeee;
-  color: #555;
-  padding: 4px 8px;
-  font-size: 12px;
-  cursor: pointer;
+  background: transparent;
+  padding: 0;
+
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: default;
 }
 
-.copyBtnCopied {
-  background: var(--color-primary-soft);
+.statDivider {
+  width: 1px;
+  align-self: center;
+  height: calc(36px * var(--gz, 1));
+
+  background: var(--color-border-subtle);
+  margin: 0 var(--space-8);
+}
+
+.statIcon {
+  width: calc(20px * var(--gz, 1));
+  height: calc(20px * var(--gz, 1));
+  flex-shrink: 0;
+}
+
+.statIconInfo {
+  color: var(--color-info);
+}
+
+.statIconAccent {
+  color: var(--color-accent);
+}
+
+.statIconPrimary {
   color: var(--color-primary-hover);
 }
 
-.editBtn {
-  width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  border: none;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-  cursor: pointer;
-  font-size: 16px;
+.statLabel {
+  font-size: calc(11px * var(--gz, 1));
+  color: var(--color-text-faint);
+  margin-bottom: var(--space-1);
+}
+
+.statValue {
+  font-size: calc(13px * var(--gz, 1));
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+}
+
+/* =========================================
+   멤버 미리보기 — 아바타 + 이름 + (방장 배지) + 화살표
+========================================= */
+
+.memberList {
+  display: flex;
+  flex-direction: column;
 }
 
 .memberRow {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 20px;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: var(--space-5);
+
+  padding: var(--space-4) 0;
+  cursor: pointer;
 }
 
-.actions {
+.memberName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  font-size: calc(12px * var(--gz, 1));
+  color: var(--color-text);
+}
+
+.roleBadge {
+  font-size: calc(10px * var(--gz, 1));
+  font-weight: var(--weight-bold);
+
+  background: var(--color-primary-tint);
+  color: var(--color-primary-hover);
+
+  padding: 2px var(--space-5);
+  border-radius: var(--radius-pill);
+}
+
+.memberChevron {
+  width: calc(14px * var(--gz, 1));
+  height: calc(14px * var(--gz, 1));
+  flex-shrink: 0;
+
+  color: var(--color-text-faint);
+}
+
+/* =========================================
+   공지 미리보기 — 아이콘 + 제목/날짜 + 화살표
+========================================= */
+
+.noticeRow {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
+  align-items: center;
+  gap: var(--space-5);
 
-.ghostBtn {
-  padding: 9px 15px;
-  background: #fff;
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  font-size: 12.5px;
-  font-weight: 700;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
-}
-
-.meetingBtn {
-  border: none;
-  border-radius: 10px;
-  background: var(--color-primary-hover);
-  color: white;
-  padding: 9px 15px;
-  font-size: 12.5px;
-  font-weight: 700;
-  cursor: pointer;
-  box-shadow: 0 3px 8px rgba(86, 112, 74, 0.3);
-}
-
-.stats {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-}
-
-.statCard {
-  background: #ffffff;
-  border-radius: 16px;
-  padding: 24px 14px;
-  text-align: center;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+  padding: var(--space-4) 0;
   cursor: pointer;
 }
 
-.statEmoji {
-  font-size: 28px;
+.noticeIcon {
+  width: calc(18px * var(--gz, 1));
+  height: calc(18px * var(--gz, 1));
+  flex-shrink: 0;
+
+  color: var(--color-text-faint);
+}
+
+.noticeMeta {
+  flex: 1;
+  min-width: 0;
+}
+
+.noticeTitle {
+  font-size: calc(12px * var(--gz, 1));
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.noticeDate {
+  font-size: calc(10px * var(--gz, 1));
+  color: var(--color-text-faint);
+  margin-top: 2px;
+}
+
+/* =========================================
+   레이아웃 개편 — 뒤로가기 줄 / 컬러 배경 패널 / 버튼 크기
+========================================= */
+
+/* 맨 윗줄: 왼쪽 그룹 생성일(글자만) / 오른쪽 뒤로가기 — 멤버/회의록/문서 페이지 제목 줄과 같은 높이·구분선 */
+.topRow {
+  display: flex;
+  align-items: flex-end;
+  /* 오른쪽 6px은 멤버/회의록 페이지 .toolbar(margin-right: 6px)와 같습니다 */
+  /* 문서/멤버 페이지와 같은 구조 — 뒤로가기(34px)를 8px 띄워 줄 높이를 만들고(.backButton margin-bottom), 구분선 아래 20px */
+  padding: 0 6px 0 23px;
+  margin-bottom: var(--space-10);
+  border-bottom: 1px solid #c6c6c6;
+}
+
+.createdDate {
+  font-size: calc(12px * var(--gz, 1));
+  color: var(--color-text-faint);
+  white-space: nowrap;
+  line-height: 34px;
   margin-bottom: 8px;
 }
 
-.statLabel {
-  font-size: 14px;
-  font-weight: 700;
-  color: #333;
+/* 돌아가기 — 멤버/회의록 페이지(.backButton)와 같은 모양: 배경 없는 초록 ‹ 화살표 */
+.backButton {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  cursor: pointer;
+  margin-left: auto;
+  /* 문서/멤버 페이지 .backButton과 같은 값 — 구분선과 겹치지 않게 8px 위로 */
+  margin-bottom: 8px;
 }
 
-.statValue {
-  font-size: 12px;
-  color: #999;
-  margin-top: 4px;
+.backButton:hover {
+  color: var(--color-primary-hover);
+}
+
+.backButton svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.2;
+}
+
+/* 컬러 배경 패널 — 그룹 아이콘부터 메모 배너까지만 감쌉니다.
+   · 가로: 아래 통계/미리보기 카드와 같은 폭(예전의 -12px 음수 마진 제거), 모서리도 통계 카드와 같은 --radius-2xl.
+   · 안쪽 좌우 여백은 21px — 예전에 내용이 카드 가장자리에서 떨어져 있던 거리(33 − 12) 그대로라 내용 위치는 변하지 않습니다.
+   · 위아래 10px(예전 22px에서 줄임 — 위 구분선 높이를 문서 페이지와 맞추면서 늘어난 만큼 여기서 회수), 아래 카드들과는 18px 띄웁니다. */
+.heroPanel {
+  margin: 0 0 18px;
+  /* 위 10px / 아래 20px — 메모 박스 위(멤버 줄 아래 20px)와 아래 여백이 같아지게 맞춤 */
+  padding: 10px 21px 20px;
+  border-radius: var(--radius-2xl);
+  background: var(--color-primary-subtle);
+}
+
+/* 패널 맨 아래 요소라 아래 여백은 패널 padding이 맡습니다 */
+.heroPanel .memoBanner {
+  margin-bottom: 0;
+}
+
+/* 그룹 편집 / 회의방으로 이동 — 높이 34px로 같게, 안쪽 좌우 여백도 같게(폭은 글자 길이에 따라).
+   전역 .secondary-button / .group-meeting-button(클래스 하나)보다 우선하도록 클래스 두 개로 씁니다 */
+.headerActions .editButton,
+.headerActions .meetingButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: calc(34px * var(--gz, 1));
+  padding: 0 calc(20px * var(--gz, 1));
+  border-radius: calc(8px * var(--gz, 1));
+  font-size: calc(13px * var(--gz, 1));
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  /* 회의방 버튼의 전역 그림자 제거 */
+  box-shadow: none;
+}
+
+/* =========================================
+   미리보기 카드 행 구분선 / 최근 회의록 간격
+========================================= */
+
+/* 행 사이 연한 구분선 — 아바타/아이콘 아래가 아니라 글자 시작 위치부터 오른쪽 끝까지 그립니다(마지막 행 제외) */
+.memberRow,
+.noticeRow {
+  position: relative;
+}
+
+.memberRow::after,
+.noticeRow::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--color-border-subtle);
+}
+
+/* 멤버 행도 회의록 행처럼 위아래 여백(8px → 12px)과 열 사이 간격(+4/+9px)을 넓힙니다 */
+.memberRow {
+  padding: 10px 0;
+  column-gap: 14px;
+}
+
+/* 아바타 28px + 간격 14px */
+.memberRow::after {
+  /* 아바타 28px(축소 반영) + 간격 14px */
+  left: calc(28px * var(--gz, 1) + 14px);
+}
+
+/* 리더 배지(없으면 이름) 뒤 → 화살표 간격 */
+.memberChevron {
+  margin-left: 5px;
+}
+
+.memberRow:last-child::after,
+.noticeRow:last-child::after {
+  display: none;
+}
+
+/* 최근 회의록: 구분선과 글자 사이 여백(위아래 8px → 14px)과 열 사이 간격(+9px)을 넓힙니다 */
+.noticeRow {
+  padding: 11px 0;
+}
+
+/* 아이콘 18px + 간격 10px + 추가 9px */
+.noticeRow::after {
+  /* 아이콘 18px(축소 반영) + 간격 10px + 추가 9px */
+  left: calc(18px * var(--gz, 1) + 19px);
+}
+
+.noticeIcon {
+  margin-right: 9px;
+}
+
+/* 그룹 상세 높이/여백 — 메인/문서/멤버 페이지와 같은 기준:
+   · 높이: 화면 − (.main 위 패딩 28 + 상단바 28 + 간격 26 + 아래 패딩 40 = 122px). 전역 .page의 height:100%는 상단바를 못 빼 영역이 아래로 54px 길어집니다.
+   · 위 48px(구분선 높이를 문서/멤버 페이지와 통일) / 아래 28px.
+   · 전역 .page보다 우선하도록 :global(.page)와 같이 씁니다. 내용이 넘치면 페이지 안에서만 스크롤됩니다. */
+:global(.page).pageFit {
+  height: calc(var(--app-h, 100dvh) - 122px);
+  min-height: 0;
+  padding-top: 48px;
+  padding-bottom: 28px;
+}
+
+/* =========================================
+   [화면이 낮을 때 글자/아이콘/버튼 크기만 줄이는 배율 --gz]
+   · 가로세로 여백(padding/margin/gap)은 작업 전 값 그대로 두고, 글자·아이콘·아바타·버튼 크기에만 --gz(1 이하)를 곱합니다.
+   · --gz = (남는 높이 − 크기 0일 때 내용 높이) ÷ (크기 1일 때와 0일 때 내용 높이 차). 화면이 충분하면 1(작업 전 크기 그대로).
+   · 나눗셈(길이÷길이)을 지원하지 않는 오래된 브라우저에서는 1로 남아 크기가 그대로입니다(@supports) */
+:global(.page).pageFit {
+  --gz: 1;
+}
+
+@supports (width: calc(1px * (4px / 2px))) {
+  :global(.page).pageFit {
+    --gz: clamp(0.45, calc((var(--app-h, 100dvh) - 122px - 441px) / 262px), 1);
+  }
+}
+
+/* 전역(group-detail.css) 크기도 같은 배율로 — 전역 클래스(하나)보다 우선하도록 클래스 두 개로 씁니다 */
+/* 이름 줄(.nameRow)이 오른쪽 끝까지 펴져야 버튼이 오른쪽에 붙습니다 */
+.heroPanel :global(.group-detail-identity) {
+  flex: 1;
+  min-width: 0;
+}
+
+.heroPanel :global(.group-detail-avatar) {
+  width: calc(76px * var(--gz, 1));
+  height: calc(76px * var(--gz, 1));
+  border-radius: calc(18px * var(--gz, 1));
+  font-size: calc(28px * var(--gz, 1));
+}
+
+.heroPanel :global(.group-detail-name) {
+  font-size: calc(20px * var(--gz, 1));
+}
+
+.heroPanel :global(.group-detail-invite) {
+  font-size: calc(12px * var(--gz, 1));
+}
+
+.heroPanel :global(.group-invite-copy-button) {
+  width: calc(20px * var(--gz, 1));
+  height: calc(20px * var(--gz, 1));
+}
+
+.heroPanel :global(.group-invite-copy-button svg) {
+  width: calc(11px * var(--gz, 1));
+  height: calc(11px * var(--gz, 1));
+}
+
+.heroPanel :global(.group-detail-member-summary) {
+  font-size: calc(12.5px * var(--gz, 1));
+}
+
+.heroPanel :global(.mini-avatar),
+.previewCard :global(.mini-avatar) {
+  width: calc(28px * var(--gz, 1));
+  height: calc(28px * var(--gz, 1));
+  font-size: calc(11px * var(--gz, 1));
+}
+
+.previewCard :global(.group-preview-header) {
+  font-size: calc(13px * var(--gz, 1));
+}
+
+.previewCard :global(.group-preview-link) {
+  font-size: calc(11px * var(--gz, 1));
+}
+
+.previewCard :global(.group-preview-muted) {
+  font-size: calc(12px * var(--gz, 1));
 }

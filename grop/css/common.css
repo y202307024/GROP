@@ -32,9 +32,14 @@
     --font-display: 'Archivo Black', 'Roboto', sans-serif;
     --font-heading: 'Archivo', 'Roboto', sans-serif;
 
-    /* 고정 캔버스 크기 (창 크기와 무관하게 내부 배치 고정) */
+    /* 고정 캔버스 크기 (디자인 기준 화면, 16:9) */
     --stage-width: 1440px;
-    --stage-height: 900px;
+    --stage-height: 810px;
+    /* 실제 창 크기에 맞춘 .stage 가로/세로 배율. src/hooks/useStageScale.ts가
+       화면 크기가 바뀔 때마다 각각 계산해서 이 값들을 갱신합니다.
+       (훅이 아직 안 붙었을 때를 대비한 기본값 1) */
+    --stage-scale-x: 1;
+    --stage-scale-y: 1;
 }
 
 
@@ -53,29 +58,45 @@ body {
     margin: 0;
     padding: 0;
 
-    /* 창이 기준 크기보다 작아지면 내부 배치 대신 스크롤로 처리 */
-    overflow: auto;
+    /* .stage가 창 크기에 맞춰 통째로 축소/확대되므로, 문서 자체는 스크롤되지 않습니다 */
+    overflow: hidden;
 }
 
 body {
     font-family: var(--font-sans);
     color: var(--color-text);
-    background: var(--color-bg);
+    background: var(--color-bg-soft);
+}
+
+/* 리액트 마운트 지점 — .stage를 화면 정중앙에 놓기 위한 뷰포트 크기의 플렉스 박스 */
+#root {
+    width: 100%;
+    height: 100%;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 
 /* =========================================
    고정 캔버스
 
-   가로 폭만 최소 --stage-width로 보장해서
-   창을 줄여도 내부 배치가 찌그러지지 않게 하고,
-   세로는 실제 창 높이를 그대로 따르게 해서
-   콘텐츠가 잘리지 않도록 합니다.
+   가로/세로를 --stage-width/--stage-height(1440x810, 16:9)로 고정해 두고,
+   실제 창 크기에 맞춘 가로/세로 배율(--stage-scale-x/--stage-scale-y)로 각각 늘립니다
+   (스트레치). 배율은 src/hooks/useStageScale.ts가 계산합니다.
+
+   그래서 창 비율이 16:9와 달라도 빈 여백(레터박스)도, 화면 밖으로 잘리는 부분도 없이
+   항상 창에 정확히 꽉 채워집니다. 대신 가로/세로 배율이 서로 다른 만큼 UI가 아주
+   살짝 눌리거나 늘어나 보일 수 있습니다(16:9에서 크게 벗어나지 않는 한 거의 눈에
+   띄지 않습니다).
 ========================================= */
 
 .stage {
-    width: 100%;
-    height: 100%;
+    width: var(--stage-width);
+    height: var(--stage-height);
+    flex: none;
 
-    min-width: var(--stage-width);
+    transform: scale(var(--stage-scale-x), var(--stage-scale-y));
+    transform-origin: center center;
 }

@@ -1,7 +1,9 @@
 const express = require('express')
 const cors = require('cors')
 const dotenv = require('dotenv')
-const { AccessToken, RoomServiceClient } = require('livekit-server-sdk')
+const { AccessToken } = require('livekit-server-sdk')
+const Groq = require('groq-sdk')
+const { toFile } = require('groq-sdk')
 const multer = require('multer')
 const fs = require('fs')
 const { execFile } = require('child_process')
@@ -248,6 +250,99 @@ function guessChatFileMime(originalName, mimetype) {
   return IMAGE_MIME_BY_EXT[fileExtFromName(originalName)] || mimetype || 'application/octet-stream'
 }
 
+function getGroq() {
+  if (!process.env.GROQ_API_KEY) {
+    throw new Error('GROQ_API_KEY가 .env에 설정되지 않았습니다')
+  }
+  return new Groq({ apiKey: process.env.GROQ_API_KEY })
+}
+
+/** 초 → "MM:SS" 또는 "H:MM:SS" */
+function formatTimestamp(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds || 0))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  const mm = String(m).padStart(2, '0')
+  const ss = String(sec).padStart(2, '0')
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
+}
+
+/** Whisper segment 배열 → "[MM:SS] 발화" 형태의 녹취록 */
+function buildTimestampedTranscript(segments) {
+  return segments
+    .map((seg) => `[${formatTimestamp(seg.start)}] ${String(seg.text || '').trim()}`)
+    .filter((line) => line.length > 12)
+    .join('\n')
+}
+
+/** LLM이 뱉은 chapters를 검증·정규화 (시간 범위 밖 / 제목 없음 제거) */
+function normalizeChapters(raw, durationSec) {
+  if (!Array.isArray(raw)) return []
+
+  const list = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+
+    let time = null
+    if (typeof item.time === 'number' && Number.isFinite(item.time)) {
+      time = Math.max(0, Math.floor(item.time))
+    } else if (typeof item.time === 'string' && /^\d+(:\d{1,2}){0,2}$/.test(item.time.trim())) {
+      time = item.time.trim().split(':').map(Number).reduce((acc, n) => acc * 60 + n, 0)
+    }
+    if (time === null) continue
+    if (durationSec > 0 && time > durationSec + 1) continue
+
+    const title = typeof item.title === 'string' ? item.title.trim() : ''
+    if (!title) continue
+
+    const summary = typeof item.summary === 'string' ? item.summary.trim() : ''
+    list.push({ time, title, summary: summary || undefined })
+  }
+
+  list.sort((a, b) => a.time - b.time)
+
+  const deduped = []
+  for (const c of list) {
+    if (deduped.length > 0 && deduped[deduped.length - 1].time === c.time) continue
+    deduped.push(c)
+  }
+  return deduped
+}
+
+/** 구조화된 결과 → meetings.summary에 저장할 사람이 읽는 텍스트 */
+function buildSummaryText(result, chapters) {
+  const lines = []
+
+  lines.push('📋 회의 핵심 요약')
+  lines.push(result.overview || '(요약 없음)')
+  lines.push('')
+
+  if (chapters.length > 0) {
+    lines.push('🕘 타임라인')
+    for (const c of chapters) {
+      lines.push(`[${formatTimestamp(c.time)}] ${c.title}`)
+      if (c.summary) lines.push(`    ${c.summary}`)
+    }
+    lines.push('')
+  }
+
+  const decisions = Array.isArray(result.decisions) ? result.decisions.filter(Boolean) : []
+  if (decisions.length > 0) {
+    lines.push('✅ 결정 사항')
+    for (const d of decisions) lines.push(`- ${d}`)
+    lines.push('')
+  }
+
+  const actionItems = Array.isArray(result.actionItems) ? result.actionItems.filter(Boolean) : []
+  if (actionItems.length > 0) {
+    lines.push('⚡ 다음 할 일')
+    for (const a of actionItems) lines.push(`- ${a}`)
+  }
+
+  return lines.join('\n').trim()
+}
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' })
 })
@@ -338,14 +433,12 @@ app.post('/api/livekit-token', async (req, res) => {
       process.env.LIVEKIT_API_SECRET,
       { identity, name: userName || identity }
     )
-    // canUpdateOwnMetadata: 보드 선택 상태를 participant metadata로 공유할 때 필요합니다.
     token.addGrant({
       roomJoin: true,
       room: roomName,
       canPublish: true,
       canSubscribe: true,
       canPublishData: true,
-      canUpdateOwnMetadata: true,
     })
 
     const jwt = await token.toJwt()
@@ -357,204 +450,7 @@ app.post('/api/livekit-token', async (req, res) => {
   }
 })
 
-/**
- * 방장이 멤버를 내보낼 때 LiveKit 방에서 강제 퇴장시킵니다.
- * roomName = 그룹 id, identity = 대상 user id
- */
-app.post('/api/livekit-remove-participant', async (req, res) => {
-  try {
-    const roomName = String(req.body?.roomName || '').trim()
-    const identity = String(req.body?.identity || '').trim()
-    if (!roomName || !identity) {
-      return res.status(400).json({ error: 'roomName과 identity가 필요합니다' })
-    }
-
-    const host = process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || ''
-    // wss:// → https:// (RoomService HTTP API)
-    const httpHost = host.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:')
-    if (!httpHost || !process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) {
-      return res.status(500).json({ error: 'LiveKit 서버 설정이 없습니다' })
-    }
-
-    const svc = new RoomServiceClient(
-      httpHost,
-      process.env.LIVEKIT_API_KEY,
-      process.env.LIVEKIT_API_SECRET,
-    )
-    await svc.removeParticipant(roomName, identity)
-    res.json({ ok: true })
-  } catch (err) {
-    // 방이 비어 있거나 참가자가 없으면 실패할 수 있음 — 클라이언트는 DB 강퇴만으로도 OK
-    console.error('LiveKit 참가자 제거 실패:', err.message)
-    res.status(200).json({ ok: false, error: err.message })
-  }
-})
-
-// 예전 직접 업로드용 주소. 브라우저는 더 이상 이 주소로 PUT하지 않고 /api/meetings/upload-r2 로 보냅니다.
-app.post('/api/meetings/upload-url', checkUploadToken, async (req, res) => {
-  try {
-    const groupId = req.body?.groupId
-    const dateStr = req.body?.dateStr
-    // 예전 디스크 업로드는 잘못된 폴더명을 unknown으로 바꿨지만,
-    // 여기서는 그 값이 R2 키로 남으므로 안전한 조각이 아니면 거절합니다.
-    if (!isSafePathSegment(groupId) || !isSafePathSegment(dateStr)) {
-      return res.status(400).json({ error: 'groupId와 날짜가 올바르지 않습니다' })
-    }
-    const size = Number(req.body?.size)
-    if (!Number.isFinite(size) || size <= 0) {
-      return res.status(400).json({ error: '파일 크기가 올바르지 않습니다' })
-    }
-    if (size > MAX_MEETING_VIDEO_BYTES) {
-      return res.status(413).json({ error: '파일이 너무 큽니다. 1GB 이하만 올릴 수 있어요.' })
-    }
-
-    const contentType = meetingUploadContentType(req.body?.mimeType)
-    const key = `meeting-videos/${groupId}/${dateStr}/${Date.now()}.webm`
-    const client = getR2Client()
-    const command = new PutObjectCommand({
-      Bucket: process.env.R2_BUCKET,
-      Key: key,
-      ContentType: contentType,
-    })
-    const uploadUrl = await getSignedUrl(client, command, { expiresIn: R2_PUT_EXPIRES_SEC })
-    console.log('회의 녹화 업로드 주소 발급:', key)
-    res.json({ uploadUrl, key, contentType })
-  } catch (err) {
-    console.error('업로드 주소 발급 실패:', err.message)
-    res.status(err.statusCode || 500).json({ error: err.message || '업로드 주소를 만들지 못했습니다' })
-  }
-})
-
-// 브라우저는 파일을 이 서버로 보냅니다. 서버가 R2에 넣은 뒤 임시 파일은 지웁니다.
-// 브라우저가 R2로 직접 PUT하면 Failed to fetch로 끊겨 녹화가 저장되지 않았습니다.
-app.post('/api/meetings/upload-r2', checkUploadToken, uploadMeetingVideo.single('video'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: '업로드된 파일이 없습니다' })
-  }
-
-  const groupId = req.body?.groupId
-  const dateStr = req.body?.dateStr
-  // 키에 그대로 들어가므로 폴더명으로 쓸 수 없는 값은 디스크에 남기지 않고 거절합니다.
-  if (!isSafePathSegment(groupId) || !isSafePathSegment(dateStr)) {
-    try { fs.unlinkSync(req.file.path) } catch { /* 거절된 임시 파일은 남기지 않습니다 */ }
-    return res.status(400).json({ error: 'groupId와 날짜가 올바르지 않습니다' })
-  }
-
-  const contentType = meetingUploadContentType(req.body?.mimeType || req.file.mimetype)
-  const key = `meeting-videos/${groupId}/${dateStr}/${Date.now()}.webm`
-  try {
-    const client = getR2Client()
-    await client.send(new PutObjectCommand({
-      Bucket: process.env.R2_BUCKET,
-      Key: key,
-      Body: fs.createReadStream(req.file.path),
-      ContentType: contentType,
-      ContentLength: req.file.size,
-    }))
-    console.log('회의 녹화 R2 저장 완료:', key)
-    res.json({ key, contentType, sizeBytes: req.file.size })
-  } catch (err) {
-    console.error('서버 경유 R2 업로드 실패:', err.message)
-    res.status(err.statusCode || 500).json({ error: err.message || '저장소에 영상을 올리지 못했습니다' })
-  } finally {
-    try { fs.unlinkSync(req.file.path) } catch { /* 임시 파일 삭제는 실패해도 응답은 이미 끝났습니다 */ }
-  }
-})
-
-/** 예전 디스크 영상 주소에서 이 서버 폴더 안의 파일만 고릅니다. 폴더 밖은 null입니다. */
-function meetingVideoDiskPath(raw) {
-  if (typeof raw !== 'string') return null
-  let rel = raw.trim()
-  if (!rel) return null
-  const marker = '/videos/'
-  const idx = rel.indexOf(marker)
-  if (idx >= 0) {
-    try {
-      rel = decodeURIComponent(rel.slice(idx + marker.length).split('?')[0] ?? '')
-    } catch {
-      return null
-    }
-  }
-  rel = rel.replace(/^\/+/, '')
-  if (!rel || rel.includes('..') || rel.includes('\\') || rel.includes('\0')) return null
-  const full = path.resolve(MEETING_VIDEOS_DIR, rel)
-  if (full !== MEETING_VIDEOS_DIR && !full.startsWith(MEETING_VIDEOS_DIR + path.sep)) return null
-  return full
-}
-
-// 재생용 GET 주소. 키는 meeting-videos/ 아래만 허용합니다.
-app.get('/api/meetings/video-url', async (req, res) => {
-  try {
-    const key = normalizeMeetingVideoKey(typeof req.query.key === 'string' ? req.query.key : '')
-    if (!key) return res.status(400).json({ error: '잘못된 영상 키입니다' })
-    const client = getR2Client()
-    const command = new GetObjectCommand({
-      Bucket: process.env.R2_BUCKET,
-      Key: key,
-    })
-    const url = await getSignedUrl(client, command, { expiresIn: R2_GET_EXPIRES_SEC })
-    res.json({ url, expiresIn: R2_GET_EXPIRES_SEC })
-  } catch (err) {
-    console.error('재생 주소 발급 실패:', err.message)
-    res.status(err.statusCode || 500).json({ error: err.message || '재생 주소를 만들지 못했습니다' })
-  }
-})
-
-// 요약 화면의 전체 용량. meeting-videos/ 아래 파일 크기만 모읍니다.
-app.get('/api/meetings/storage', checkUploadToken, async (req, res) => {
-  try {
-    const client = getR2Client()
-    let token
-    let totalBytes = 0
-    const files = []
-    do {
-      const listed = await client.send(new ListObjectsV2Command({
-        Bucket: process.env.R2_BUCKET,
-        Prefix: 'meeting-videos/',
-        ContinuationToken: token,
-      }))
-      for (const item of listed.Contents || []) {
-        if (!item.Key) continue
-        const size = item.Size || 0
-        totalBytes += size
-        files.push({ key: item.Key, size })
-      }
-      token = listed.IsTruncated ? listed.NextContinuationToken : undefined
-    } while (token)
-    res.json({ totalBytes, files })
-  } catch (err) {
-    console.error('녹화 용량 조회 실패:', err.message)
-    res.status(err.statusCode || 500).json({ error: err.message || '용량을 읽지 못했습니다' })
-  }
-})
-
-// 요약 화면의 삭제. R2 원본과 예전 디스크 파일을 지웁니다. 회의 행은 클라이언트가 비웁니다.
-app.delete('/api/meetings/video', checkUploadToken, async (req, res) => {
-  const key = normalizeMeetingVideoKey(typeof req.query.key === 'string' ? req.query.key : '')
-  const diskPath = meetingVideoDiskPath(typeof req.query.path === 'string' ? req.query.path : '')
-  if (!key && !diskPath) return res.status(400).json({ error: '지울 영상이 없습니다' })
-
-  try {
-    if (key) {
-      const client = getR2Client()
-      await client.send(new DeleteObjectCommand({
-        Bucket: process.env.R2_BUCKET,
-        Key: key,
-      }))
-      console.log('회의 녹화 R2 삭제:', key)
-    }
-    if (diskPath && fs.existsSync(diskPath)) {
-      fs.unlinkSync(diskPath)
-      console.log('회의 녹화 디스크 삭제:', diskPath)
-    }
-    res.json({ ok: true })
-  } catch (err) {
-    console.error('회의 녹화 삭제 실패:', err.message)
-    res.status(err.statusCode || 500).json({ error: err.message || '영상을 지우지 못했습니다' })
-  }
-})
-
-// 예전 녹화 호환. 클라이언트(Room.tsx)가 녹화 종료 시 이 엔드포인트로 webm blob 을 보냅니다.
+// 클라이언트(Room.tsx)가 녹화 종료 시 이 엔드포인트로 webm blob 을 보냅니다.
 // 저장 위치는 Supabase Storage 가 아니라 이 서버 컴퓨터의 디스크입니다.
 app.post('/api/meetings/upload', checkUploadToken, uploadMeetingVideo.single('video'), (req, res) => {
   if (!req.file) {
@@ -824,64 +720,164 @@ app.post('/api/summarize', async (req, res) => {
   // R2에서 받은 원본은 요약이 끝나거나 실패해도 임시 폴더에 남기지 않습니다.
   let r2TempPath = null
   try {
-    const rawVideoKey = typeof req.body?.videoKey === 'string' ? req.body.videoKey.trim() : ''
-    const videoKey = rawVideoKey ? normalizeMeetingVideoKey(rawVideoKey) : ''
-    if (rawVideoKey && !videoKey) {
-      return res.status(400).json({ error: '잘못된 영상 키입니다' })
+    const { videoUrl } = req.body
+    if (!videoUrl || typeof videoUrl !== 'string') {
+      return res.status(400).json({ error: 'videoUrl이 필요합니다' })
     }
-    const videoUrl = typeof req.body?.videoUrl === 'string' ? req.body.videoUrl : ''
-    const { chatLog, meetingDateLabel } = req.body
-    const hasChatLog = Array.isArray(chatLog) && chatLog.length > 0
-    if (!videoKey && !String(videoUrl || '').trim() && !hasChatLog) {
-      return res.status(400).json({ error: 'videoKey, videoUrl, chatLog 중 하나는 필요합니다' })
+    console.log('AI 요약 요청:', videoUrl)
+
+    // 1. 영상은 HTTPS로 다시 받지 않고, 이 컴퓨터에 저장된 파일을 읽습니다.
+    // (Vite mkcert 인증서를 Node가 검증하지 못해 unable to verify the first certificate 가 납니다.)
+    let buffer
+    const localFile = resolveMeetingVideoFile(videoUrl)
+    if (localFile) {
+      console.log('디스크에서 영상 읽음:', localFile)
+      buffer = fs.readFileSync(localFile)
+    } else {
+      // 디스크에 없으면 같은 Node 서버의 HTTP /videos 로만 받습니다.
+      // Vite(https://localhost:5173) 주소는 mkcert 때문에 Node fetch가 실패합니다.
+      const rel = extractVideosRelativePath(videoUrl)
+      const fetchUrl = rel
+        ? `http://127.0.0.1:${process.env.PORT || 3001}/videos/${rel}`
+        : videoUrl
+      console.log('로컬 파일이 없어 URL로 받습니다:', fetchUrl)
+      const response = await fetch(fetchUrl)
+      if (!response.ok) {
+        throw new Error(`영상을 내려받지 못했습니다 (HTTP ${response.status})`)
+      }
+      buffer = Buffer.from(await response.arrayBuffer())
+    }
+    console.log('영상 준비 완료! 크기:', buffer.length)
+
+    // 영상 전체를 그대로 올리면 Whisper 25MB 한도를 금방 넘습니다.
+    // 오디오만 16kHz mono 32kbps mp3로 뽑아 용량을 10~20배 줄입니다.
+    let audioBuffer
+    try {
+      audioBuffer = await extractAudio(localFile, buffer)
+      console.log('오디오 추출 완료! 크기:', audioBuffer.length)
+    } catch (audioErr) {
+      console.warn('오디오 추출 실패, 원본 파일로 시도합니다:', audioErr.message)
+      audioBuffer = buffer
     }
 
-    const loadVideo = videoKey || String(videoUrl || '').trim()
-      ? async () => {
-          if (videoKey) {
-            console.log('AI 요약 요청 (R2):', videoKey)
-            r2TempPath = path.join(
-              os.tmpdir(),
-              `grop-r2-${Date.now()}-${Math.random().toString(36).slice(2)}.webm`,
-            )
-            await downloadMeetingVideoFromR2(videoKey, r2TempPath)
-            return { filePath: r2TempPath }
-          }
+    if (audioBuffer.length > MAX_AUDIO_BYTES) {
+      throw new Error(
+        `오디오가 여전히 너무 큽니다 (${(audioBuffer.length / 1024 / 1024).toFixed(1)}MB). ` +
+        `현재 한도는 ${MAX_AUDIO_BYTES / 1024 / 1024}MB 입니다. 회의를 나눠서 녹화해 주세요.`
+      )
+    }
 
-          console.log('AI 요약 요청 (디스크 영상):', videoUrl)
-          // 예전 영상은 HTTPS로 다시 받지 않고, 이 컴퓨터에 저장된 파일을 읽습니다.
-          // (Vite mkcert 인증서를 Node가 검증하지 못해 unable to verify the first certificate 가 납니다.)
-          const localFile = resolveMeetingVideoFile(videoUrl)
-          if (localFile) {
-            console.log('디스크에서 영상 읽음:', localFile)
-            return { filePath: localFile }
-          }
-          // 디스크에 없으면 같은 Node 서버의 HTTP /videos 로만 받습니다.
-          // Vite(https://localhost:5173) 주소는 mkcert 때문에 Node fetch가 실패합니다.
-          const rel = extractVideosRelativePath(videoUrl)
-          const fetchUrl = rel
-            ? `http://127.0.0.1:${process.env.PORT || 3001}/videos/${rel}`
-            : videoUrl
-          console.log('로컬 파일이 없어 URL로 받습니다:', fetchUrl)
-          const response = await fetch(fetchUrl)
-          if (!response.ok) {
-            throw new Error(
-              response.status === 404
-                ? '이 컴퓨터에 녹화 파일이 없습니다. 회의를 이 서버에서 다시 녹화해 주세요.'
-                : `영상을 내려받지 못했습니다 (HTTP ${response.status})`
-            )
-          }
-          const buffer = Buffer.from(await response.arrayBuffer())
-          console.log('영상 준비 완료! 크기:', buffer.length)
-          return { buffer }
-        }
-      : null
+    // 2. Groq Whisper로 음성 → 텍스트 (구간별 타임스탬프 포함)
+    console.log('음성 변환 중...')
+    const groq = getGroq()
+    // 추출 성공 시 mp3, 실패해 원본을 그대로 쓰면 webm 으로 올립니다.
+    const isMp3 = audioBuffer !== buffer
+    const transcription = await groq.audio.transcriptions.create({
+      file: await toFile(
+        audioBuffer,
+        isMp3 ? 'audio.mp3' : 'audio.webm',
+        { type: isMp3 ? 'audio/mpeg' : 'audio/webm' }
+      ),
+      model: TRANSCRIBE_MODEL,
+      language: 'ko',
+      response_format: 'verbose_json',
+      timestamp_granularities: ['segment'],
+    })
 
-    res.json(await summarizeMeeting({
-      loadVideo,
-      chatLog,
-      meetingDateLabel: typeof meetingDateLabel === 'string' ? meetingDateLabel : '',
-    }))
+    const transcript = transcription.text || ''
+    const segments = Array.isArray(transcription.segments) ? transcription.segments : []
+    const durationSec = Number(transcription.duration) || 0
+    console.log(`변환 완료: ${segments.length}개 구간, ${durationSec.toFixed(0)}초`)
+
+    if (!transcript.trim()) {
+      throw new Error('음성에서 텍스트를 추출하지 못했습니다. 녹화에 소리가 들어갔는지 확인해 주세요.')
+    }
+
+    // 타임스탬프가 있으면 그걸 쓰고, 없으면 평문으로 대체
+    const transcriptForLlm = segments.length > 0
+      ? buildTimestampedTranscript(segments)
+      : transcript
+
+    // 3. Groq LLaMA로 챕터 + 요약 생성 (JSON 모드)
+    console.log('요약/챕터 생성 중...')
+    const completion = await groq.chat.completions.create({
+      model: CHAT_MODEL,
+      response_format: { type: 'json_object' },
+      temperature: 0.3,
+      messages: [
+        {
+          role: 'system',
+          content: `당신은 한국어 회의록을 정리하는 전문가입니다.
+입력은 [MM:SS] 형식의 타임스탬프가 붙은 회의 녹취록입니다.
+화제가 바뀌는 지점을 찾아 챕터로 나누고, 반드시 아래 구조의 JSON만 출력하세요.
+
+{
+  "overview": "회의 전체를 2~3문장으로 요약 (핵심요약용)",
+  "chapters": [
+    { "time": 0, "title": "짧은 소제목 (20자 이내)", "summary": "이 구간에서 다룬 내용 1~2문장" }
+  ],
+  "topics": [
+    { "topic": "논의 주제 이름 (예: 모니터 사양, 응답속도, 가격)", "detail": "그 주제로 오간 이야기를 3~5문장으로 자세히 정리. 나온 수치·의견·비교 내용을 포함" }
+  ],
+  "speakers": [
+    { "speaker": "화자 1", "summary": "이 화자가 회의에서 한 이야기를 2~4문장으로 요약" }
+  ],
+  "decisions": ["확정된 결정 사항"],
+  "actionItems": ["담당자와 할 일"]
+}
+
+규칙:
+- time은 반드시 초 단위 정수입니다. [01:30] 이면 90 입니다.
+- 챕터는 녹취록에 실제로 등장한 타임스탬프만 사용하세요. 지어내지 마세요.
+- 챕터는 3~8개가 적당하며, 시간 순으로 정렬하세요.
+- 첫 챕터는 time 0 으로 시작하세요.
+- topics는 '시간'이 아니라 '무엇에 대해 이야기했는지' 기준으로 묶으세요. 2~6개가 적당합니다.
+- topics의 detail은 녹취록에 실제로 나온 내용만 쓰고, 없는 내용을 지어내지 마세요.
+- 녹취록에는 화자 표시가 없습니다. speakers는 대화의 말투·호칭·문맥으로 화자 전환을 추정해 "화자 1", "화자 2" …로 구분하고 각자 한 말을 요약하세요. 이름이 대화 중 언급되면 그 이름을 써도 됩니다. 화자를 도저히 구분할 수 없으면 speakers는 빈 배열로 두세요(억지로 나누지 마세요).
+- 내용이 없는 항목은 빈 배열로 두세요.`,
+        },
+        {
+          role: 'user',
+          content: `다음 회의 녹취록을 JSON으로 정리해주세요:\n\n${transcriptForLlm}`,
+        },
+      ],
+    })
+
+    const rawContent = completion.choices[0]?.message?.content || '{}'
+    let parsed
+    try {
+      parsed = JSON.parse(rawContent)
+    } catch {
+      throw new Error('AI 응답을 해석하지 못했습니다. 다시 시도해 주세요.')
+    }
+
+    const chapters = normalizeChapters(parsed.chapters, durationSec)
+    const summaryText = buildSummaryText(parsed, chapters)
+
+    // 주제별요약: { topic, detail } 배열만 추려서 그대로 넘깁니다.
+    const topics = Array.isArray(parsed.topics)
+      ? parsed.topics
+          .filter((t) => t && typeof t.topic === 'string' && t.topic.trim())
+          .map((t) => ({ topic: String(t.topic).trim(), detail: String(t.detail || '').trim() }))
+      : []
+    // 발언자별요약: { speaker, summary } (녹취록에 화자 표시가 없어 LLM 추정치)
+    const speakers = Array.isArray(parsed.speakers)
+      ? parsed.speakers
+          .filter((s) => s && typeof s.speaker === 'string' && s.speaker.trim() && String(s.summary || '').trim())
+          .map((s) => ({ speaker: String(s.speaker).trim(), summary: String(s.summary).trim() }))
+      : []
+    console.log(`요약 완료! 챕터 ${chapters.length}개, 주제 ${topics.length}개, 화자 ${speakers.length}명`)
+
+    res.json({
+      success: true,
+      // 상세요약 = 타임스탬프가 붙은 전체 녹취록(영상 풀내용)
+      transcript: transcriptForLlm,
+      summary: summaryText,
+      chapters,
+      topics,
+      speakers,
+      duration: durationSec,
+    })
   } catch (err) {
     const message = summaryErrorMessage(err)
     console.error('AI 요약 실패:', message)
@@ -901,8 +897,7 @@ app.use((err, req, res, next) => {
 })
 
 const PORT = process.env.PORT || 3001
-// Render 등 클라우드는 외부 헬스체크를 위해 0.0.0.0 바인딩이 필요합니다.
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, () => {
   console.log(`서버 실행중: port ${PORT}`)
   console.log(`  요약 모델: ${getChatModel()}`)
   console.log(`  음성 모델: ${getTranscribeModel()}`)
@@ -910,18 +905,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  R2 버킷: ${process.env.R2_BUCKET || '(미설정 — 새 녹화 업로드 주소를 발급할 수 없음)'}`)
   console.log(`  채팅 첨부 경로: ${CHAT_FILES_DIR}`)
   console.log(`  회의 문서(첨부목록) 경로: ${MEETING_DOCS_DIR}`)
-  // 요약은 시스템 ffmpeg로 음성만 뽑습니다. 없어도 서버는 켜 두고, 요약 요청 때 이유를 돌려줍니다.
-  const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg'
-  execFile(ffmpegBin, ['-version'], { timeout: 10000 }, (err, stdout) => {
-    if (err) {
-      console.warn('  ffmpeg: 없음. 영상 요약은 서버에 ffmpeg를 설치한 뒤에 됩니다.')
-      return
-    }
-    const first = String(stdout || '').split('\n')[0].trim()
-    console.log(`  ffmpeg: ${first || '사용 가능'}`)
-  })
-  // 로컬 개발용 OAuth 폴백(127.0.0.1:3000). 클라우드에서는 불필요해 건너뜁니다.
-  if (!process.env.RENDER && process.env.ENABLE_OAUTH_FALLBACK !== '0') {
-    startOauthFallback()
-  }
+  startOauthFallback()
 })

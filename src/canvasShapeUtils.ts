@@ -136,12 +136,13 @@ function drawRegularPolygon(
   sides: number,
   style: DrawStyle,
   preview = false,
+  // 첫 꼭짓점 각도 (기본: 맨 위). 팔각형은 윗변이 평평하게 보이도록 반 칸 돌려서 씁니다.
+  start = -Math.PI / 2,
 ) {
   const cx = (from.x + to.x) / 2;
   const cy = (from.y + to.y) / 2;
   const rx = Math.max(1, Math.abs(to.x - from.x) / 2);
   const ry = Math.max(1, Math.abs(to.y - from.y) / 2);
-  const start = -Math.PI / 2;
   ctx.save();
   beginShapeStyle(ctx, style, preview);
   ctx.beginPath();
@@ -163,6 +164,11 @@ export function drawPentagon(ctx: CanvasRenderingContext2D, from: Point, to: Poi
 
 export function drawHexagon(ctx: CanvasRenderingContext2D, from: Point, to: Point, style: DrawStyle, preview = false) {
   drawRegularPolygon(ctx, from, to, 6, style, preview);
+}
+
+/** 팔각형 — 시안 아이콘처럼 윗변이 평평한 모양 */
+export function drawOctagon(ctx: CanvasRenderingContext2D, from: Point, to: Point, style: DrawStyle, preview = false) {
+  drawRegularPolygon(ctx, from, to, 8, style, preview, -Math.PI / 2 + Math.PI / 8);
 }
 
 /** 5각 별 */
@@ -380,6 +386,7 @@ export type ShapeTool =
   | 'triangle'
   | 'pentagon'
   | 'hexagon'
+  | 'octagon'
   | 'star'
   | 'ellipse'
   | 'arrow'
@@ -400,6 +407,7 @@ export function drawShapeTool(
   else if (tool === 'triangle') drawTriangle(ctx, from, to, style, preview);
   else if (tool === 'pentagon') drawPentagon(ctx, from, to, style, preview);
   else if (tool === 'hexagon') drawHexagon(ctx, from, to, style, preview);
+  else if (tool === 'octagon') drawOctagon(ctx, from, to, style, preview);
   else if (tool === 'star') drawStar(ctx, from, to, style, preview);
   else if (tool === 'ellipse') drawEllipse(ctx, from, to, style, preview);
   else if (tool === 'arrow') drawArrow(ctx, from, to, style, preview);

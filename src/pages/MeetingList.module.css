@@ -21,106 +21,212 @@
   color: var(--color-text-faint);
 }
 
-.list {
+/* 높이 = 화면 − (.main 위 패딩 28 + 상단바 28 + 간격 26 + 아래 패딩 40 = 122px).
+   전역 .page(grop/css/document.css)의 overflow-y: auto / height: 100%를 덮어씁니다.
+   문서 페이지(DocumentList)와 같은 구조라 오른쪽 여백도 같게(−12 → −22px) 맞춥니다. */
+:global(.page).fixedPage {
+  height: calc(100dvh - 122px);
+  min-height: 0;
+  overflow: hidden;
+  margin-right: -22px;
+}
+
+/* 상단 줄 — 문서 페이지의 탭 줄과 같은 모양 */
+.docHeader {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-10);
+  margin-bottom: var(--space-10);
+
+  /* 제목 행 아래 전체 폭 구분선(피그마 Line 7, #C6C6C6) — 탭의 margin-bottom:-1px 때문에
+     활성 탭의 초록 밑줄이 이 선 위에 겹쳐 올라갑니다(피그마 Line 6). 문서/회의록/멤버 페이지 공통 */
+  border-bottom: 1px solid #c6c6c6;
+}
+
+.tabs {
+  display: flex;
+  align-items: flex-end;
+}
+
+.tab {
+  margin-bottom: -1px;
+  /* 문서 페이지 탭과 같은 padding(좌우 10px / 아래 12px) */
+  padding: 0 10px 12px;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-medium); /* 문서 페이지 탭과 같은 500 */
+  color: var(--color-primary);
+  border-bottom: 2px solid var(--color-primary);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  margin-right: 6px; /* 문서 페이지 업로드 버튼과 같은 오른쪽 안쪽 여백 */
+}
+
+/* 돌아가기 — 화살표만 있는 버튼(배경 없음). 아래 구분선과 겹치지 않게 8px 위로 띄웁니다 */
+.backButton {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 8px;
+  padding: 0;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.backButton:hover {
+  color: var(--color-primary-hover);
+}
+
+.backButton svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.2;
+}
+
+/* 흰 카드/테두리/그림자 없이 페이지 배경 위에 행 구분선만 보이게 합니다(문서 목록과 동일).
+   [스크롤 목록 + 하단 요약]으로 나누고, 회의가 적으면 내용 높이만큼만 차지합니다 */
+.meetingCard {
+  flex: 0 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-width: 720px;
 }
 
-.folder {
-  background: #fff;
-  border: 1px solid #eeeeee;
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+.meetingBody {
+  min-height: 0;
+  overflow-y: auto;
+
+  /* 스크롤바가 생기고 사라질 때 열 폭이 흔들리지 않게 자리를 항상 확보 */
+  scrollbar-gutter: stable;
 }
 
-.folderHead {
+/* 열 비율: 회의(제목+요약) / 날짜 / 첨부 문서 / 구분 */
+.meetingCard :global(.meeting-row) {
+  display: grid;
+  grid-template-columns: 6.5fr 3.9fr 4.5fr 2.4fr;
+  align-items: center;
+}
+
+.meetingCard :global(.list-row) {
+  padding: 14px 33px 14px 14px;
+  border-bottom: 1px solid #c6c6c6;
+  font-size: var(--text-md);
+}
+
+/* 헤더: 배경 막대 없이 연한 회색 글자. sticky라 아래 행이 비치지 않게 페이지 배경색으로 칠합니다 */
+.meetingBody > :global(.list-head) {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+
+  background: var(--color-bg);
+  border-bottom: none;
+  color: #a2a2a2;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+.meetingRow {
+  cursor: pointer;
+}
+
+.meetingRow:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.titleCell {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 20px;
-  cursor: pointer;
-  user-select: none;
+  gap: 22px;
+  min-width: 0;
 }
 
-.folderHead:hover {
-  background: #fafafa;
-}
-
-.folderTitle {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.folderMeta {
-  font-size: 12px;
-  color: var(--color-text-muted);
-  margin-top: 2px;
-}
-
-.chevron {
-  margin-left: auto;
-  font-size: 13px;
-  color: var(--color-text-faint);
-}
-
-.meetings {
-  border-top: 1px solid #f0f0f0;
-}
-
-.meeting {
+/* 문서 목록의 파일 아이콘 자리(35px)와 같은 크기의 둥근 칩에 이모지 아이콘 */
+.rowIcon {
+  width: 35px;
+  height: 35px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px 20px 12px 52px;
-  cursor: pointer;
-  background: #fff;
-  border-top: 1px solid #f5f5f5;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: #f1efe9;
+  font-size: 18px;
 }
 
-.meeting:first-child {
-  border-top: none;
+.titleText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 
-.meeting:hover {
-  background: #f9f9f9;
-}
-
-.meetingTitle {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.meetingSummary {
-  font-size: 12px;
-  color: var(--color-text-muted);
-  margin-top: 2px;
+.titleName {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 400px;
+}
+
+.titleSub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-md);
+  color: #a2a2a2;
+}
+
+.fileName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.noFile {
+  color: #a2a2a2;
 }
 
 .pills {
   display: flex;
   gap: 6px;
-  margin-left: auto;
 }
 
 .pill {
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 20px;
-  background: var(--color-primary-soft);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  background: var(--color-primary-tint);
   color: var(--color-primary-hover);
   font-weight: 600;
 }
 
+/* "메모"는 회색, "영상"은 초록(멤버 페이지 역할 뱃지와 같은 톤) */
 .pillInfo {
-  background: var(--color-info-soft);
-  color: var(--color-info);
+  background: var(--color-primary-tint);
+  color: var(--color-primary-hover);
+}
+
+.pill:not(.pillInfo) {
+  background: #eeeeee;
+  color: #666;
+}
+
+.listFooter {
+  flex-shrink: 0;
+  padding: var(--space-7) 20px;
+  border-top: 1px solid #f2f2f2;
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
 }
 
 .pillWait {

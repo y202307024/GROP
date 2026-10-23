@@ -1,0 +1,21 @@
+<svg width="659" height="267" viewBox="0 0 659 267" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g filter="url(#filter0_d_group_list_card)">
+<rect x="4.35791" y="2.90527" width="647" height="255" rx="15" fill="white"/>
+</g>
+<!-- 왼쪽 연두색 띠(왼쪽만 둥근 모서리) -->
+<path d="M19.3579 2.90527H301.858V257.905H19.3579C11.0736 257.905 4.35791 251.19 4.35791 242.905V17.9053C4.35791 9.621 11.0736 2.90527 19.3579 2.90527Z" fill="#E6F4E8"/>
+<!-- 오른쪽 곡선 도형: 카드 윗변 가운데 근처를 중심으로 한 반지름 255px 사분원 -->
+<path d="M296.858 2.90527H557.358A255.5 255.5 0 0 1 301.858 257.905H296.858V2.90527Z" fill="#E6F4E8"/>
+<defs>
+<filter id="filter0_d_group_list_card" x="0" y="0" width="658.62" height="266.62" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dx="1.45256" dy="2.90511"/>
+<feGaussianBlur stdDeviation="2.90511"/>
+<feComposite in2="hardAlpha" operator="out"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_group_list_card"/>
+<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_group_list_card" result="shape"/>
+</filter>
+</defs>
+</svg>

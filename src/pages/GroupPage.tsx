@@ -1,42 +1,60 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
+import GroupEditModal from '../components/GroupEditModal';
 import { getAvatarSrc } from '../utils/avatarOptions';
-import { fetchGroupMeta, isGroupOwner, type GroupMeta } from '../utils/groupPermissions';
+import styles from './GroupPage.module.css';
 
-type Group = {
-  id: string;
-  name: string;
-  invite_code: string;
-  created_by?: string | null;
-  avatar_url?: string | null;
-};
+// created_at 은 groups 테이블에 있을 때만 채워집니다(select('*')라 컬럼이 없으면 undefined → 날짜를 그리지 않음).
+type Group = { id: string; name: string; invite_code: string; created_at?: string | null };
 type MyProfile = { nickname: string | null; avatar: string | null; avatar_url: string | null };
-type MemberPreview = { nickname: string; avatar: string; is_owner?: boolean; user_id?: string };
+// user_id는 "나" 표시와 그룹 편집 모달의 멤버 권한 목록에 필요해서 함께 들고 있습니다.
+type MemberPreview = { user_id: string; nickname: string; avatar: string };
+/** 공지 미리보기 한 줄 */
+type Notice = { id: string; title: string; created_at: string
+  is_pinned?: boolean;
+};
+
+/** 그룹 생성일을 "2026.10.21" 형식으로 */
+function formatCreatedDate(dateStr: string) {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '';
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}.${month}.${day}`;
+}
 
 /**
- * 그룹 상세 — 그룹 프사·방장 기준·공지/예약 바로가기.
+ * 그룹 상세 — grop/pages/group-detail.html 마크업과 group-detail.css 를 그대로 사용합니다.
  */
 export default function GroupPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  // 그룹 목록(/groups)에서 들어왔으면 사이드바 "그룹"을, 아니면(메인 등) 예전처럼 "메인"을 선택 상태로 둡니다.
+  // 출처는 이동할 때 넘긴 라우터 state.from 으로 구분합니다(GroupListPage 참고).
+  const fromGroupList = (location.state as { from?: string } | null)?.from === 'member';
+  const activePage = fromGroupList ? 'member' : 'main';
   const [group, setGroup] = useState<Group | null>(null);
-  const [meta, setMeta] = useState<GroupMeta | null>(null);
-  const [userId, setUserId] = useState('');
   const [myProfile, setMyProfile] = useState<MyProfile | null>(null);
   const [members, setMembers] = useState<MemberPreview[]>([]);
-  const [meetingCount, setMeetingCount] = useState(0);
-  const [nextMeetingLabel, setNextMeetingLabel] = useState('미정');
-  const [latestNotice, setLatestNotice] = useState<string | null>(null);
+  /** 통계 "완료된 요약" — AI 요약(summary)이 채워진 회의 수 */
+  const [summaryCount, setSummaryCount] = useState(0);
+  /** 공지 미리보기(최신 4개) */
+  const [notices, setNotices] = useState<Notice[]>([]);
   const [copied, setCopied] = useState(false);
-  const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [scheduleTitle, setScheduleTitle] = useState('');
-  const [scheduleWhen, setScheduleWhen] = useState('');
-  const [scheduling, setScheduling] = useState(false);
-
-  const owner = isGroupOwner(meta, userId);
+  const [currentUserId, setCurrentUserId] = useState('');
+  /** 그룹 프로필 편집을 저장하면 올려서, 멤버 목록/내 프로필을 다시 불러오게 하는 카운터 */
+  const [profileReload, setProfileReload] = useState(0);
+  /** "그룹 편집" 버튼 → 설정 페이지 대신 그룹 편집 모달을 띄웁니다. */
+  const [editOpen, setEditOpen] = useState(false);
+  /**
+   * 그룹 메모 — groups 테이블에 memo 컬럼이 없어서 아직 저장은 안 되고,
+   * 편집 모달에서 저장을 누르면 이 세션 동안만 기억해서 아래 배너에 보여줍니다.
+   */
+  const [memo, setMemo] = useState('');
 
   const copyInviteCode = async () => {
     if (!group) return;
@@ -50,93 +68,49 @@ export default function GroupPage() {
     }
   };
 
-  const refreshMeetings = async (groupId: string) => {
-    const { count } = await supabase
+  useEffect(() => {
+    supabase.from('groups').select('*').eq('id', id).single()
+      .then(({ data }) => { if (data) setGroup(data); });
+
+    // "완료된 요약" — 회의 전체 개수가 아니라, 요약 텍스트가 실제로 들어 있는 회의만 셉니다
+    // (녹화 전 문서만 만든 회의처럼 summary가 null/빈 문자열인 행 제외).
+    supabase
       .from('meetings')
       .select('id', { count: 'exact', head: true })
-      .eq('group_id', groupId);
-    setMeetingCount(count ?? 0);
+      .eq('group_id', id)
+      .not('summary', 'is', null)
+      .neq('summary', '')
+      .then(({ count }) => setSummaryCount(count ?? 0));
 
-    const nowIso = new Date().toISOString();
-    const { data: upcoming } = await supabase
-      .from('meetings')
-      .select('title, date')
-      .eq('group_id', groupId)
-      .gte('date', nowIso)
-      .order('date', { ascending: true })
-      .limit(1)
-      .maybeSingle();
+    // 공지 미리보기 — 최신 4개만. 테이블 조회가 실패하면(권한/미생성 등) 빈 목록으로 둡니다.
+    supabase
+      .from('notices')
+      .select('id, title, created_at, is_pinned')
+      .eq('group_id', id)
+      // 고정 공지가 맨 위 — 공지 페이지와 같은 순서
+      .order('is_pinned', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(4)
+      .then(({ data }) => setNotices((data as Notice[] | null) ?? []));
 
-    if (upcoming?.date) {
-      const d = new Date(upcoming.date);
-      const label = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-      setNextMeetingLabel(upcoming.title ? `${label} · ${upcoming.title}` : label);
-    } else {
-      setNextMeetingLabel('미정');
-    }
-  };
-
-  useEffect(() => {
-    let mounted = true;
-    const load = async () => {
-      if (!id) return;
-      const { data: userData } = await supabase.auth.getUser();
-      if (!mounted) return;
-      setUserId(userData.user?.id || '');
-
-      const loadedMeta = await fetchGroupMeta(id);
-      if (!mounted) return;
-      setMeta(loadedMeta);
-      if (loadedMeta) {
-        setGroup({
-          id: loadedMeta.id,
-          name: loadedMeta.name,
-          invite_code: loadedMeta.inviteCode,
-          created_by: loadedMeta.createdBy,
-          avatar_url: loadedMeta.avatarUrl,
-        });
-      } else {
-        const { data } = await supabase.from('groups').select('*').eq('id', id).single();
-        if (mounted && data) setGroup(data);
-      }
-
-      await refreshMeetings(id);
-
-      const { data: memberData } = await supabase.rpc('get_group_members_with_profiles', {
-        p_group_id: id,
-      });
-      if (mounted && memberData) {
-        setMembers(
-          memberData.map((m: MemberPreview & { nickname: string; avatar: string }) => ({
+    supabase.rpc('get_group_members_with_profiles', { p_group_id: id })
+      .then(({ data }) => {
+        if (data) {
+          setMembers(data.map((m: { user_id: string; nickname: string; avatar: string }) => ({
+            user_id: m.user_id,
             nickname: m.nickname || '멤버',
             avatar: m.avatar || '🙂',
-            is_owner: m.is_owner,
-            user_id: m.user_id,
-          })),
-        );
-      }
-
-      const { data: notice } = await supabase
-        .from('group_announcements')
-        .select('title')
-        .eq('group_id', id)
-        .not('published_at', 'is', null)
-        .order('published_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (mounted) setLatestNotice(notice?.title ?? null);
-    };
-    void load();
-    return () => {
-      mounted = false;
-    };
-  }, [id]);
+          })));
+        }
+      });
+  }, [id, profileReload]);
 
   useEffect(() => {
     const fetchMyProfile = async () => {
       if (!id) return;
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) return;
+      setCurrentUserId(userData.user.id);
 
       const { data: groupProfile } = await supabase
         .from('group_profiles')
@@ -158,64 +132,69 @@ export default function GroupPage() {
 
       setMyProfile(defaultProfile ?? { nickname: null, avatar: '🐱', avatar_url: null });
     };
-    void fetchMyProfile();
-  }, [id]);
-
-  /** 방장: 회의 예약 → meetings insert → 멤버 캘린더에 자동 표시 */
-  const submitSchedule = async () => {
-    if (!owner || !id) return;
-    if (!scheduleTitle.trim() || !scheduleWhen) {
-      alert('제목과 일시를 입력해 주세요.');
-      return;
-    }
-    setScheduling(true);
-    const { error } = await supabase.from('meetings').insert({
-      group_id: id,
-      title: scheduleTitle.trim(),
-      date: new Date(scheduleWhen).toISOString(),
-    });
-    setScheduling(false);
-    if (error) {
-      alert(`예약 실패: ${error.message}`);
-      return;
-    }
-    setScheduleOpen(false);
-    setScheduleTitle('');
-    setScheduleWhen('');
-    await refreshMeetings(id);
-    alert('회의가 예약되었습니다. 그룹원 캘린더에 표시됩니다.');
-  };
+    fetchMyProfile();
+  }, [id, profileReload]);
 
   if (!group) {
     return (
-      <AppShell activePage="main">
+      <AppShell activePage={activePage}>
         <div className="page">불러오는 중...</div>
       </AppShell>
     );
   }
 
   const extra = Math.max(0, members.length - 3);
-  const groupAvatarLetter = (group.name.trim().charAt(0) || 'G').toUpperCase();
+  const createdDate = group.created_at ? formatCreatedDate(group.created_at) : '';
+
+  // 미리보기 정렬: 나 → 리더 → 나머지(멤버 페이지 MemberList와 같은 순서). 리더는 "가입 순서상 첫 번째 사람"
+  // 규칙(원래 인덱스 0)이라, 나를 앞으로 옮긴 뒤 인덱스로 판정하면 뱃지가 엉뚱한 사람에게 붙으므로 정렬 전에 정해 둡니다.
+  const sortedMembers = members
+    .map((m, i) => ({ m, isAdmin: i === 0, isMe: m.user_id === currentUserId }))
+    .sort((a, b) => {
+      const rank = (x: { isAdmin: boolean; isMe: boolean }) => (x.isMe ? 0 : x.isAdmin ? 1 : 2);
+      return rank(a) - rank(b); // 안정 정렬이라 같은 등급끼리는 원래(가입) 순서 유지
+    });
 
   return (
-    <AppShell activePage="main">
-      <div className="page group-detail-page">
-        <button className="group-back-button" type="button" aria-label="내 그룹으로" onClick={() => navigate('/main')}>
-          <Icon name="arrow-left" />
-        </button>
+    <AppShell activePage={activePage}>
+      {/* 전체 베이지 배경(group-detail-page)은 쓰지 않습니다 — 베이지는 아래 .heroPanel(아이콘~메모)에만 깔고,
+          통계 카드/미리보기 카드는 그 밖(페이지 배경 위)에 둡니다. */}
+      <div className={`page ${styles.pageFit}`}>
+        {/* 맨 윗줄: 왼쪽 그룹 생성일(글자만) / 오른쪽 뒤로가기. 멤버/회의록 페이지와 같은 초록 ‹ 화살표입니다 */}
+        <div className={styles.topRow}>
+          {createdDate && <span className={styles.createdDate}>그룹 생성일 {createdDate}</span>}
+          <button className={styles.backButton} type="button" aria-label="내 그룹으로" title="내 그룹으로" onClick={() => navigate(fromGroupList ? '/groups' : '/main')}>
+            <Icon name="chevron-left" />
+          </button>
+        </div>
 
-        <div className="group-detail-profile-row">
+        {/* 컬러 배경 패널: 그룹 아이콘 ~ 멤버 줄 ~ 메모 배너까지만 묶습니다 */}
+        <section className={styles.heroPanel}>
+        <div className={`group-detail-profile-row ${styles.profileRow}`}>
           <div className="group-detail-identity">
-            {/* 그룹 프사 — groups.avatar_url (개인 프로필과 분리) */}
             <div className="group-detail-avatar">
-              {group.avatar_url ? (
-                <img src={group.avatar_url} alt="" />
-              ) : (
-                groupAvatarLetter
-              )}
+              {myProfile?.avatar_url
+                ? <img src={myProfile.avatar_url} alt="" />
+                : (group.name.trim().charAt(0) || 'G')}
             </div>
-            <div>
-              <div className="group-detail-name">{group.name}</div>
+            <div className={styles.identityText}>
+              {/* 그룹 이름과 편집/회의방 버튼을 한 줄(.nameRow)에 두어 버튼이 이름 줄 가운데 높이에 정확히 맞게 합니다.
+                  예전엔 버튼이 아이콘 맨 위(flex-start)에 붙어서 이름 줄과 높이가 어긋났습니다. */}
+              <div className={styles.nameRow}>
+                <div className="group-detail-name">{group.name}</div>
+                <div className={styles.headerActions}>
+                  <button
+                    className={`secondary-button ${styles.editButton}`}
+                    type="button"
+                    onClick={() => setEditOpen(true)}
+                  >
+                    그룹 편집
+                  </button>
+                  <button className={`group-meeting-button ${styles.meetingButton}`} type="button" onClick={() => navigate(`/room/${id}`)}>
+                    회의방으로 이동
+                  </button>
+                </div>
+              </div>
               <div className="group-detail-invite">
                 <span>초대코드 {group.invite_code}</span>
                 <button
@@ -229,20 +208,12 @@ export default function GroupPage() {
               </div>
             </div>
           </div>
-          <button
-            className="group-edit-icon-button"
-            type="button"
-            aria-label="그룹 편집"
-            onClick={() => navigate(`/group/${id}/settings`)}
-          >
-            <Icon name="pencil" />
-          </button>
         </div>
 
-        <div className="group-detail-member-row">
+        <div className={`group-detail-member-row ${styles.memberSummaryRow}`}>
           <div className="group-detail-member-summary">
             <div className="group-detail-avatar-stack">
-              {members.slice(0, 3).map((m, i) => (
+              {sortedMembers.slice(0, 3).map(({ m }, i) => (
                 <div className="mini-avatar" key={`${m.nickname}-${i}`}>
                   <img src={getAvatarSrc(m.avatar)} alt="" />
                 </div>
@@ -251,130 +222,120 @@ export default function GroupPage() {
             </div>
             <span>멤버 {members.length}명</span>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {owner ? (
-              <button className="secondary-button" type="button" onClick={() => setScheduleOpen(true)}>
-                회의 예약
-              </button>
-            ) : null}
-            <button className="group-meeting-button" type="button" onClick={() => navigate(`/room/${id}`)}>
-              회의방으로 이동
-            </button>
+        </div>
+
+        {/* 메모 배너 — 아직 메모를 저장할 DB 컬럼이 없어서, 편집 모달에서 입력한 내용을
+            이 세션 동안만 기억합니다. 입력된 적이 없으면 안내 문구만 조용히 보여줍니다. */}
+        {memo ? (
+          // 메모가 있을 땐 말풍선 아이콘 없이 글자만 보여줍니다(아이콘은 "메모 없음" 안내에서만 사용)
+          <div className={styles.memoBanner}>
+            <span className={styles.memoText}>{memo}</span>
+          </div>
+        ) : (
+          <div className={`${styles.memoBanner} ${styles.memoBannerMuted}`}>
+            <Icon name="message-circle" className={styles.memoIcon} />
+            <span className={styles.memoText}>그룹 메모가 아직 없어요. 그룹 편집에서 추가해보세요.</span>
+          </div>
+        )}
+        </section>
+
+        <div className={styles.statsCard}>
+          <div className={styles.statItem}>
+            <Icon name="calendar" className={`${styles.statIcon} ${styles.statIconInfo}`} />
+            <div>
+              <div className={styles.statLabel}>다음 일정</div>
+              <div className={styles.statValue}>미정</div>
+            </div>
+          </div>
+          <div className={styles.statDivider} />
+          {/* 통계 표시 전용 — 클릭 이동은 아래 멤버 미리보기 카드의 "전체보기"로 하므로 버튼이 아닌 div로 둡니다 */}
+          <div className={styles.statItem}>
+            <Icon name="users" className={`${styles.statIcon} ${styles.statIconAccent}`} />
+            <div>
+              <div className={styles.statLabel}>참여 인원</div>
+              <div className={styles.statValue}>{members.length}명</div>
+            </div>
+          </div>
+          <div className={styles.statDivider} />
+          <div className={styles.statItem}>
+            <Icon name="file-text" className={`${styles.statIcon} ${styles.statIconPrimary}`} />
+            <div>
+              <div className={styles.statLabel}>완료된 요약</div>
+              <div className={styles.statValue}>{summaryCount}건</div>
+            </div>
           </div>
         </div>
 
-        <div className="group-detail-memo">
-          {myProfile?.nickname ? `${myProfile.nickname} 님, 이 그룹에서 협업을 이어가세요.` : '그룹 메모가 아직 없어요.'}
-        </div>
-
-        <div className="group-detail-stats">
-          <div className="group-stat-card">
-            <div className="group-stat-emoji">📅</div>
-            <div className="group-stat-label">다음 일정</div>
-            <div className="group-stat-value" style={{ fontSize: 14 }}>{nextMeetingLabel}</div>
-          </div>
-          <div className="group-stat-card" onClick={() => navigate(`/group/${id}/members`)} style={{ cursor: 'pointer' }}>
-            <div className="group-stat-emoji">👥</div>
-            <div className="group-stat-label">참여 인원</div>
-            <div className="group-stat-value">{members.length}명</div>
-          </div>
-          <div className="group-stat-card" onClick={() => navigate(`/group/${id}/meetings`)} style={{ cursor: 'pointer' }}>
-            <div className="group-stat-emoji">🗓️</div>
-            <div className="group-stat-label">누적 회의</div>
-            <div className="group-stat-value">{meetingCount}회</div>
-          </div>
-        </div>
-
-        <div className="group-detail-preview-grid">
-          <div className="group-preview-card">
+        <div className={`group-detail-preview-grid ${styles.previewGrid}`}>
+          <div className={`group-preview-card ${styles.previewCard}`}>
             <div className="group-preview-header">
-              <span>멤버</span>
-              <span className="group-preview-link" onClick={() => navigate(`/group/${id}/members`)} style={{ cursor: 'pointer' }}>
+              <span>멤버 {members.length}</span>
+              <span className="group-preview-link" onClick={() => navigate(`/group/${id}/members`, { state: location.state })} style={{ cursor: 'pointer' }}>
                 전체보기 ›
               </span>
             </div>
-            <div className="group-preview-list">
-              {members.slice(0, 3).map((m, i) => (
-                <div key={`${m.nickname}-${i}`}>
-                  {m.is_owner ? `👑 ${m.nickname}` : m.nickname}
-                  {m.is_owner && <span className="group-preview-muted"> · 방장</span>}
+            <div className={styles.memberList}>
+              {/* 리더 판정(가입 순서 첫 번째)과 정렬 규칙은 MemberList.tsx와 동일합니다. */}
+              {sortedMembers.slice(0, 4).map(({ m, isAdmin }) => (
+                <div
+                  className={styles.memberRow}
+                  key={m.user_id}
+                  onClick={() => navigate(`/group/${id}/members`, { state: location.state })}
+                >
+                  <div className="mini-avatar">
+                    <img src={getAvatarSrc(m.avatar)} alt="" />
+                  </div>
+                  <span className={styles.memberName}>{m.nickname}</span>
+                  {isAdmin && <span className={styles.roleBadge}>리더</span>}
+                  <Icon name="chevron-right" className={styles.memberChevron} />
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="group-preview-card">
+          {/* 공지 — 회의록 목록 페이지를 없애면서 "최근 회의록" 자리를 대체합니다. */}
+          <div className={`group-preview-card ${styles.previewCard}`}>
             <div className="group-preview-header">
-              <span>공지사항</span>
-              <span
-                className="group-preview-link"
-                onClick={() => navigate(`/group/${id}/announcements`)}
-                style={{ cursor: 'pointer' }}
-              >
+              <span>공지</span>
+              <span className="group-preview-link" onClick={() => navigate(`/group/${id}/notices`, { state: location.state })} style={{ cursor: 'pointer' }}>
                 전체보기 ›
               </span>
             </div>
-            <div className="group-preview-list">
-              {latestNotice ? (
-                <div>{latestNotice}</div>
-              ) : (
-                <div className="group-preview-muted">게시된 공지가 없습니다.</div>
-              )}
-            </div>
+            {notices.length === 0 ? (
+              <div className="group-preview-muted">등록된 공지가 없어요.</div>
+            ) : (
+              <div className={styles.memberList}>
+                {/* 멤버 목록과 같은 줄 구성(아이콘 + 제목/날짜 + 화살표 + 구분선) */}
+                {notices.map((n) => (
+                  <div className={styles.noticeRow} key={n.id} onClick={() => navigate(`/group/${id}/notices`, { state: location.state })}>
+                    <Icon name={n.is_pinned ? 'pin' : 'message-circle'} className={styles.noticeIcon} />
+                    <div className={styles.noticeMeta}>
+                      <div className={styles.noticeTitle}>{n.title}</div>
+                      <div className={styles.noticeDate}>{formatCreatedDate(n.created_at)}</div>
+                    </div>
+                    <Icon name="chevron-right" className={styles.memberChevron} />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
-
-        {scheduleOpen ? (
-          <div
-            style={{
-              position: 'fixed',
-              inset: 0,
-              background: 'rgba(0,0,0,0.35)',
-              display: 'grid',
-              placeItems: 'center',
-              zIndex: 50,
-            }}
-            onClick={() => setScheduleOpen(false)}
-          >
-            <div
-              className="settings-card"
-              style={{ width: 'min(420px, 92vw)', margin: 0 }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="settings-section">
-                <h3>회의 예약</h3>
-                <p className="settings-desc">예약하면 그룹원 캘린더에 자동으로 표시됩니다.</p>
-                <div className="settings-row">
-                  <label>제목</label>
-                  <input
-                    className="settings-field"
-                    value={scheduleTitle}
-                    onChange={(e) => setScheduleTitle(e.target.value)}
-                    placeholder="예: 주간 회의"
-                  />
-                </div>
-                <div className="settings-row">
-                  <label>일시</label>
-                  <input
-                    className="settings-field"
-                    type="datetime-local"
-                    value={scheduleWhen}
-                    onChange={(e) => setScheduleWhen(e.target.value)}
-                  />
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="primary-button" type="button" disabled={scheduling} onClick={submitSchedule}>
-                    {scheduling ? '저장 중...' : '예약하기'}
-                  </button>
-                  <button className="secondary-button" type="button" onClick={() => setScheduleOpen(false)}>
-                    취소
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
       </div>
+
+      <GroupEditModal
+        open={editOpen}
+        groupId={group.id}
+        groupName={group.name}
+        groupMemo={memo}
+        members={members}
+        currentUserId={currentUserId}
+        onClose={() => setEditOpen(false)}
+        onMemberProfileSaved={() => setProfileReload((n) => n + 1)}
+        onSaved={(name, nextMemo) => {
+          setGroup((prev) => (prev ? { ...prev, name } : prev));
+          setMemo(nextMemo);
+        }}
+      />
     </AppShell>
   );
 }

@@ -1,0 +1,43 @@
+/**
+ * 반응형 레이아웃 시스템 (.stage의 대안) — 전역으로 import됩니다 (src/styles/index.css)
+ * ─────────────────────────────────────────────────────────────
+ * ResponsiveTestPage(/test-responsive)에서 먼저 실험해본 방식을, AppShell(사이드바
+ * 있는 화면 껍데기 — 메인/문서/AI요약/그룹/설정 등 대부분의 화면)에 실제로
+ * 적용했습니다. 기존 stage.css는 1440x810 고정 캔버스를 만들어두고
+ * transform: scale()로 창 크기에 맞춰 통째로 늘리는 방식이라, 창 비율이 16:9와
+ * 다르면 UI가 눌리거나 늘어나 보이고, 스케일된 좌표계 안의 스크롤과 진짜 브라우저
+ * 스크롤이 섞여 헷갈리는 문제가 있었습니다. 이 파일은 그 대신 고정 캔버스 없이
+ * 실제 뷰포트 크기를 그대로 쓰고, 요소는 최소 크기 밑으로 줄어들지 않으며, 그
+ * 이상으로 창이 좁아지면(가로) 잘려 보이거나(세로) 페이지 전체가 스크롤됩니다.
+ *
+ * 아직 .stage를 쓰는 화면: 로그인/회원가입(login-shell/signup-shell)과 회의/캔버스
+ * (meeting-page) — 이번엔 AppShell(핵심 뼈대)만 먼저 옮기기로 해서 그대로 뒀습니다
+ * (src/styles/index.css 참고).
+ *
+ * 중요: src/styles/index.css가 stage.css의 html,body{overflow:hidden}을 모든
+ * 라우트에 전역으로 적용합니다(main.tsx가 index.css 하나만 전역으로 import). 그래서
+ * .stageFluid를 "실제로 스크롤/클리핑되는 뷰포트 박스"로 만들어(height 고정)
+ * html/body의 overflow:hidden과 상관없이 이 박스 안에서 처리합니다.
+ *
+ * 가로/세로를 다르게 처리합니다 — 세로(overflow-y:auto)는 최소 높이보다 눌리면
+ * 페이지 전체가 스크롤되고, 가로(overflow-x:hidden)는 최소 폭(AppShell.module.css의
+ * .main min-width, 또는 ResponsiveTestPage.module.css)보다 창이 좁아지면 안의
+ * 요소는 그대로 두고 오른쪽이 그냥 잘려 보입니다(스크롤바 없이) — 카드가 많은
+ * 화면에서 창 크기마다 줄바꿈/축소를 대응하려면 경우의 수가 끝없이 늘어나기
+ * 때문에, 밴드(BAND) 웹처럼 레이아웃은 고정해두고 안 들어가는 만큼만 잘라내는
+ * 쪽을 택했습니다.
+ */
+
+.stageFluid {
+  width: 100%;
+
+  /* 100vh 대신 100dvh를 우선 써서, 모바일 브라우저 주소창처럼 실제 보이는 영역이
+     달라지는 환경에서도 실제 화면 높이에 맞춰집니다(구형 브라우저는 100vh로 대체).
+     min-height가 아니라 고정 height를 써야 이 박스 자체가 "뷰포트만큼만 보이는 창"이
+     되고, 그 안의 .page가 더 커지면 세로는 스크롤, 가로는 잘려 보입니다. */
+  height: 100vh;
+  height: 100dvh;
+
+  overflow-x: hidden;
+  overflow-y: auto;
+}

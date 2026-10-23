@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createScaledPortal } from './AppScaleLayer';
 import { supabase } from '../supabaseClient';
 import Icon from './Icon';
 import { AVATAR_OPTIONS, DEFAULT_AVATAR_KEY, getAvatarSrc } from '../utils/avatarOptions';
@@ -10,20 +11,14 @@ type Props = {
   onClose: () => void;
   /** 저장 성공 시 최신 아바타(프리셋 key 또는 업로드 사진 URL)를 상위(AppShell 상단바)에 알려줍니다. */
   onSaved: (avatar: string) => void;
-  /**
-   * 최초 가입 직후처럼 프로필을 꼭 만들어야 할 때 true.
-   * 닫기(X)·취소·바깥 클릭을 막아서 저장해야만 닫힙니다.
-   */
-  required?: boolean;
 };
 
 /**
  * 상단바 프로필 아이콘을 누르면 뜨는 "프로필 수정" 팝업.
  * /profile 페이지(DefaultProfile)와 같은 "기본 프로필" 데이터를 다루지만,
  * 페이지 이동 없이 현재 화면 위에 모달로 띄우기 위해 별도 컴포넌트로 뺐습니다.
- * required=true 면 가입 직후 최초 설정용으로 쓰여 닫을 수 없습니다.
  */
-export default function ProfileEditModal({ open, onClose, onSaved, required = false }: Props) {
+export default function ProfileEditModal({ open, onClose, onSaved }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [userId, setUserId] = useState<string | null>(null);
@@ -122,21 +117,17 @@ export default function ProfileEditModal({ open, onClose, onSaved, required = fa
     onClose();
   };
 
-  return (
-    <div className="modal-overlay" onClick={required ? undefined : onClose}>
+  // createPortal로 body에 직접 그립니다 — AppShell의 .app이 transform: scale()을 가져서 그 안의
+  // position: fixed 배경(.modal-overlay)이 화면이 아니라 .app 기준이 되어 화면을 다 못 덮었습니다.
+  return createScaledPortal(
+    <div className="modal-overlay" onClick={onClose}>
       <div className="profile-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <div className="profile-modal-header">
           <h2>프로필 수정</h2>
-          {!required && (
-            <button className="modal-close-button" type="button" aria-label="닫기" onClick={onClose}>
-              <Icon name="x" />
-            </button>
-          )}
+          <button className="modal-close-button" type="button" aria-label="닫기" onClick={onClose}>
+            <Icon name="x" />
+          </button>
         </div>
-
-        {required && (
-          <p className="settings-desc">처음 오셨네요! 닉네임과 아바타를 먼저 설정해주세요.</p>
-        )}
 
         {loading ? (
           <p className="settings-desc">불러오는 중...</p>
@@ -189,9 +180,7 @@ export default function ProfileEditModal({ open, onClose, onSaved, required = fa
             </div>
 
             <div className="profile-modal-actions">
-              {!required && (
-                <button type="button" className="secondary-button" onClick={onClose}>취소</button>
-              )}
+              <button type="button" className="secondary-button" onClick={onClose}>취소</button>
               <button type="button" className="primary-button" onClick={handleSave} disabled={saving || uploading}>
                 {saving ? '저장 중...' : '저장하기'}
               </button>
@@ -199,6 +188,6 @@ export default function ProfileEditModal({ open, onClose, onSaved, required = fa
           </>
         )}
       </div>
-    </div>
+    </div>,
   );
 }

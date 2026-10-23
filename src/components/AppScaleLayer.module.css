@@ -1,0 +1,21 @@
+/* useAppShellScale 이 정하는 --app-shell-scale / --app-h 를 AppShell(.app)과 똑같이 적용합니다.
+   변수가 없는 화면(로그인 등 AppShell 밖)에서는 배율 1, 화면 전체 크기로 동작합니다. */
+.layer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: calc(100vw / var(--app-shell-scale, 1));
+  height: var(--app-h, 100vh);
+  transform: scale(var(--app-shell-scale, 1));
+  transform-origin: top left;
+
+  /* .app 의 사이드바/상단바/알림창보다 위 */
+  z-index: 1000;
+
+  /* 레이어 자체는 클릭을 가로채지 않고, 안의 배경/모달만 받습니다 */
+  pointer-events: none;
+}
+
+.layer > * {
+  pointer-events: auto;
+}

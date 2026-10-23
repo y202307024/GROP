@@ -5,6 +5,7 @@ export type ExcalidrawTool =
   | 'triangle'
   | 'pentagon'
   | 'hexagon'
+  | 'octagon'
   | 'star'
   | 'ellipse'
   | 'arrow'
