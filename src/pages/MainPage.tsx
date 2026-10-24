@@ -47,6 +47,33 @@ type MeetingRow = {
   created_by?: string | null;
 };
 
+/**
+ * 그룹마다 마지막 회의 시각. date는 회의가 만들어진 시각이고,
+ * started_at·ended_at은 방에 들어온 뒤 갱신되므로 그 중 가장 늦은 시각을 씁니다.
+ */
+async function latestMeetingTimeByGroup(ids: string[]) {
+  const withTimes = await supabase
+    .from('meetings')
+    .select('group_id, date, started_at, ended_at')
+    .in('group_id', ids);
+  const rows = withTimes.error && /started_at|ended_at/i.test(withTimes.error.message)
+    ? (await supabase.from('meetings').select('group_id, date').in('group_id', ids)).data
+    : withTimes.data;
+  const latest = new Map<string, number>();
+  for (const row of (rows ?? []) as { group_id?: string; date?: string | null; started_at?: string | null; ended_at?: string | null }[]) {
+    if (!row.group_id) continue;
+    const at = Math.max(
+      0,
+      ...[row.date, row.started_at, row.ended_at].map((value) => {
+        const time = value ? new Date(value).getTime() : 0;
+        return Number.isFinite(time) ? time : 0;
+      }),
+    );
+    if (at > (latest.get(row.group_id) ?? 0)) latest.set(row.group_id, at);
+  }
+  return latest;
+}
+
 /** 하단 패널에 보여줄 카드 수 — 회의 목록 5장, 최근 AI 요약 4장. 카드 높이는 패널 높이를 이 수로 나눠 가집니다 */
 const MEETING_VISIBLE = 5;
 const SUMMARY_VISIBLE = 4;
@@ -121,21 +148,36 @@ export default function MainPage() {
         list.push(g);
       }
     }
-    setGroups(list);
-
     const ids = list.map((g) => g.id);
     if (ids.length === 0) {
+      setGroups([]);
       setMeetings([]);
       setGroupStats({});
       return;
     }
-    const { data: meetingRows } = await supabase
+    // 참석자 칸은 attendees·채팅 기록·저장한 사람이 있어야 얼굴이 나옵니다. 칸이 없으면 목록만 다시 읽습니다.
+    const withPeople = await supabase
       .from('meetings')
-      .select('id, title, date, summary, group_id')
+      .select('id, title, date, summary, group_id, attendees, chat_log, created_by')
       .in('group_id', ids)
       .order('date', { ascending: false })
       .limit(MAX_MEETINGS);
+    const meetingRows = withPeople.error && /attendees|chat_log|created_by/i.test(withPeople.error.message)
+      ? (await supabase
+          .from('meetings')
+          .select('id, title, date, summary, group_id')
+          .in('group_id', ids)
+          .order('date', { ascending: false })
+          .limit(MAX_MEETINGS)).data
+      : withPeople.data;
     setMeetings(meetingRows || []);
+    // 카드 4장은 가입 순이 아니라, 그 그룹에서 가장 최근에 회의한 순입니다.
+    const latestMeetingAt = await latestMeetingTimeByGroup(ids);
+    const ranked = list
+      .map((g, index) => ({ g, index, at: latestMeetingAt.get(g.id) ?? 0 }))
+      .sort((a, b) => b.at - a.at || a.index - b.index)
+      .map((row) => row.g);
+    setGroups(ranked);
     const faces = await loadGroupFaceIndex(ids);
     setAvatarByUserId(faces.avatarByUserId);
     setNicknameToIdByGroup(faces.nicknameToIdByGroup);
@@ -263,10 +305,8 @@ export default function MainPage() {
 
         {/* 참고로 받은 최신 Figma 변환본(titleWrapper/h37 "최근 그룹")엔 카드 위에
             섹션 제목이 붙어있어서 추가했습니다.
-            캐러셀(좌우 화살표 + 가로 스크롤)은 없앴습니다 — 최신 그룹 4개까지만
-            스크롤 없이 한 화면에 고정으로 보여주는 스택 형태로 바꿨습니다. 5번째
-            그룹부터는 이 카드 영역엔 아예 안 나타납니다(전체 그룹은 그룹 목록
-            페이지에서 봅니다). */}
+            캐러셀(좌우 화살표 + 가로 스크롤)은 없앴습니다 — 최근에 회의한 그룹 4개만
+            스크롤 없이 한 화면에 고정으로 보여줍니다. 회의 기록이 없는 그룹은 그 뒤에 둡니다. */}
         <div className={`${styles.groupSection} ${styles.thirdsSection}`}>
           <h2 className={styles.groupSectionTitle}>최근 그룹</h2>
 

@@ -27,18 +27,32 @@ export function attendeeUserIds(
 
   if (Array.isArray(meeting.attendees)) {
     for (const item of meeting.attendees) {
-      if (typeof item !== 'string') continue;
-      const value = item.trim();
-      if (USER_ID_RE.test(value)) add(value);
-      else {
-        const id = nicknameToId?.get(value);
-        if (id) add(id);
+      if (typeof item === 'string') {
+        const value = item.trim();
+        if (USER_ID_RE.test(value)) add(value);
+        else {
+          const id = nicknameToId?.get(value);
+          if (id) add(id);
+        }
+        continue;
       }
+      // 진행 중 저장분이 { user_id } 형태여도 같은 사람만 고릅니다.
+      if (item && typeof item === 'object') add((item as { user_id?: unknown }).user_id);
     }
   }
   if (Array.isArray(meeting.chat_log)) {
     for (const msg of meeting.chat_log) {
-      add((msg as { from?: unknown }).from);
+      const from = (msg as { from?: unknown; name?: unknown }).from;
+      add(from);
+      if (typeof from === 'string' && !USER_ID_RE.test(from.trim())) {
+        const id = nicknameToId?.get(from.trim());
+        if (id) add(id);
+      }
+      const name = (msg as { name?: unknown }).name;
+      if (typeof name === 'string') {
+        const id = nicknameToId?.get(name.trim());
+        if (id) add(id);
+      }
     }
   }
   if (ids.length === 0) add(meeting.created_by);
@@ -59,7 +73,8 @@ export async function loadGroupFaceIndex(groupIds: string[]): Promise<GroupFaceI
     const nicknames = new Map<string, string>();
     for (const row of (data as { user_id?: string; nickname?: string; avatar?: string }[]) || []) {
       if (!row.user_id) continue;
-      if (row.avatar) avatarByUserId[row.user_id] = row.avatar;
+      // 이모지나 빈 값은 나중에 기본 얼굴로 바꾸므로, 프리셋·사진 주소만 기억합니다.
+      if (row.avatar && row.avatar !== '🐱') avatarByUserId[row.user_id] = row.avatar;
       const nick = row.nickname?.trim();
       if (nick) nicknames.set(nick, row.user_id);
     }
