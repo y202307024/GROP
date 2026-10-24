@@ -485,7 +485,7 @@ export default function CalendarPage() {
       weekdays: editing.repeatType === 'weekly' ? editing.weekdays : undefined,
     };
     // 등록(id가 null): 새 일정을 끝에 추가합니다.
-    // TODO: 저장 방식(DB)이 정해지면 여기서 저장합니다. 알림은 저장만 하고 실제 알림 발송은 없습니다.
+    // 알림 시각이 되면 ScheduleReminderWatcher가 그룹 종알림을 보냅니다.
     if (editing.id === null) {
       setLocalSchedules((prev) => [
         ...prev,
@@ -837,7 +837,7 @@ export default function CalendarPage() {
 
                   <div className={styles.editField}>
                     <span className={styles.editLabel}>알림</span>
-                    {/* 10분 단위로 조절(0분 = 정시, 최대 24시간 전). 저장만 하고 실제 알림은 아직 보내지 않습니다. */}
+                    {/* 10분 단위로 조절(0분 = 정시, 최대 24시간 전). 그 시각에 그룹 종알림을 보냅니다. */}
                     <div className={`${styles.editCard} ${styles.editRemindCard}`}>
                       <span className={styles.editRemindValue}>{formatRemind(editing.remind)}</span>
                       <button
@@ -963,13 +963,13 @@ export default function CalendarPage() {
                 <dd>{formatDotDate(detail.date)}</dd>
                 <dd>{formatKoreanTime(detail.date)}</dd>
               </div>
-              {/* 수정 패널에서 넣은 값이 있으면 보여주고, 없으면(회의·예전 일정) "—" */}
+              {/* 반복 일정은 그 날짜의 종료(detail.end)를 보여 줍니다. 종료가 없는 회의는 "—" */}
               <div className={styles.detailInfoRow}>
                 <dt>종료</dt>
-                {detailSchedule?.endDate ? (
+                {detail.end ? (
                   <>
-                    <dd>{formatDotDate(detailSchedule.endDate)}</dd>
-                    <dd>{formatKoreanTime(detailSchedule.endDate)}</dd>
+                    <dd>{formatDotDate(detail.end)}</dd>
+                    <dd>{formatKoreanTime(detail.end)}</dd>
                   </>
                 ) : (
                   <dd>—</dd>

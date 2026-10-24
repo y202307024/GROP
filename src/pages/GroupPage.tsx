@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
@@ -7,6 +7,7 @@ import GroupEditModal from '../components/GroupEditModal';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { uniqueMembersByUserId } from '../utils/joinGroup';
 import { formatStorageBytes } from '../utils/meetingVideo';
+import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
 import styles from './GroupPage.module.css';
 
 // created_at 은 groups 테이블에 있을 때만 채워집니다(select('*')라 컬럼이 없으면 undefined → 날짜를 그리지 않음).
@@ -18,6 +19,12 @@ type MemberPreview = { user_id: string; nickname: string; avatar: string };
 type Notice = { id: string; title: string; created_at: string
   is_pinned?: boolean;
 };
+
+/** 그룹 카드의 다음 일정. "10월 24일 오전 10:00" */
+function formatNextSchedule(when: Date) {
+  const h = when.getHours();
+  return `${when.getMonth() + 1}월 ${when.getDate()}일 ${h >= 12 ? '오후' : '오전'} ${h % 12 || 12}:${String(when.getMinutes()).padStart(2, '0')}`;
+}
 
 /** 그룹 하나당 저장 한도. 막대는 이 값 대비 지금 쓴 용량입니다. */
 const GROUP_STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
@@ -72,6 +79,11 @@ export default function GroupPage() {
   const [memo, setMemo] = useState('');
   /** 이 그룹 회의 영상 + 첨부 파일 용량. 아직 못 읽으면 null */
   const [storageBytes, setStorageBytes] = useState<number | null>(null);
+  // 캘린더에서 이 그룹으로 등록한 일정 중, 아직 시작 전인 가장 가까운 것
+  const nextSchedule = useMemo(
+    () => (id ? findNextLocalSchedule(loadLocalSchedules(), new Date(), 62, id) : null),
+    [id],
+  );
 
   const copyInviteCode = async () => {
     if (!group) return;
@@ -308,7 +320,9 @@ export default function GroupPage() {
             <Icon name="calendar" className={`${styles.statIcon} ${styles.statIconInfo}`} />
             <div>
               <div className={styles.statLabel}>다음 일정</div>
-              <div className={styles.statValue}>미정</div>
+              <div className={styles.statValue}>
+                {nextSchedule ? formatNextSchedule(nextSchedule.when) : '미정'}
+              </div>
             </div>
           </div>
           <div className={styles.statDivider} />

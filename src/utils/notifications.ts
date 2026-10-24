@@ -6,7 +6,8 @@ export type NoticeType =
   | 'group_leave'
   | 'ai_summary'
   | 'meeting_start'
-  | 'meeting_end';
+  | 'meeting_end'
+  | 'schedule_remind';
 
 export type AppNotification = {
   id: string;

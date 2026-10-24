@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import MeetingRecordingRecovery from './components/MeetingRecordingRecovery'
+import ScheduleReminderWatcher from './components/ScheduleReminderWatcher'
 import { useStageScale } from './hooks/useStageScale'
 import Login from './pages/Login'
 import SignUp from './pages/SignUp'
@@ -34,6 +35,8 @@ export default function App() {
     <BrowserRouter>
       {/* 회의방을 나간 뒤에도 실패한 녹화의 다시 시도·내 컴퓨터 저장이 보이게 합니다. */}
       <MeetingRecordingRecovery />
+      {/* 일정에 적어 둔 N분 전 알림. 이 브라우저가 열려 있을 때 그룹 종으로 보냅니다. */}
+      <ScheduleReminderWatcher />
       <Routes>
         <Route path="/join/:code" element={<JoinGroupPage />} />
         <Route path="/" element={<Login />} />

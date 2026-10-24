@@ -22,12 +22,20 @@ function recordingScale(width: number, height: number) {
   return Math.min(RECORDING_MAX_SCALE, RECORDING_MAX_LONG_EDGE / longEdge);
 }
 
-function relativeRect(container: DOMRect, target: DOMRect): Rect {
+/**
+ * 필기 캔버스의 위치. getBoundingClientRect는 .stage의 scale()이 들어간 화면 좌표라,
+ * 녹화 캔버스(늘어나기 전 크기)에 맞추려면 그 배율로 나눕니다.
+ */
+function layoutRect(container: HTMLElement, target: HTMLElement): Rect {
+  const box = container.getBoundingClientRect();
+  const area = target.getBoundingClientRect();
+  const scaleX = box.width / (container.offsetWidth || box.width || 1);
+  const scaleY = box.height / (container.offsetHeight || box.height || 1);
   return {
-    x: target.left - container.left,
-    y: target.top - container.top,
-    w: target.width,
-    h: target.height,
+    x: (area.left - box.left) / scaleX,
+    y: (area.top - box.top) / scaleY,
+    w: area.width / scaleX,
+    h: area.height / scaleY,
   };
 }
 
@@ -40,13 +48,16 @@ export async function createMeetingRecordingStream(
   container: HTMLElement,
   canvas: HTMLCanvasElement,
 ): Promise<MeetingRecordingCapture> {
-  const containerRect = container.getBoundingClientRect();
-  const scale = recordingScale(containerRect.width, containerRect.height);
+  // 창에 맞춘 scale()이 들어간 화면 크기로 찍으면, 위로 삐져나온 GROP·시간이 잘립니다.
+  // 늘어나기 전 레이아웃 크기(1440×810 안쪽)로 찍습니다.
+  const layoutW = Math.max(1, container.offsetWidth);
+  const layoutH = Math.max(1, container.offsetHeight);
+  const scale = recordingScale(layoutW, layoutH);
   const off = document.createElement('canvas');
-  off.width = Math.max(1, Math.floor(containerRect.width * scale));
-  off.height = Math.max(1, Math.floor(containerRect.height * scale));
+  off.width = Math.max(1, Math.floor(layoutW * scale));
+  off.height = Math.max(1, Math.floor(layoutH * scale));
 
-  const canvasRect = relativeRect(containerRect, canvas.getBoundingClientRect());
+  const canvasRect = layoutRect(container, canvas);
 
   let backdrop: HTMLCanvasElement | null = null;
   try {
@@ -56,9 +67,29 @@ export async function createMeetingRecordingStream(
       html2canvas(container, {
         backgroundColor: '#1e1f22',
         scale,
+        width: layoutW,
+        height: layoutH,
+        windowWidth: Math.max(layoutW, 1440),
+        windowHeight: Math.max(layoutH, 810),
+        scrollX: 0,
+        scrollY: 0,
         logging: false,
         useCORS: true,
         ignoreElements: (el) => el === canvas,
+        onclone: (doc) => {
+          const root = doc.getElementById('root');
+          if (root) {
+            root.style.display = 'block';
+            root.style.width = '1440px';
+            root.style.height = 'auto';
+            root.style.transform = 'none';
+          }
+          // 복제본에 창 배율이 다시 적용되면 헤더가 프레임 위로 밀려 잘립니다.
+          doc.querySelectorAll('.stage').forEach((el) => {
+            if (!(el instanceof HTMLElement)) return;
+            el.style.transform = 'none';
+          });
+        },
       }),
       new Promise<null>((resolve) => {
         window.setTimeout(() => resolve(null), 2500);
