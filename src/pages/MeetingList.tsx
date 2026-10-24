@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
+import { meetingHasStoredVideo } from '../utils/meetingVideo';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import s from './MeetingList.module.css';
@@ -106,6 +107,11 @@ export default function MeetingList() {
       }
 
       if (!mounted) return;
+      // 첨부 조회에는 video_key가 없으므로, 위에서 읽은 R2 키를 회의 id로 다시 붙입니다.
+      const statusById = new Map(
+        ((withStatus.data as { id: string; video_key?: string | null; video_status?: string | null }[] | null) ?? [])
+          .map((row) => [row.id, row] as const),
+      );
       setMeetings(
         rows.map((m) => ({
           id: m.id,
@@ -113,6 +119,8 @@ export default function MeetingList() {
           date: m.date,
           summary: m.summary,
           video_url: m.video_url,
+          video_key: statusById.get(m.id)?.video_key ?? null,
+          video_status: statusById.get(m.id)?.video_status ?? null,
           group_id: m.group_id,
           group_name: nameById.get(m.group_id) ?? null,
           fileNames: attachmentNames(m.attachments),
@@ -199,7 +207,7 @@ export default function MeetingList() {
                       }
                     >
                       <div className={s.titleCell}>
-                        <span className={s.rowIcon}>{m.video_url ? '🎬' : '📄'}</span>
+                        <span className={s.rowIcon}>{meetingHasStoredVideo(m) ? '🎬' : '📄'}</span>
                         <div className={s.titleText}>
                           <span className={s.titleName}>{formatTime(m.date)} 회의</span>
                           {/* 전체 회의록(/meetings)에서는 어느 그룹 회의인지도 함께 보여줍니다 */}
@@ -214,7 +222,7 @@ export default function MeetingList() {
                       <span>{formatDate(m.date)}</span>
                       <span className={m.fileNames.length === 0 ? s.noFile : s.fileName}>{fileLabel(m.fileNames)}</span>
                       <span className={s.pills}>
-                        {m.video_url && <span className={`${s.pill} ${s.pillInfo}`}>영상</span>}
+                        {meetingHasStoredVideo(m) && <span className={`${s.pill} ${s.pillInfo}`}>영상</span>}
                         {m.summary && <span className={s.pill}>메모</span>}
                       </span>
                     </div>

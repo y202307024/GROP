@@ -15,7 +15,7 @@ const { pipeline } = require('stream/promises')
 const { S3Client, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand } = require('@aws-sdk/client-s3')
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner')
 const { startOauthFallback, rememberOauthOrigin, getOauthOrigin } = require('./oauthFallback')
-// AI 요약(오디오 추출 → Whisper → LLM) 로직은 Netlify 함수와 함께 쓰려고 별도 모듈로 분리했습니다.
+// AI 요약(오디오 추출 → Whisper → LLM)은 server/aiSummary.js 가 담당합니다.
 const { getChatModel, getTranscribeModel, summarizeMeeting, summaryErrorMessage } = require('./aiSummary')
 dotenv.config({ path: path.resolve(__dirname, '../.env') })
 

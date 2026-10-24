@@ -4,12 +4,11 @@
  * 파일 업로드와 meetings 반영이 모두 끝난 뒤에만 브라우저 보관분을 지웁니다.
  */
 import { supabase } from '../services/supabaseClient';
-import { getApiBase, isNetlifyBackend } from './apiBase';
+import { getApiBase } from './apiBase';
 import { addGroupMember } from './joinGroup';
 import { readSessionMeetingId } from './liveMeeting';
 import { notifyGroupMembers } from './notifications';
 import { rememberLastMeeting } from './lastMeeting';
-import { uploadToNetlifyBlobs } from './netlifyUpload';
 import {
   clearActiveRecording,
   clearRecordingUploadFailure,
@@ -72,20 +71,15 @@ function uploadError(err: unknown) {
   return `녹화본을 저장소로 전송하지 못했습니다: ${msg}\n\n서버가 켜져 있고 R2 설정이 맞는지 확인해 주세요.`;
 }
 
-/** meetings에 넣을 영상 칸. R2는 키와 상태, 시연용 Blobs는 예전 재생 주소입니다. */
-type StoredVideo =
-  | { kind: 'r2'; videoKey: string; sizeBytes: number }
-  | { kind: 'url'; videoUrl: string };
+/** meetings에 넣을 R2 영상 칸. 키와 용량만 저장하고, 파일은 버킷에 둡니다. */
+type StoredVideo = { videoKey: string; sizeBytes: number };
 
 function videoColumns(stored: StoredVideo): Record<string, unknown> {
-  if (stored.kind === 'r2') {
-    return {
-      video_key: stored.videoKey,
-      video_status: 'uploaded',
-      video_size_bytes: stored.sizeBytes,
-    };
-  }
-  return { video_url: stored.videoUrl };
+  return {
+    video_key: stored.videoKey,
+    video_status: 'uploaded',
+    video_size_bytes: stored.sizeBytes,
+  };
 }
 
 /** 칸이 아직 없으면 적용할 SQL을 같이 알려 줍니다. 녹화는 IndexedDB에 남아 있습니다. */
@@ -97,16 +91,6 @@ function explainVideoSaveError(message: string) {
 }
 
 async function storeVideoFile(input: SaveInput): Promise<StoredVideo> {
-  if (isNetlifyBackend()) {
-    // Netlify 시연은 서버 디스크 대신 Blobs에 올립니다. 재생 경로는 기존과 같게 맞춥니다.
-    const rel = `${input.groupId || 'unknown'}/${input.dateStr}/${Date.now()}.webm`;
-    const uploaded = await uploadToNetlifyBlobs(`videos/${rel}`, input.blob, {
-      name: 'recording.webm',
-      mime: input.mimeType,
-    });
-    return { kind: 'url', videoUrl: `${getApiBase()}/videos/${uploaded.path}` };
-  }
-
   const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
   // Content-Type은 브라우저가 경계 문자열을 붙여야 해서 여기서 지정하지 않습니다.
   const headers: Record<string, string> = {};
@@ -138,7 +122,7 @@ async function storeVideoFile(input: SaveInput): Promise<StoredVideo> {
   if (!saved.key) {
     throw new Error('저장소 업로드 응답이 올바르지 않습니다');
   }
-  return { kind: 'r2', videoKey: saved.key, sizeBytes: saved.sizeBytes || input.blob.size };
+  return { videoKey: saved.key, sizeBytes: saved.sizeBytes || input.blob.size };
 }
 
 async function rememberStartedAt(meetingId: string, startedAt: number | undefined) {
