@@ -1480,10 +1480,20 @@ export default function Room() {
       recorderMimeRef.current = mimeType || 'video/webm';
 
       let mediaRecorder: MediaRecorder;
+      // 화면 글자와 필기가 뭉개지지 않게 5Mbps로 인코딩합니다. 브라우저가 거절하면 기본값으로 돌립니다.
+      const recorderOptions: MediaRecorderOptions = {
+        ...(mimeType ? { mimeType } : {}),
+        videoBitsPerSecond: 5_000_000,
+        audioBitsPerSecond: 128_000,
+      };
       try {
-        mediaRecorder = new MediaRecorder(combined, mimeType ? { mimeType } : undefined);
+        mediaRecorder = new MediaRecorder(combined, recorderOptions);
       } catch {
-        mediaRecorder = new MediaRecorder(combined);
+        try {
+          mediaRecorder = new MediaRecorder(combined, mimeType ? { mimeType } : undefined);
+        } catch {
+          mediaRecorder = new MediaRecorder(combined);
+        }
         recorderMimeRef.current = mediaRecorder.mimeType || 'video/webm';
       }
 
