@@ -158,7 +158,8 @@ export default function MainPage() {
   // 닉네임으로만 남은 참석자를 user id와 겹쳐 세지 않기 위해 그룹별로 둡니다.
   const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
   // 진행중은 AI 요약이 아니라, 그 회의 방에 아직 사람이 있는지로 판단합니다.
-  const liveRooms = useLiveRooms();
+  // ready 전에는 목록을 그리지 않아, 진행중 회의가 완료로 잠깐 보이지 않습니다.
+  const { rooms: liveRooms, ready: liveReady } = useLiveRooms();
   const fetchedLiveIds = useRef(new Set<string>());
 
   // 사람이 있는 회의가 최근 녹화 행에 가려져 있으면 그 행을 목록 앞에 붙입니다.
@@ -433,12 +434,12 @@ export default function MainPage() {
             <div className={styles.meetingList}>
               {/* 데이터가 없을 땐 안내 문구 없이 빈 패널만 보여주고, 회의가 생기면 행이 추가됩니다. */}
               {[...meetings].sort((a, b) => {
-                const aLive = liveRoomForMeeting(liveRooms, a, meetings) ? 1 : 0;
-                const bLive = liveRoomForMeeting(liveRooms, b, meetings) ? 1 : 0;
+                const aLive = liveReady && liveRoomForMeeting(liveRooms, a, meetings) ? 1 : 0;
+                const bLive = liveReady && liveRoomForMeeting(liveRooms, b, meetings) ? 1 : 0;
                 return bLive - aLive;
               }).slice(0, MEETING_VISIBLE).map((m) => {
-                // 사람이 남아 있는 방만 진행중. 같은 그룹의 지난 녹화는 완료입니다.
-                const room = liveRoomForMeeting(liveRooms, m, meetings);
+                // 방 인원을 알기 전에는 완료로 그리지 않습니다. 아는 순간 진행중이면 처음부터 진행중입니다.
+                const room = liveReady ? liveRoomForMeeting(liveRooms, m, meetings) : null;
                 const inRoom = room != null;
                 const people = inRoom
                   ? liveHeadcount(room)
@@ -447,11 +448,15 @@ export default function MainPage() {
                 <div
                   key={m.id}
                   className={styles.meetingCard}
-                  onClick={() => navigate(`/group/${m.group_id}/meeting/${m.id}`)}
+                  onClick={() => {
+                    // 진행중은 회의록이 아니라, 그 그룹 화면(저장 공간·멤버가 있는 위쪽)으로 갑니다.
+                    if (inRoom) navigate(`/group/${m.group_id}`);
+                    else navigate(`/group/${m.group_id}/meeting/${m.id}`);
+                  }}
                 >
                   <span className={styles.title}>{m.title || '회의'}</span>
-                  <span className={`${styles.statusPill} ${inRoom ? styles.statusPillProgress : styles.statusPillDone}`}>
-                    {inRoom ? '진행중' : '완료'}
+                  <span className={`${styles.statusPill} ${!liveReady ? '' : inRoom ? styles.statusPillProgress : styles.statusPillDone}`}>
+                    {!liveReady ? '' : inRoom ? '진행중' : '완료'}
                   </span>
                   <span className={styles.date}>{formatMeetingDate(m.date)}</span>
                   <span className={styles.attendees}>{people > 0 ? `${people}명` : '—'}</span>

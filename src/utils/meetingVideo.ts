@@ -32,6 +32,23 @@ export function meetingVideoStatusLabel(status: string | null | undefined): stri
 }
 
 /**
+ * 이 회의 전체를 지웁니다. 녹화 파일이 있으면 먼저 지우고, 요약·기록 행도 삭제합니다.
+ */
+export async function deleteMeetingRecord(meeting: {
+  id: string;
+  video_url?: string | null;
+  video_key?: string | null;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (meetingHasStoredVideo(meeting)) {
+    const video = await deleteStoredMeetingVideo(meeting);
+    if (!video.ok) return video;
+  }
+  const { error } = await supabase.from('meetings').delete().eq('id', meeting.id);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/**
  * 이 회의의 녹화 파일만 지웁니다. 회의 행과 요약은 남기고 영상 칸만 비웁니다.
  */
 export async function deleteStoredMeetingVideo(meeting: {

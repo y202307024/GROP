@@ -93,6 +93,7 @@
   display: flex;
   align-items: center;
   gap: 20px;
+  min-width: 0;
   margin-top: 10px;
   font-size: var(--text-md);
   /* 회의 시간·참석자는 보조 정보라 회색 — 그룹 상세의 "그룹 생성일", 탭 비활성 글자와 같은 --color-text-faint */
@@ -103,6 +104,10 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .metaItem svg {
@@ -111,13 +116,15 @@
 }
 
 .metaDivider {
+  flex-shrink: 0;
   width: 1px;
   height: 20px;
   background: #c6c6c6;
 }
 
-/* 날짜 줄 오른쪽 끝. 용량과 제거 버튼을 나란히 둡니다. */
+/* 날짜 줄 오른쪽 끝. 참석자 글이 길어도 용량은 줄어들지 않게 둡니다. */
 .storageStat {
+  flex-shrink: 0;
   margin-left: auto;
   display: inline-flex;
   align-items: center;

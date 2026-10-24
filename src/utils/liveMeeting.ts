@@ -69,15 +69,21 @@ export async function fetchLiveRooms(): Promise<LiveRoomSnapshot[]> {
   }
 }
 
-/** 목록이 열려 있는 동안 방 인원을 다시 읽어 진행중/완료를 맞춥니다. */
+/**
+ * 목록이 열려 있는 동안 방 인원을 다시 읽습니다.
+ * ready 전에는 방이 비어 있어 진행중 회의가 완료로 보였다가 바뀌므로, 첫 응답 뒤에만 상태를 그립니다.
+ */
 export function useLiveRooms() {
   const [rooms, setRooms] = useState<LiveRoomSnapshot[]>([]);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let stop = false;
     const tick = async () => {
       const next = await fetchLiveRooms();
-      if (!stop) setRooms(next);
+      if (stop) return;
+      setRooms(next);
+      setReady(true);
     };
     void tick();
     const id = window.setInterval(tick, 4000);
@@ -87,7 +93,7 @@ export function useLiveRooms() {
     };
   }, []);
 
-  return rooms;
+  return { rooms, ready };
 }
 
 export function liveIdentitiesFor(rooms: LiveRoomSnapshot[], meetingId: string) {

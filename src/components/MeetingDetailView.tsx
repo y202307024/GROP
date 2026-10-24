@@ -6,7 +6,7 @@ import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import { chatLogForSummary } from '../utils/liveMeeting';
 import {
-  deleteStoredMeetingVideo,
+  deleteMeetingRecord,
   formatStorageBytes,
   meetingHasStoredVideo,
   meetingVideoStatusLabel,
@@ -562,24 +562,18 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     setLoading(false);
   };
 
-  /** 용량 옆 제거. 녹화 파일만 지우고 요약·채팅 기록은 남깁니다. */
+  /** 용량 옆 제거. 이 회의 탭(요약·영상·기록)을 통째로 지우고 목록으로 돌아갑니다. */
   const removeRecording = async () => {
-    if (!meeting || removingVideo || !meetingHasStoredVideo(meeting)) return;
-    if (!window.confirm('이 회의의 녹화 영상을 제거할까요? 요약과 회의 기록은 남습니다.')) return;
+    if (!meeting || removingVideo) return;
+    if (!window.confirm('이 회의를 삭제할까요? 요약, 영상, 회의 기록이 함께 지워집니다.')) return;
     setRemovingVideo(true);
-    const result = await deleteStoredMeetingVideo(meeting);
-    setRemovingVideo(false);
+    const result = await deleteMeetingRecord(meeting);
     if (!result.ok) {
+      setRemovingVideo(false);
       window.alert(result.error);
       return;
     }
-    setMeeting((prev) => (
-      prev
-        ? { ...prev, video_url: null, video_key: null, video_status: null, video_size_bytes: null }
-        : prev
-    ));
-    setPlaybackUrl(null);
-    setPlaybackError('');
+    onBack?.();
   };
 
   const saveSummary = async () => {
@@ -1005,14 +999,14 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
               <Icon name="clock" />
               {durationLabel} ({sessionLabel})
             </span>
-            {/* 날짜 줄 오른쪽 끝 — 용량과, 그 옆에서 이 녹화만 제거 */}
+            {/* 날짜 줄 오른쪽 끝 — 이 회의 영상 용량. 그 옆 제거는 회의 전체를 지웁니다. */}
             <span className={a.storageStat}>
               <span>
-                {typeof m.video_size_bytes === 'number' && m.video_size_bytes > 0
-                  ? formatStorageBytes(m.video_size_bytes)
+                {Number(m.video_size_bytes) > 0
+                  ? formatStorageBytes(Number(m.video_size_bytes))
                   : '—'}
               </span>
-              {meetingHasStoredVideo(m) && (
+              {meeting && (
                 <button
                   type="button"
                   className={a.removeVideo}
