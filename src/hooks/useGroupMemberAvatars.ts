@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../services/supabaseClient';
+import { uniqueMembersByUserId } from '../utils/joinGroup';
 
 /** 그룹원 한 명의 프로필 이미지 정보 (get_group_members_with_profiles RPC의 일부) */
 export type MemberAvatar = { user_id: string; avatar: string; nickname: string };
@@ -27,7 +28,7 @@ export function useGroupMemberAvatars(groupIds: string[]): Record<string, Member
         ids.map(async (id) => {
           const { data, error } = await supabase.rpc('get_group_members_with_profiles', { p_group_id: id });
           if (error || !data) return [id, null] as const;
-          const members = (data as { user_id: string; avatar: string; nickname: string }[]).map((m) => ({
+          const members = uniqueMembersByUserId(data as { user_id: string; avatar: string; nickname: string }[]).map((m) => ({
             user_id: m.user_id,
             avatar: m.avatar,
             nickname: m.nickname,

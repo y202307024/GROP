@@ -99,7 +99,7 @@ export default function GroupListPage() {
       .in('group_id', ids);
     const { data: memberRows } = await supabase
       .from('group_members')
-      .select('group_id')
+      .select('group_id, user_id')
       .in('group_id', ids);
 
     const next: Record<string, GroupStats> = {};
@@ -112,9 +112,13 @@ export default function GroupListPage() {
       // "최근 활동순" 정렬 기준 = 가장 최근 회의 저장 시각
       s.lastActivity = Math.max(s.lastActivity, new Date(row.date).getTime() || 0);
     }
-    for (const row of (memberRows || []) as { group_id: string }[]) {
+    const seenMembers = new Set<string>();
+    for (const row of (memberRows || []) as { group_id: string; user_id: string }[]) {
       const s = next[row.group_id];
-      if (s) s.memberCount += 1;
+      const key = `${row.group_id}:${row.user_id}`;
+      if (!s || seenMembers.has(key)) continue;
+      seenMembers.add(key);
+      s.memberCount += 1;
     }
     setStats(next);
   };

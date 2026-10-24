@@ -151,7 +151,7 @@ export default function MainPage() {
       .in('group_id', ids);
     const { data: memberRows } = await supabase
       .from('group_members')
-      .select('group_id')
+      .select('group_id, user_id')
       .in('group_id', ids);
 
     const stats: Record<string, GroupStats> = {};
@@ -162,9 +162,14 @@ export default function MainPage() {
       s.meetingCount += 1;
       s.docCount += Array.isArray(row.attachments) ? row.attachments.length : 0;
     }
-    for (const row of (memberRows || []) as { group_id: string }[]) {
+    // 같은 사람이 멤버 표에 여러 줄이면 카드 인원도 두 배로 셉니다. 그룹+사람 한 쌍만 셉니다.
+    const seenMembers = new Set<string>();
+    for (const row of (memberRows || []) as { group_id: string; user_id: string }[]) {
       const s = stats[row.group_id];
-      if (s) s.memberCount += 1;
+      const key = `${row.group_id}:${row.user_id}`;
+      if (!s || seenMembers.has(key)) continue;
+      seenMembers.add(key);
+      s.memberCount += 1;
     }
     setGroupStats(stats);
   };

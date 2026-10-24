@@ -5,6 +5,7 @@ import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import GroupEditModal from '../components/GroupEditModal';
 import { getAvatarSrc } from '../utils/avatarOptions';
+import { uniqueMembersByUserId } from '../utils/joinGroup';
 import styles from './GroupPage.module.css';
 
 // created_at 은 groups 테이블에 있을 때만 채워집니다(select('*')라 컬럼이 없으면 undefined → 날짜를 그리지 않음).
@@ -96,7 +97,9 @@ export default function GroupPage() {
     supabase.rpc('get_group_members_with_profiles', { p_group_id: id })
       .then(({ data }) => {
         if (data) {
-          setMembers(data.map((m: { user_id: string; nickname: string; avatar: string }) => ({
+          // 같은 user_id 가 여러 줄이면 화면에도 두 번 나옵니다. 가입이 빠른 한 명만 남깁니다.
+          const rows = uniqueMembersByUserId(data as { user_id: string; nickname: string; avatar: string }[]);
+          setMembers(rows.map((m) => ({
             user_id: m.user_id,
             nickname: m.nickname || '멤버',
             avatar: m.avatar || '🙂',

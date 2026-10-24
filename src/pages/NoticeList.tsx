@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { createScaledPortal } from '../components/AppScaleLayer';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
+import { uniqueMembersByUserId } from '../utils/joinGroup';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 // 멤버 페이지와 같은 틀(상단 줄/카드/스크롤 영역/하단 요약)을 그대로 쓰려고 MemberList의 스타일을 가져옵니다.
@@ -73,7 +74,7 @@ export default function NoticeList() {
 
       const { data: memberRows } = await supabase.rpc('get_group_members_with_profiles', { p_group_id: groupId });
       setMembers(
-        ((memberRows as { user_id: string; nickname: string }[] | null) ?? []).map((r) => ({
+        uniqueMembersByUserId((memberRows as { user_id: string; nickname: string }[] | null) ?? []).map((r) => ({
           user_id: r.user_id,
           nickname: r.nickname || '알 수 없음',
         })),
