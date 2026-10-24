@@ -21,7 +21,7 @@ import {
 } from './meetingRecordingStore';
 
 export type RecordingUploadResult =
-  | { ok: true; meetingId: string; alreadyDone?: boolean }
+  | { ok: true; meetingId: string; alreadyDone?: boolean; extraRecording?: boolean }
   | { ok: false; error: string; kept: boolean };
 
 type SaveInput = {
@@ -31,6 +31,8 @@ type SaveInput = {
   mimeType: string;
   title: string;
   meetingId?: string | null;
+  /** 이 녹화가 이미 그 행에 영상을 넣은 재시도. 그때만 기존 영상을 바꿉니다. */
+  replaceExistingVideo?: boolean;
   attachments: unknown;
   chatLog: unknown;
   createdBy?: string | null;
@@ -125,6 +127,52 @@ async function storeVideoFile(input: SaveInput): Promise<StoredVideo> {
   return { videoKey: saved.key, sizeBytes: saved.sizeBytes || input.blob.size };
 }
 
+type PlaceVideoResult =
+  | { status: 'updated' }
+  | { status: 'taken' }
+  | { status: 'error'; message: string };
+
+/**
+ * 회의 행에 영상을 넣습니다.
+ * 재시도가 아니면 영상이 없는 행만 고칩니다. 이미 있으면 taken 이라 새 회의록을 만듭니다.
+ */
+async function placeVideoOnMeeting(
+  id: string,
+  fields: Record<string, unknown>,
+  replaceExistingVideo: boolean,
+): Promise<PlaceVideoResult> {
+  const run = (payload: Record<string, unknown>, guard: boolean) => {
+    let query = supabase.from('meetings').update(payload).eq('id', id);
+    // 같은 회의방에서 다시 녹화해도 이전 영상의 키를 덮어쓰지 않습니다.
+    if (guard) query = query.is('video_key', null).is('video_url', null);
+    return query.select('id');
+  };
+
+  let guard = !replaceExistingVideo;
+  const payload: Record<string, unknown> = { ...fields };
+  for (let i = 0; i < 4; i += 1) {
+    const res = await run(payload, guard);
+    if (!res.error) {
+      return (res.data ?? []).length > 0 ? { status: 'updated' } : { status: 'taken' };
+    }
+    const message = res.error.message;
+    if (guard && /video_key|video_url/i.test(message)) {
+      guard = false;
+      continue;
+    }
+    if (/attachments/i.test(message) && 'attachments' in payload) {
+      delete payload.attachments;
+      continue;
+    }
+    if (/chat_log/i.test(message) && 'chat_log' in payload) {
+      delete payload.chat_log;
+      continue;
+    }
+    return { status: 'error', message };
+  }
+  return { status: 'error', message: '회의 영상을 저장하지 못했습니다.' };
+}
+
 async function rememberStartedAt(meetingId: string, startedAt: number | undefined) {
   if (!meetingId || !startedAt) return;
   const { error } = await supabase
@@ -141,7 +189,9 @@ async function rememberStartedAt(meetingId: string, startedAt: number | undefine
  * 메모리에만 있는 영상을 올립니다. IndexedDB를 쓸 수 없을 때의 보조 경로입니다.
  * 성공해도 브라우저 보관분을 지우지는 않으므로, 호출하는 쪽에서 지웁니다.
  */
-export async function uploadBlobAndInsert(input: SaveInput): Promise<{ ok: true; meetingId: string } | { ok: false; error: string }> {
+export async function uploadBlobAndInsert(input: SaveInput): Promise<
+  { ok: true; meetingId: string; extraRecording?: boolean } | { ok: false; error: string }
+> {
   if (!input.groupId) {
     return { ok: false, error: '그룹 정보가 없어 회의록을 저장하지 못했습니다.' };
   }
@@ -186,30 +236,20 @@ export async function uploadBlobAndInsert(input: SaveInput): Promise<{ ok: true;
 
   const existingId = input.meetingId || null;
   if (existingId) {
-    const { error: updateError } = await supabase
-      .from('meetings')
-      .update({
-        ...videoFields,
-        title: input.title,
-        attachments: input.attachments,
-        chat_log: input.chatLog,
-      })
-      .eq('id', existingId);
-
-    if (updateError && /attachments|chat_log/i.test(updateError.message)) {
-      const { error: fallbackError } = await supabase
-        .from('meetings')
-        .update({ ...videoFields, title: input.title })
-        .eq('id', existingId);
-      if (fallbackError) return { ok: false, error: explainVideoSaveError(fallbackError.message) };
-    } else if (updateError) {
-      return { ok: false, error: explainVideoSaveError(updateError.message) };
+    const placed = await placeVideoOnMeeting(existingId, {
+      ...videoFields,
+      title: input.title,
+      attachments: input.attachments,
+      chat_log: input.chatLog,
+    }, input.replaceExistingVideo === true);
+    if (placed.status === 'error') return { ok: false, error: explainVideoSaveError(placed.message) };
+    if (placed.status === 'updated') {
+      rememberLastMeeting(existingId);
+      await rememberStartedAt(existingId, input.startedAt);
+      await notifySaved(existingId);
+      return { ok: true, meetingId: existingId };
     }
-
-    rememberLastMeeting(existingId);
-    await rememberStartedAt(existingId, input.startedAt);
-    await notifySaved(existingId);
-    return { ok: true, meetingId: existingId };
+    // taken: 이 회의에는 이미 영상이 있습니다. 아래쪽 insert가 이번 녹화를 새 행으로 남깁니다.
   }
 
   const baseRow = {
@@ -244,7 +284,8 @@ export async function uploadBlobAndInsert(input: SaveInput): Promise<{ ok: true;
   rememberLastMeeting(insertedId);
   await rememberStartedAt(insertedId, input.startedAt);
   await notifySaved(insertedId);
-  return { ok: true, meetingId: insertedId };
+  // existingId가 있으면 그 행에는 이미 영상이 있어, 이번 녹화만 새 회의록으로 남긴 것입니다.
+  return { ok: true, meetingId: insertedId, extraRecording: Boolean(existingId) };
 }
 
 async function uploadStoredRecordingBody(recordingId: string): Promise<RecordingUploadResult> {
@@ -290,6 +331,7 @@ async function uploadStoredRecordingBody(recordingId: string): Promise<Recording
     mimeType: current.mimeType || loaded.blob.type || 'video/webm',
     title: current.title || recordingTitleFromDate(current.date),
     meetingId: current.meetingId || readSessionMeetingId(current.groupId),
+    replaceExistingVideo: current.ownsMeetingRow === true,
     attachments: current.attachments ?? [],
     chatLog: current.chatLog ?? [],
     createdBy: current.createdBy ?? null,
@@ -306,15 +348,19 @@ async function uploadStoredRecordingBody(recordingId: string): Promise<Recording
 
   savedButNotDeleted.add(recordingId);
   try {
-    // 회의 행 id를 먼저 적어 두면, 삭제가 실패해도 다음 시도는 같은 행을 갱신합니다.
-    await patchLocalRecording(recordingId, { meetingId: saved.meetingId, status: 'pending_upload' });
+    // 이 녹화가 넣은 행만 다시 고칩니다. 같은 방의 다른 녹화 영상은 건드리지 않습니다.
+    await patchLocalRecording(recordingId, {
+      meetingId: saved.meetingId,
+      ownsMeetingRow: true,
+      status: 'pending_upload',
+    });
     await deleteLocalRecording(recordingId);
     savedButNotDeleted.delete(recordingId);
   } catch (err) {
     console.warn('올린 녹화를 브라우저 보관함에서 지우지 못했습니다.', err);
   }
   clearRecordingUploadFailure(recordingId);
-  return { ok: true, meetingId: saved.meetingId };
+  return { ok: true, meetingId: saved.meetingId, extraRecording: saved.extraRecording };
 }
 
 /** 보관 중인 녹화 1건을 올리고, 회의록까지 저장되면 IndexedDB에서 지웁니다. */

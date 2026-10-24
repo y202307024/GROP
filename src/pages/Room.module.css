@@ -25,8 +25,10 @@
   box-shadow: 0 0 0 3px rgba(226, 75, 75, 0.2);
 }
 
+/* GROP 로고 바로 위. 헤더와 같은 가로 폭에서 한 줄만 차지합니다. */
 .meetingRecordingBanner {
   flex-shrink: 0;
+  margin-bottom: 4px;
   padding: 6px 12px;
   background: #f8eaea;
   color: var(--color-danger);
