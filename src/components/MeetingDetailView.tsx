@@ -6,6 +6,7 @@ import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import { chatLogForSummary } from '../utils/liveMeeting';
 import {
+  formatStorageBytes,
   meetingHasStoredVideo,
   meetingVideoStatusLabel,
   primeWebmSeeking,
@@ -30,6 +31,8 @@ type Meeting = {
   video_key?: string | null;
   /** pending_upload | uploaded | backed_up | failed */
   video_status?: string | null;
+  /** 이 회의 영상 파일 크기(바이트). 없으면 용량 칸은 — 로 둡니다. */
+  video_size_bytes?: number | null;
   group_id: string;
   created_at?: string | null;
   chapters?: unknown;
@@ -979,6 +982,12 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
             <span className={a.metaItem}>
               <Icon name="clock" />
               {durationLabel} ({sessionLabel})
+            </span>
+            {/* 날짜 줄 오른쪽 끝 — 이 회의 영상이 차지하는 저장 공간 */}
+            <span className={a.storageStat}>
+              {typeof m.video_size_bytes === 'number' && m.video_size_bytes > 0
+                ? formatStorageBytes(m.video_size_bytes)
+                : '—'}
             </span>
           </div>
         </div>

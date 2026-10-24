@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
+import { getAppShellScale } from '../hooks/useAppShellScale';
 // 문서 페이지와 같은 틀(탭 줄/검색/목록/하단 요약)을 그대로 쓰려고 DocumentList의 스타일을 가져옵니다.
 import d from './DocumentList.module.css';
 import s from './AiMeetingList.module.css';
@@ -97,12 +98,78 @@ export default function AiMeetingList() {
     setSearchParams({ group: id }, { replace: true });
   };
 
+  const tabsRef = useRef<HTMLDivElement>(null);
+  // 드래그로 탭을 넘긴 뒤에는 그 동작이 탭 클릭으로 이어지지 않게 구분합니다.
+  const tabDragRef = useRef({ active: false, startX: 0, scrollLeft: 0, moved: false });
+  const [tabDragging, setTabDragging] = useState(false);
+
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    // 휠은 세로로 들어오므로, 넘치는 탭 줄에서는 가로로 옮깁니다. passive면 preventDefault가 막힙니다.
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth) return;
+      const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      if (delta === 0) return;
+      el.scrollLeft += delta / getAppShellScale();
+      e.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  const onTabPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    const el = tabsRef.current;
+    if (!el || e.pointerType !== 'mouse' || e.button !== 0) return;
+    if (el.scrollWidth <= el.clientWidth) return;
+    tabDragRef.current = { active: true, startX: e.clientX, scrollLeft: el.scrollLeft, moved: false };
+    el.setPointerCapture(e.pointerId);
+  };
+
+  const onTabPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    const el = tabsRef.current;
+    const drag = tabDragRef.current;
+    if (!el || !drag.active) return;
+    const dx = (e.clientX - drag.startX) / getAppShellScale();
+    if (Math.abs(dx) > 4) {
+      drag.moved = true;
+      setTabDragging(true);
+    }
+    el.scrollLeft = drag.scrollLeft - dx;
+  };
+
+  const endTabDrag = () => {
+    const drag = tabDragRef.current;
+    drag.active = false;
+    setTabDragging(false);
+    // click은 pointerup 다음에 오므로, 넘긴 직후의 탭 선택은 그 클릭에서 막습니다.
+    const moved = drag.moved;
+    window.setTimeout(() => {
+      if (tabDragRef.current.moved === moved) tabDragRef.current.moved = false;
+    }, 0);
+  };
+
+  const onTabClickCapture = (e: MouseEvent<HTMLDivElement>) => {
+    if (!tabDragRef.current.moved) return;
+    e.preventDefault();
+    e.stopPropagation();
+    tabDragRef.current.moved = false;
+  };
+
   return (
     <AppShell activePage="ai">
       <div className={`page ${d.docPage}`}>
         <div className={d.docHeader}>
           {/* 그룹이 많아 탭이 넘치면 이 줄 안에서만 가로 스크롤 */}
-          <div className={`${d.tabs} ${s.tabsScroll}`}>
+          <div
+            ref={tabsRef}
+            className={`${d.tabs} ${s.tabsScroll}${tabDragging ? ` ${s.tabsDragging}` : ''}`}
+            onPointerDown={onTabPointerDown}
+            onPointerMove={onTabPointerMove}
+            onPointerUp={endTabDrag}
+            onPointerCancel={endTabDrag}
+            onClickCapture={onTabClickCapture}
+          >
             {groups.map((g) => (
               <button
                 key={g.id}

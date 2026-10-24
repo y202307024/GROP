@@ -1,5 +1,15 @@
 import { getApiBase } from './apiBase';
 
+/** 바이트를 B/KB/MB/GB로 짧게 바꿉니다. 그룹 저장 공간과 회의 영상 용량이 같은 표기를 씁니다. */
+export function formatStorageBytes(bytes: number) {
+  if (bytes < 1024) return `${Math.round(bytes)}B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1024) return mb >= 10 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`;
+  const gb = mb / 1024;
+  return gb >= 10 ? `${Math.round(gb)}GB` : `${gb.toFixed(1)}GB`;
+}
+
 /** 목록·상세에 재생할 영상이 있는지. R2 키와 예전 디스크 주소를 같이 봅니다. */
 export function meetingHasStoredVideo(source: {
   video_url?: string | null;

@@ -116,6 +116,14 @@
   background: #c6c6c6;
 }
 
+/* 날짜 줄 오른쪽 끝. 이 회의 영상 용량만 본문 색으로 둡니다. */
+.storageStat {
+  margin-left: auto;
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
 /* ---------------- 패널 영역 ---------------- */
 .grid {
   flex: 1;

@@ -9,6 +9,13 @@
   max-width: 100%;
   overflow-x: auto;
   scrollbar-width: none;
+  /* 마우스 휠·드래그로 넘깁니다. 글자가 드래그 선택되지 않게 막습니다. */
+  cursor: grab;
+  user-select: none;
+}
+
+.tabsDragging {
+  cursor: grabbing;
 }
 
 .tabsScroll::-webkit-scrollbar {

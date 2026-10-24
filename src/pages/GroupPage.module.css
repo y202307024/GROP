@@ -298,9 +298,39 @@
   background: var(--color-primary-subtle);
 }
 
+/* 패널 맨 아래 줄. 메모는 왼쪽, 저장 공간은 회의방 버튼 아래 오른쪽에 둡니다. */
+.heroBottom {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+
 /* 패널 맨 아래 요소라 아래 여백은 패널 padding이 맡습니다 */
 .heroPanel .memoBanner {
+  flex: 1;
+  min-width: 0;
   margin-bottom: 0;
+}
+
+.storageStat {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  padding-bottom: 2px;
+}
+
+.storageLabel {
+  font-size: calc(12px * var(--gz, 1));
+  color: var(--color-text-faint);
+}
+
+.storageValue {
+  font-size: calc(14px * var(--gz, 1));
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
 }
 
 /* 그룹 편집 / 회의방으로 이동 — 높이 34px로 같게, 안쪽 좌우 여백도 같게(폭은 글자 길이에 따라).

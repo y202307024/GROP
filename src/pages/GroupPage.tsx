@@ -6,6 +6,7 @@ import Icon from '../components/Icon';
 import GroupEditModal from '../components/GroupEditModal';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { uniqueMembersByUserId } from '../utils/joinGroup';
+import { formatStorageBytes } from '../utils/meetingVideo';
 import styles from './GroupPage.module.css';
 
 // created_at 은 groups 테이블에 있을 때만 채워집니다(select('*')라 컬럼이 없으면 undefined → 날짜를 그리지 않음).
@@ -17,6 +18,16 @@ type MemberPreview = { user_id: string; nickname: string; avatar: string };
 type Notice = { id: string; title: string; created_at: string
   is_pinned?: boolean;
 };
+
+/** 첨부 목록에 적힌 파일 크기만 더합니다. 크기 없는 항목은 0으로 둡니다. */
+function attachmentBytes(raw: unknown) {
+  if (!Array.isArray(raw)) return 0;
+  return raw.reduce((sum, item) => {
+    if (!item || typeof item !== 'object') return sum;
+    const size = (item as { size?: unknown }).size;
+    return sum + (typeof size === 'number' && Number.isFinite(size) && size > 0 ? size : 0);
+  }, 0);
+}
 
 /** 그룹 생성일을 "2026.10.21" 형식으로 */
 function formatCreatedDate(dateStr: string) {
@@ -56,6 +67,8 @@ export default function GroupPage() {
    * 편집 모달에서 저장을 누르면 이 세션 동안만 기억해서 아래 배너에 보여줍니다.
    */
   const [memo, setMemo] = useState('');
+  /** 이 그룹 회의 영상 + 첨부 파일 용량. 아직 못 읽으면 null */
+  const [storageBytes, setStorageBytes] = useState<number | null>(null);
 
   const copyInviteCode = async () => {
     if (!group) return;
@@ -93,6 +106,24 @@ export default function GroupPage() {
       .order('created_at', { ascending: false })
       .limit(4)
       .then(({ data }) => setNotices((data as Notice[] | null) ?? []));
+
+    // 저장 공간 — 회의 영상(video_size_bytes)과 첨부(attachments.size)를 더합니다.
+    // 영상 칸이 없는 배포에서는 첨부만 셉니다.
+    setStorageBytes(null);
+    void (async () => {
+      const withVideo = await supabase
+        .from('meetings')
+        .select('video_size_bytes, attachments')
+        .eq('group_id', id);
+      const rows = withVideo.error && /video_size_bytes/i.test(withVideo.error.message)
+        ? (await supabase.from('meetings').select('attachments').eq('group_id', id)).data
+        : withVideo.data;
+      const total = ((rows as { video_size_bytes?: number | null; attachments?: unknown }[] | null) ?? []).reduce(
+        (sum, row) => sum + (Number(row.video_size_bytes) || 0) + attachmentBytes(row.attachments),
+        0,
+      );
+      setStorageBytes(total);
+    })();
 
     supabase.rpc('get_group_members_with_profiles', { p_group_id: id })
       .then(({ data }) => {
@@ -227,19 +258,25 @@ export default function GroupPage() {
           </div>
         </div>
 
-        {/* 메모 배너 — 아직 메모를 저장할 DB 컬럼이 없어서, 편집 모달에서 입력한 내용을
-            이 세션 동안만 기억합니다. 입력된 적이 없으면 안내 문구만 조용히 보여줍니다. */}
-        {memo ? (
-          // 메모가 있을 땐 말풍선 아이콘 없이 글자만 보여줍니다(아이콘은 "메모 없음" 안내에서만 사용)
-          <div className={styles.memoBanner}>
-            <span className={styles.memoText}>{memo}</span>
+        {/* 맨 아래 줄: 왼쪽은 메모, 오른쪽(회의방으로 이동 아래)은 이 그룹이 쓴 저장 공간 */}
+        <div className={styles.heroBottom}>
+          {memo ? (
+            <div className={styles.memoBanner}>
+              <span className={styles.memoText}>{memo}</span>
+            </div>
+          ) : (
+            <div className={`${styles.memoBanner} ${styles.memoBannerMuted}`}>
+              <Icon name="message-circle" className={styles.memoIcon} />
+              <span className={styles.memoText}>그룹 메모가 아직 없어요. 그룹 편집에서 추가해보세요.</span>
+            </div>
+          )}
+          <div className={styles.storageStat}>
+            <span className={styles.storageLabel}>저장 공간</span>
+            <span className={styles.storageValue}>
+              {storageBytes == null ? '—' : formatStorageBytes(storageBytes)}
+            </span>
           </div>
-        ) : (
-          <div className={`${styles.memoBanner} ${styles.memoBannerMuted}`}>
-            <Icon name="message-circle" className={styles.memoIcon} />
-            <span className={styles.memoText}>그룹 메모가 아직 없어요. 그룹 편집에서 추가해보세요.</span>
-          </div>
-        )}
+        </div>
         </section>
 
         <div className={styles.statsCard}>
