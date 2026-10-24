@@ -1,3 +1,4 @@
+import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
 
 /** 바이트를 B/KB/MB/GB로 짧게 바꿉니다. 그룹 저장 공간과 회의 영상 용량이 같은 표기를 씁니다. */
@@ -28,6 +29,56 @@ export function meetingVideoStatusLabel(status: string | null | undefined): stri
   if (status === 'uploaded' || status === 'backed_up') return '저장 완료';
   if (status === 'failed') return '업로드 실패';
   return null;
+}
+
+/**
+ * 이 회의의 녹화 파일만 지웁니다. 회의 행과 요약은 남기고 영상 칸만 비웁니다.
+ */
+export async function deleteStoredMeetingVideo(meeting: {
+  id: string;
+  video_url?: string | null;
+  video_key?: string | null;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const key = meeting.video_key?.trim() || '';
+  const path = meeting.video_url?.trim() || '';
+  if (!key && !path) return { ok: false, error: '지울 녹화 영상이 없습니다.' };
+
+  const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
+  const headers: Record<string, string> = {};
+  if (uploadToken) headers['x-upload-token'] = uploadToken;
+  const params = new URLSearchParams();
+  if (key) params.set('key', key);
+  if (path) params.set('path', path);
+
+  try {
+    const res = await fetch(`${getApiBase()}/api/meetings/video?${params.toString()}`, {
+      method: 'DELETE',
+      headers,
+    });
+    if (!res.ok && res.status !== 404) {
+      const body = await res.json().catch(() => ({}));
+      const message = (body as { error?: string }).error || `녹화 영상을 지우지 못했습니다 (${res.status})`;
+      return { ok: false, error: message };
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '네트워크 오류';
+    return { ok: false, error: `녹화 영상을 지우지 못했습니다. (${message})` };
+  }
+
+  const cleared = {
+    video_url: null,
+    video_key: null,
+    video_status: null,
+    video_size_bytes: null,
+  };
+  const first = await supabase.from('meetings').update(cleared).eq('id', meeting.id);
+  if (first.error && /video_key|video_status|video_size_bytes/i.test(first.error.message)) {
+    const second = await supabase.from('meetings').update({ video_url: null }).eq('id', meeting.id);
+    if (second.error) return { ok: false, error: second.error.message };
+  } else if (first.error) {
+    return { ok: false, error: first.error.message };
+  }
+  return { ok: true };
 }
 
 /**

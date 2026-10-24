@@ -6,6 +6,7 @@ import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import { chatLogForSummary } from '../utils/liveMeeting';
 import {
+  deleteStoredMeetingVideo,
   formatStorageBytes,
   meetingHasStoredVideo,
   meetingVideoStatusLabel,
@@ -441,6 +442,7 @@ function parseSummaryForPdf(raw: string | null): {
  */
 export default function MeetingDetailView({ meetingId, onBack, backLabel = '회의록 목록', variant = 'page' }: Props) {
   const [meeting, setMeeting] = useState<Meeting | null>(null);
+  const [removingVideo, setRemovingVideo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryInput, setSummaryInput] = useState('');
@@ -558,6 +560,26 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       setMeeting(null);
     }
     setLoading(false);
+  };
+
+  /** 용량 옆 제거. 녹화 파일만 지우고 요약·채팅 기록은 남깁니다. */
+  const removeRecording = async () => {
+    if (!meeting || removingVideo || !meetingHasStoredVideo(meeting)) return;
+    if (!window.confirm('이 회의의 녹화 영상을 제거할까요? 요약과 회의 기록은 남습니다.')) return;
+    setRemovingVideo(true);
+    const result = await deleteStoredMeetingVideo(meeting);
+    setRemovingVideo(false);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+    setMeeting((prev) => (
+      prev
+        ? { ...prev, video_url: null, video_key: null, video_status: null, video_size_bytes: null }
+        : prev
+    ));
+    setPlaybackUrl(null);
+    setPlaybackError('');
   };
 
   const saveSummary = async () => {
@@ -983,11 +1005,23 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
               <Icon name="clock" />
               {durationLabel} ({sessionLabel})
             </span>
-            {/* 날짜 줄 오른쪽 끝 — 이 회의 영상이 차지하는 저장 공간 */}
+            {/* 날짜 줄 오른쪽 끝 — 용량과, 그 옆에서 이 녹화만 제거 */}
             <span className={a.storageStat}>
-              {typeof m.video_size_bytes === 'number' && m.video_size_bytes > 0
-                ? formatStorageBytes(m.video_size_bytes)
-                : '—'}
+              <span>
+                {typeof m.video_size_bytes === 'number' && m.video_size_bytes > 0
+                  ? formatStorageBytes(m.video_size_bytes)
+                  : '—'}
+              </span>
+              {meetingHasStoredVideo(m) && (
+                <button
+                  type="button"
+                  className={a.removeVideo}
+                  onClick={() => { void removeRecording(); }}
+                  disabled={removingVideo}
+                >
+                  {removingVideo ? '제거 중...' : '제거'}
+                </button>
+              )}
             </span>
           </div>
         </div>

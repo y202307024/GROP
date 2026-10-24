@@ -296,6 +296,7 @@ app.get('/api/live-rooms', async (_req, res) => {
         name: room.name,
         meetingId: meetingIdFromMetadata(room.metadata),
         identities,
+        numParticipants: Number(room.numParticipants) || identities.length,
       })
     }
     res.json({ rooms: active })

@@ -2,7 +2,7 @@
 import aiCheckDone from '../assets/ai-status/ai-check-done.svg';
 import aiCheckPending from '../assets/ai-status/ai-check-pending.svg';
 import docIcon from '../assets/icon-description.svg';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { addGroupMember, joinGroupByInviteCode } from '../utils/joinGroup';
@@ -10,7 +10,7 @@ import AppShell from '../components/AppShell';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
 import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingAttendeeFaces';
-import { liveParticipantCount, useLiveRooms } from '../utils/liveMeeting';
+import { liveHeadcount, liveRoomForMeeting, useLiveRooms } from '../utils/liveMeeting';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
@@ -108,6 +108,22 @@ async function loadRecentMeetings(groupIds: string[]): Promise<MeetingRow[]> {
   return (fallback.data || []) as unknown as MeetingRow[];
 }
 
+/** 진행중 방이 최근 목록 밖에 있으면 그 회의 행을 따로 읽습니다. */
+async function loadMeetingsByIds(ids: string[]): Promise<MeetingRow[]> {
+  if (ids.length === 0) return [];
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by'];
+  const base = ['id', 'title', 'date', 'summary', 'group_id'];
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const result = await supabase.from('meetings').select(columns.join(', ')).in('id', ids);
+    if (!result.error) return (result.data || []) as unknown as MeetingRow[];
+    const missing = columns.find((col) => new RegExp(`\\b${col}\\b`, 'i').test(result.error.message));
+    if (!missing || base.includes(missing)) break;
+    columns.splice(columns.indexOf(missing), 1);
+  }
+  const fallback = await supabase.from('meetings').select(base.join(', ')).in('id', ids);
+  return (fallback.data || []) as unknown as MeetingRow[];
+}
+
 function formatMeetingDate(dateStr: string) {
   const d = new Date(dateStr);
   const y = d.getFullYear();
@@ -143,6 +159,30 @@ export default function MainPage() {
   const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
   // 진행중은 AI 요약이 아니라, 그 회의 방에 아직 사람이 있는지로 판단합니다.
   const liveRooms = useLiveRooms();
+  const fetchedLiveIds = useRef(new Set<string>());
+
+  // 사람이 있는 회의가 최근 녹화 행에 가려져 있으면 그 행을 목록 앞에 붙입니다.
+  useEffect(() => {
+    const missing = liveRooms
+      .map((room) => room.meetingId)
+      .filter((id): id is string => {
+        if (!id) return false;
+        return !meetings.some((row) => row.id === id) && !fetchedLiveIds.current.has(id);
+      });
+    if (missing.length === 0) return;
+    for (const id of missing) fetchedLiveIds.current.add(id);
+    let stop = false;
+    void (async () => {
+      const rows = await loadMeetingsByIds(missing);
+      if (stop || rows.length === 0) return;
+      setMeetings((prev) => {
+        const have = new Set(prev.map((row) => row.id));
+        const extra = rows.filter((row) => !have.has(row.id));
+        return extra.length > 0 ? [...extra, ...prev] : prev;
+      });
+    })();
+    return () => { stop = true; };
+  }, [liveRooms, meetings]);
 
   useEffect(() => {
     const init = async () => {
@@ -392,11 +432,16 @@ export default function MainPage() {
                 구분선(hr)만 있었는데, 지금은 각 회의가 자기 카드를 갖습니다. */}
             <div className={styles.meetingList}>
               {/* 데이터가 없을 땐 안내 문구 없이 빈 패널만 보여주고, 회의가 생기면 행이 추가됩니다. */}
-              {meetings.slice(0, MEETING_VISIBLE).map((m) => {
-                const inRoom = liveRooms.some((room) => room.meetingId === m.id);
-                // 진행중은 지금 방 인원, 끝난 회의는 그때 들어왔던 사람 전부입니다.
+              {[...meetings].sort((a, b) => {
+                const aLive = liveRoomForMeeting(liveRooms, a, meetings) ? 1 : 0;
+                const bLive = liveRoomForMeeting(liveRooms, b, meetings) ? 1 : 0;
+                return bLive - aLive;
+              }).slice(0, MEETING_VISIBLE).map((m) => {
+                // 사람이 남아 있는 방만 진행중. 같은 그룹의 지난 녹화는 완료입니다.
+                const room = liveRoomForMeeting(liveRooms, m, meetings);
+                const inRoom = room != null;
                 const people = inRoom
-                  ? liveParticipantCount(liveRooms, m.id)
+                  ? liveHeadcount(room)
                   : meetingAttendeeCount(m, nicknameToIdByGroup.get(m.group_id));
                 return (
                 <div

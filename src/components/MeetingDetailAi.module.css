@@ -116,12 +116,30 @@
   background: #c6c6c6;
 }
 
-/* 날짜 줄 오른쪽 끝. 이 회의 영상 용량만 본문 색으로 둡니다. */
+/* 날짜 줄 오른쪽 끝. 용량과 제거 버튼을 나란히 둡니다. */
 .storageStat {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
   font-weight: var(--weight-medium);
   color: var(--color-text);
   white-space: nowrap;
+}
+
+.removeVideo {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-danger);
+  font: inherit;
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+.removeVideo:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 /* ---------------- 패널 영역 ---------------- */
