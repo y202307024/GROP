@@ -19,6 +19,9 @@ type Notice = { id: string; title: string; created_at: string
   is_pinned?: boolean;
 };
 
+/** 그룹 하나당 저장 한도. 막대는 이 값 대비 지금 쓴 용량입니다. */
+const GROUP_STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
+
 /** 첨부 목록에 적힌 파일 크기만 더합니다. 크기 없는 항목은 0으로 둡니다. */
 function attachmentBytes(raw: unknown) {
   if (!Array.isArray(raw)) return 0;
@@ -272,8 +275,29 @@ export default function GroupPage() {
           )}
           <div className={styles.storageStat}>
             <span className={styles.storageLabel}>저장 공간</span>
+            {/* 10GB 한도 대비 사용량. 아주 적어도 막대가 보이도록 사용 중이면 최소 너비를 둡니다. */}
+            <div
+              className={styles.storageTrack}
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={GROUP_STORAGE_LIMIT_BYTES}
+              aria-valuenow={storageBytes ?? 0}
+              aria-label="그룹 저장 공간"
+            >
+              <div
+                className={styles.storageFill}
+                style={{
+                  width:
+                    storageBytes == null || storageBytes <= 0
+                      ? '0%'
+                      : `${Math.min(100, Math.max((storageBytes / GROUP_STORAGE_LIMIT_BYTES) * 100, 2))}%`,
+                }}
+              />
+            </div>
             <span className={styles.storageValue}>
-              {storageBytes == null ? '—' : formatStorageBytes(storageBytes)}
+              {storageBytes == null
+                ? `— / ${formatStorageBytes(GROUP_STORAGE_LIMIT_BYTES)}`
+                : `${formatStorageBytes(storageBytes)} / ${formatStorageBytes(GROUP_STORAGE_LIMIT_BYTES)}`}
             </span>
           </div>
         </div>

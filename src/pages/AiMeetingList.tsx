@@ -101,6 +101,7 @@ export default function AiMeetingList() {
   const tabsRef = useRef<HTMLDivElement>(null);
   // 드래그로 탭을 넘긴 뒤에는 그 동작이 탭 클릭으로 이어지지 않게 구분합니다.
   const tabDragRef = useRef({ active: false, startX: 0, scrollLeft: 0, moved: false });
+  const tabDragCleanupRef = useRef<(() => void) | null>(null);
   const [tabDragging, setTabDragging] = useState(false);
 
   useEffect(() => {
@@ -118,26 +119,6 @@ export default function AiMeetingList() {
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  const onTabPointerDown = (e: PointerEvent<HTMLDivElement>) => {
-    const el = tabsRef.current;
-    if (!el || e.pointerType !== 'mouse' || e.button !== 0) return;
-    if (el.scrollWidth <= el.clientWidth) return;
-    tabDragRef.current = { active: true, startX: e.clientX, scrollLeft: el.scrollLeft, moved: false };
-    el.setPointerCapture(e.pointerId);
-  };
-
-  const onTabPointerMove = (e: PointerEvent<HTMLDivElement>) => {
-    const el = tabsRef.current;
-    const drag = tabDragRef.current;
-    if (!el || !drag.active) return;
-    const dx = (e.clientX - drag.startX) / getAppShellScale();
-    if (Math.abs(dx) > 4) {
-      drag.moved = true;
-      setTabDragging(true);
-    }
-    el.scrollLeft = drag.scrollLeft - dx;
-  };
-
   const endTabDrag = () => {
     const drag = tabDragRef.current;
     drag.active = false;
@@ -148,6 +129,40 @@ export default function AiMeetingList() {
       if (tabDragRef.current.moved === moved) tabDragRef.current.moved = false;
     }, 0);
   };
+
+  const onTabPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    const el = tabsRef.current;
+    if (!el || e.pointerType !== 'mouse' || e.button !== 0) return;
+    if (el.scrollWidth <= el.clientWidth) return;
+    // 포인터를 잡으면 클릭이 그룹 버튼까지 전달되지 않습니다. 창에서 움직임을 듣고, 4px 넘긴 뒤만 드래그로 봅니다.
+    tabDragRef.current = { active: true, startX: e.clientX, scrollLeft: el.scrollLeft, moved: false };
+
+    const onMove = (ev: globalThis.PointerEvent) => {
+      const drag = tabDragRef.current;
+      if (!drag.active) return;
+      const screenDx = ev.clientX - drag.startX;
+      if (Math.abs(screenDx) <= 4) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        setTabDragging(true);
+      }
+      el.scrollLeft = drag.scrollLeft - screenDx / getAppShellScale();
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      tabDragCleanupRef.current = null;
+      endTabDrag();
+    };
+    tabDragCleanupRef.current?.();
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    tabDragCleanupRef.current = onUp;
+  };
+
+  useEffect(() => () => tabDragCleanupRef.current?.(), []);
 
   const onTabClickCapture = (e: MouseEvent<HTMLDivElement>) => {
     if (!tabDragRef.current.moved) return;
@@ -165,9 +180,6 @@ export default function AiMeetingList() {
             ref={tabsRef}
             className={`${d.tabs} ${s.tabsScroll}${tabDragging ? ` ${s.tabsDragging}` : ''}`}
             onPointerDown={onTabPointerDown}
-            onPointerMove={onTabPointerMove}
-            onPointerUp={endTabDrag}
-            onPointerCancel={endTabDrag}
             onClickCapture={onTabClickCapture}
           >
             {groups.map((g) => (

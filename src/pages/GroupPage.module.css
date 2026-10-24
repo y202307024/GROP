@@ -317,20 +317,38 @@
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
+  align-items: stretch;
+  gap: 4px;
+  width: calc(168px * var(--gz, 1));
   padding-bottom: 2px;
 }
 
 .storageLabel {
   font-size: calc(12px * var(--gz, 1));
   color: var(--color-text-faint);
+  text-align: right;
+}
+
+/* 한도(10GB) 대비 사용량 막대. 패널 배경 위에서 구분되도록 트랙은 옅은 검정입니다. */
+.storageTrack {
+  height: calc(6px * var(--gz, 1));
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+
+.storageFill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary);
 }
 
 .storageValue {
   font-size: calc(14px * var(--gz, 1));
   font-weight: var(--weight-medium);
   color: var(--color-text);
+  text-align: right;
+  white-space: nowrap;
 }
 
 /* 그룹 편집 / 회의방으로 이동 — 높이 34px로 같게, 안쪽 좌우 여백도 같게(폭은 글자 길이에 따라).
