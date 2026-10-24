@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
-import { meetingHasStoredVideo } from '../utils/meetingVideo';
+import { isListedMeeting, meetingHasStoredVideo } from '../utils/meetingVideo';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import s from './MeetingList.module.css';
@@ -113,7 +113,11 @@ export default function MeetingList() {
           .map((row) => [row.id, row] as const),
       );
       setMeetings(
-        rows.map((m) => ({
+        rows.filter((m) => isListedMeeting({
+          id: m.id,
+          title: m.title,
+          video_status: statusById.get(m.id)?.video_status ?? null,
+        })).map((m) => ({
           id: m.id,
           title: m.title,
           date: m.date,

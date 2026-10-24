@@ -529,6 +529,67 @@ app.get('/api/meetings/storage', checkUploadToken, async (req, res) => {
   }
 })
 
+const MEETING_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function supabaseRestConfig() {
+  const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
+  const anon = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+  if (!url || !anon || !service) return null
+  return { url, anon, service }
+}
+
+/**
+ * 브라우저의 행 삭제가 막혀도, 그 그룹 멤버이면 회의 행을 지웁니다.
+ * 서비스 키로 지우기 전에 로그인과 멤버 여부를 확인합니다.
+ */
+app.delete('/api/meetings/record/:id', async (req, res) => {
+  const meetingId = String(req.params.id || '')
+  if (!MEETING_ID_RE.test(meetingId)) return res.status(400).json({ error: '회의 id가 올바르지 않습니다' })
+  const token = String(req.header('authorization') || '').replace(/^Bearer\s+/i, '')
+  if (!token) return res.status(401).json({ error: '로그인이 필요합니다' })
+  const cfg = supabaseRestConfig()
+  if (!cfg) return res.status(500).json({ error: '회의 삭제 서버 설정이 없습니다' })
+
+  try {
+    const userRes = await fetch(`${cfg.url}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${token}`, apikey: cfg.anon },
+    })
+    if (!userRes.ok) return res.status(401).json({ error: '로그인이 필요합니다' })
+    const user = await userRes.json()
+    const userId = typeof user?.id === 'string' ? user.id : ''
+    if (!MEETING_ID_RE.test(userId)) return res.status(401).json({ error: '로그인이 필요합니다' })
+
+    const admin = { apikey: cfg.service, Authorization: `Bearer ${cfg.service}` }
+    const meetingRes = await fetch(`${cfg.url}/rest/v1/meetings?id=eq.${meetingId}&select=id,group_id`, { headers: admin })
+    const meetings = await meetingRes.json()
+    const meeting = Array.isArray(meetings) ? meetings[0] : null
+    if (!meeting?.group_id) return res.status(404).json({ error: '회의를 찾지 못했습니다' })
+
+    const memberRes = await fetch(
+      `${cfg.url}/rest/v1/group_members?group_id=eq.${meeting.group_id}&user_id=eq.${userId}&select=user_id`,
+      { headers: admin },
+    )
+    const members = await memberRes.json()
+    if (!Array.isArray(members) || members.length === 0) {
+      return res.status(403).json({ error: '이 회의를 지울 권한이 없습니다' })
+    }
+
+    const deletedRes = await fetch(`${cfg.url}/rest/v1/meetings?id=eq.${meetingId}`, {
+      method: 'DELETE',
+      headers: { ...admin, Prefer: 'return=representation' },
+    })
+    const deleted = await deletedRes.json().catch(() => [])
+    if (!deletedRes.ok || !Array.isArray(deleted) || deleted.length === 0) {
+      return res.status(500).json({ error: '회의를 목록에서 지우지 못했습니다' })
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('회의 행 삭제 실패:', err.message)
+    res.status(500).json({ error: '회의를 목록에서 지우지 못했습니다' })
+  }
+})
+
 // 요약 화면의 삭제. R2 원본과 예전 디스크 파일을 지웁니다. 회의 행은 클라이언트가 비웁니다.
 app.delete('/api/meetings/video', checkUploadToken, async (req, res) => {
   const key = normalizeMeetingVideoKey(typeof req.query.key === 'string' ? req.query.key : '')

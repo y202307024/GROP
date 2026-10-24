@@ -11,7 +11,7 @@ import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
 import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingAttendeeFaces';
 import { liveHeadcount, liveRoomForMeeting, useLiveRooms } from '../utils/liveMeeting';
-import { hiddenMeetingIds } from '../utils/meetingVideo';
+import { isListedMeeting } from '../utils/meetingVideo';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
@@ -46,6 +46,7 @@ type MeetingRow = {
   attendees?: unknown;
   chat_log?: unknown;
   created_by?: string | null;
+  video_status?: string | null;
 };
 
 /**
@@ -86,9 +87,9 @@ const MAX_MEETINGS = 12;
  * 한 칸이 없다고 참석자 정보를 통째로 버리지 않습니다.
  */
 async function loadRecentMeetings(groupIds: string[]): Promise<MeetingRow[]> {
-  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by'];
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status'];
   const base = ['id', 'title', 'date', 'summary', 'group_id'];
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < columns.length; attempt += 1) {
     const result = await supabase
       .from('meetings')
       .select(columns.join(', '))
@@ -112,9 +113,9 @@ async function loadRecentMeetings(groupIds: string[]): Promise<MeetingRow[]> {
 /** 진행중 방이 최근 목록 밖에 있으면 그 회의 행을 따로 읽습니다. */
 async function loadMeetingsByIds(ids: string[]): Promise<MeetingRow[]> {
   if (ids.length === 0) return [];
-  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by'];
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status'];
   const base = ['id', 'title', 'date', 'summary', 'group_id'];
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < columns.length; attempt += 1) {
     const result = await supabase.from('meetings').select(columns.join(', ')).in('id', ids);
     if (!result.error) return (result.data || []) as unknown as MeetingRow[];
     const missing = columns.find((col) => new RegExp(`\\b${col}\\b`, 'i').test(result.error.message));
@@ -179,7 +180,7 @@ export default function MainPage() {
       if (stop || rows.length === 0) return;
       setMeetings((prev) => {
         const have = new Set(prev.map((row) => row.id));
-        const extra = rows.filter((row) => !have.has(row.id));
+        const extra = rows.filter((row) => !have.has(row.id) && isListedMeeting(row));
         return extra.length > 0 ? [...extra, ...prev] : prev;
       });
     })();
@@ -227,8 +228,7 @@ export default function MainPage() {
     }
     // 참석자 수는 attendees·채팅·저장한 사람으로 셉니다. 없는 칸만 빼고 다시 읽습니다.
     const loadedMeetings = await loadRecentMeetings(ids);
-    const hidden = hiddenMeetingIds();
-    setMeetings(loadedMeetings.filter((row) => !hidden.has(row.id)));
+    setMeetings(loadedMeetings.filter((row) => isListedMeeting(row)));
     // 카드 4장은 가입 순이 아니라, 그 그룹에서 가장 최근에 회의한 순입니다.
     const latestMeetingAt = await latestMeetingTimeByGroup(ids);
     const ranked = list
@@ -246,7 +246,7 @@ export default function MainPage() {
     // 파싱까지는 안 하고 단순 length만 씁니다 — 카드 배지용 숫자라 정확도보다 가벼움이 우선).
     const { data: statsRows } = await supabase
       .from('meetings')
-      .select('group_id, attachments')
+      .select('id, title, group_id, attachments')
       .in('group_id', ids);
     const { data: memberRows } = await supabase
       .from('group_members')
@@ -255,9 +255,10 @@ export default function MainPage() {
 
     const stats: Record<string, GroupStats> = {};
     for (const id of ids) stats[id] = { meetingCount: 0, docCount: 0, memberCount: 0 };
-    for (const row of (statsRows || []) as { group_id: string; attachments: unknown }[]) {
+    for (const row of (statsRows || []) as { id: string; title?: string | null; group_id: string; attachments: unknown }[]) {
       const s = stats[row.group_id];
-      if (!s) continue;
+      // 목록에서 뺀 회의는 카드의 회의 수에 넣지 않습니다.
+      if (!s || !isListedMeeting(row)) continue;
       s.meetingCount += 1;
       s.docCount += Array.isArray(row.attachments) ? row.attachments.length : 0;
     }

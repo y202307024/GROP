@@ -3,6 +3,7 @@ import { createScaledPortal } from '../components/AppScaleLayer';
 import { getAppShellScale } from '../hooks/useAppShellScale';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
+import { isListedMeeting } from '../utils/meetingVideo';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
@@ -259,7 +260,7 @@ export default function CalendarPage() {
         .select('id, title, date, group_id')
         .in('group_id', ids);
       if (!mounted) return;
-      setMeetings(meetingRows || []);
+      setMeetings((meetingRows || []).filter((row) => isListedMeeting(row)));
     };
 
     load();

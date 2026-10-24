@@ -6,13 +6,20 @@ import Icon from '../components/Icon';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { getAppShellScale } from '../hooks/useAppShellScale';
-import { hiddenMeetingIds } from '../utils/meetingVideo';
+import { isListedMeeting } from '../utils/meetingVideo';
 // 문서 페이지와 같은 틀(탭 줄/검색/목록/하단 요약)을 그대로 쓰려고 DocumentList의 스타일을 가져옵니다.
 import d from './DocumentList.module.css';
 import s from './AiMeetingList.module.css';
 
 type GroupRow = { id: string; name: string };
-type MeetingRow = { id: string; title: string | null; date: string; summary: string | null; group_id: string };
+type MeetingRow = {
+  id: string;
+  title: string | null;
+  date: string;
+  summary: string | null;
+  group_id: string;
+  video_status?: string | null;
+};
 
 /** '2026.09.06 10:00AM' 형식 (AI 요약 상세의 회의 목록과 같은 표기) */
 function formatMeetingDate(dateStr: string) {
@@ -59,20 +66,25 @@ export default function AiMeetingList() {
         return;
       }
 
-      const [{ data: groupRows }, { data: meetingRows }] = await Promise.all([
-        supabase.from('groups').select('id, name').in('id', ids),
-        supabase
+      const groupQuery = supabase.from('groups').select('id, name').in('id', ids);
+      const withStatus = await supabase
+        .from('meetings')
+        .select('id, title, date, summary, group_id, video_status')
+        .in('group_id', ids)
+        .order('date', { ascending: false });
+      const meetingRows = withStatus.error && /video_status/i.test(withStatus.error.message)
+        ? (await supabase
           .from('meetings')
           .select('id, title, date, summary, group_id')
           .in('group_id', ids)
-          .order('date', { ascending: false }),
-      ]);
+          .order('date', { ascending: false })).data
+        : withStatus.data;
+      const { data: groupRows } = await groupQuery;
       if (!mounted) return;
-      // 탭 순서는 가입한 순서. 방금 지운 회의는 다시 읽혀도 이 탭에 넣지 않습니다.
-      const hidden = hiddenMeetingIds();
+      // 탭 순서는 가입한 순서. 숨긴 회의와 방금 지운 회의는 이 탭에 넣지 않습니다.
       const byId = new Map((groupRows ?? []).map((g) => [g.id, g as GroupRow]));
       setGroups(ids.map((id) => byId.get(id)).filter((g): g is GroupRow => !!g));
-      setMeetings(((meetingRows ?? []) as MeetingRow[]).filter((row) => !hidden.has(row.id)));
+      setMeetings(((meetingRows ?? []) as MeetingRow[]).filter((row) => isListedMeeting(row)));
       setLoading(false);
     };
     void load();
