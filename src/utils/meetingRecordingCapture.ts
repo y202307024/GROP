@@ -40,6 +40,27 @@ function layoutRect(container: HTMLElement, target: HTMLElement): Rect {
 }
 
 /**
+ * 복제본은 flex로 남은 높이를 계산하지 못해 화이트보드가 0이 되고, 영상 아래가 검게 빕니다.
+ * 지금 화면에 잡힌 칸 크기를 복제본에 그대로 적습니다.
+ */
+function copyLayoutBox(live: Element, clone: Element) {
+  if (!(live instanceof HTMLElement) || !(clone instanceof HTMLElement)) return;
+  const w = live.offsetWidth;
+  const h = live.offsetHeight;
+  if (w > 0 && h > 0) {
+    clone.style.width = `${w}px`;
+    clone.style.height = `${h}px`;
+    clone.style.minWidth = `${w}px`;
+    clone.style.minHeight = `${h}px`;
+    clone.style.flex = 'none';
+  }
+  const liveKids = [...live.children];
+  const cloneKids = [...clone.children];
+  const count = Math.min(liveKids.length, cloneKids.length);
+  for (let i = 0; i < count; i += 1) copyLayoutBox(liveKids[i], cloneKids[i]);
+}
+
+/**
  * Chrome 화면 공유 없이 회의 UI(헤더·캔버스·컨트롤) 녹화
  * - UI는 html2canvas로 1회 캡처(배경)
  * - 필기는 canvas.captureStream으로 실시간 합성
@@ -76,19 +97,22 @@ export async function createMeetingRecordingStream(
         logging: false,
         useCORS: true,
         ignoreElements: (el) => el === canvas,
-        onclone: (doc) => {
+        onclone: (doc, cloned) => {
           const root = doc.getElementById('root');
           if (root) {
             root.style.display = 'block';
             root.style.width = '1440px';
-            root.style.height = 'auto';
+            root.style.height = '810px';
             root.style.transform = 'none';
           }
           // 복제본에 창 배율이 다시 적용되면 헤더가 프레임 위로 밀려 잘립니다.
           doc.querySelectorAll('.stage').forEach((el) => {
             if (!(el instanceof HTMLElement)) return;
             el.style.transform = 'none';
+            el.style.width = '1440px';
+            el.style.height = '810px';
           });
+          if (cloned) copyLayoutBox(container, cloned);
         },
       }),
       new Promise<null>((resolve) => {
@@ -133,6 +157,14 @@ export async function createMeetingRecordingStream(
     if (backdrop) {
       ctx.drawImage(backdrop, 0, 0, off.width, off.height);
     }
+    // 필기 캔버스는 배경이 투명해서, 비어 있으면 보드가 검게 보입니다.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(
+      canvasRect.x * scale,
+      canvasRect.y * scale,
+      canvasRect.w * scale,
+      canvasRect.h * scale,
+    );
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       ctx.drawImage(
         video,
