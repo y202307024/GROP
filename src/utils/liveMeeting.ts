@@ -91,6 +91,12 @@ export function liveIdentitiesFor(rooms: LiveRoomSnapshot[], meetingId: string) 
   return rooms.find((room) => room.meetingId === meetingId)?.identities.filter(isUserId) ?? [];
 }
 
+/** 지금 그 회의 방에 붙어 있는 사람 수. 끝난 회의의 누적 참석자와는 따로 셉니다. */
+export function liveParticipantCount(rooms: LiveRoomSnapshot[], meetingId: string) {
+  const identities = rooms.find((room) => room.meetingId === meetingId)?.identities ?? [];
+  return new Set(identities.map((id) => id.trim()).filter(Boolean)).size;
+}
+
 /**
  * 채팅에 말이 없는 참석자도 목록 아이콘에 남도록, from 만 있는 기록을 붙입니다.
  * 본문이 비어 있어 채팅 화면과 AI 요약 재료에서는 빠집니다.

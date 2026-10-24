@@ -59,6 +59,64 @@ export function attendeeUserIds(
   return ids;
 }
 
+function asList(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed : [raw];
+  } catch {
+    return [raw];
+  }
+}
+
+/**
+ * 그 회의에 들어온 사람 수.
+ * 아이콘으로 그릴 수 없는 닉네임도 한 명으로 셉니다. 같은 사람은 한 번만 셉니다.
+ */
+export function meetingAttendeeCount(
+  meeting: AttendeeSource,
+  nicknameToId?: Map<string, string>,
+): number {
+  const people = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value !== 'string') return;
+    const text = value.trim();
+    if (!text || text === '익명' || text === '참여자' || text === '나') return;
+    if (USER_ID_RE.test(text)) {
+      people.add(text.toLowerCase());
+      return;
+    }
+    const mapped = nicknameToId?.get(text);
+    people.add(mapped ? mapped.toLowerCase() : `name:${text}`);
+  };
+
+  for (const item of asList(meeting.attendees)) {
+    if (typeof item === 'string') {
+      add(item);
+      continue;
+    }
+    if (!item || typeof item !== 'object') continue;
+    const row = item as { user_id?: unknown; nickname?: unknown; name?: unknown };
+    const before = people.size;
+    add(row.user_id);
+    // id가 있으면 같은 사람의 닉네임은 다시 세지 않습니다.
+    if (people.size === before) {
+      add(row.nickname);
+      add(row.name);
+    }
+  }
+  for (const msg of asList(meeting.chat_log)) {
+    if (!msg || typeof msg !== 'object') continue;
+    const row = msg as { from?: unknown; name?: unknown };
+    const before = people.size;
+    add(row.from);
+    if (people.size === before) add(row.name);
+  }
+  if (people.size === 0) add(meeting.created_by);
+  return people.size;
+}
+
 export type GroupFaceIndex = {
   avatarByUserId: Record<string, string>;
   nicknameToIdByGroup: Map<string, Map<string, string>>;

@@ -9,8 +9,8 @@ import { addGroupMember, joinGroupByInviteCode } from '../utils/joinGroup';
 import AppShell from '../components/AppShell';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
-import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
-import { liveIdentitiesFor, useLiveRooms } from '../utils/liveMeeting';
+import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingAttendeeFaces';
+import { liveParticipantCount, useLiveRooms } from '../utils/liveMeeting';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
@@ -80,6 +80,34 @@ const SUMMARY_VISIBLE = 4;
 /** 회의를 넉넉히 가져와서, 그중 요약이 있는 것만 골라 AI 요약 4장을 채웁니다 */
 const MAX_MEETINGS = 12;
 
+/**
+ * 최근 회의. 참석자 칸이 아직 없는 DB에서는 그 칸만 빼고 다시 읽습니다.
+ * 한 칸이 없다고 참석자 정보를 통째로 버리지 않습니다.
+ */
+async function loadRecentMeetings(groupIds: string[]): Promise<MeetingRow[]> {
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by'];
+  const base = ['id', 'title', 'date', 'summary', 'group_id'];
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const result = await supabase
+      .from('meetings')
+      .select(columns.join(', '))
+      .in('group_id', groupIds)
+      .order('date', { ascending: false })
+      .limit(MAX_MEETINGS);
+    if (!result.error) return (result.data || []) as unknown as MeetingRow[];
+    const missing = columns.find((col) => new RegExp(`\\b${col}\\b`, 'i').test(result.error.message));
+    if (!missing || base.includes(missing)) break;
+    columns.splice(columns.indexOf(missing), 1);
+  }
+  const fallback = await supabase
+    .from('meetings')
+    .select(base.join(', '))
+    .in('group_id', groupIds)
+    .order('date', { ascending: false })
+    .limit(MAX_MEETINGS);
+  return (fallback.data || []) as unknown as MeetingRow[];
+}
+
 function formatMeetingDate(dateStr: string) {
   const d = new Date(dateStr);
   const y = d.getFullYear();
@@ -111,7 +139,7 @@ export default function MainPage() {
   const [joinSuccess, setJoinSuccess] = useState(false);
   const [userId, setUserId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
-  const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
+  // 닉네임으로만 남은 참석자를 user id와 겹쳐 세지 않기 위해 그룹별로 둡니다.
   const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
   // 진행중은 AI 요약이 아니라, 그 회의 방에 아직 사람이 있는지로 판단합니다.
   const liveRooms = useLiveRooms();
@@ -155,22 +183,8 @@ export default function MainPage() {
       setGroupStats({});
       return;
     }
-    // 참석자 칸은 attendees·채팅 기록·저장한 사람이 있어야 얼굴이 나옵니다. 칸이 없으면 목록만 다시 읽습니다.
-    const withPeople = await supabase
-      .from('meetings')
-      .select('id, title, date, summary, group_id, attendees, chat_log, created_by')
-      .in('group_id', ids)
-      .order('date', { ascending: false })
-      .limit(MAX_MEETINGS);
-    const meetingRows = withPeople.error && /attendees|chat_log|created_by/i.test(withPeople.error.message)
-      ? (await supabase
-          .from('meetings')
-          .select('id, title, date, summary, group_id')
-          .in('group_id', ids)
-          .order('date', { ascending: false })
-          .limit(MAX_MEETINGS)).data
-      : withPeople.data;
-    setMeetings(meetingRows || []);
+    // 참석자 수는 attendees·채팅·저장한 사람으로 셉니다. 없는 칸만 빼고 다시 읽습니다.
+    setMeetings(await loadRecentMeetings(ids));
     // 카드 4장은 가입 순이 아니라, 그 그룹에서 가장 최근에 회의한 순입니다.
     const latestMeetingAt = await latestMeetingTimeByGroup(ids);
     const ranked = list
@@ -179,7 +193,6 @@ export default function MainPage() {
       .map((row) => row.g);
     setGroups(ranked);
     const faces = await loadGroupFaceIndex(ids);
-    setAvatarByUserId(faces.avatarByUserId);
     setNicknameToIdByGroup(faces.nicknameToIdByGroup);
 
     // 그룹 카드의 "회의 N / 문서 N" 표시용 — 위 meetingRows는 최근 4건만 잘라서 가져와서
@@ -381,10 +394,10 @@ export default function MainPage() {
               {/* 데이터가 없을 땐 안내 문구 없이 빈 패널만 보여주고, 회의가 생기면 행이 추가됩니다. */}
               {meetings.slice(0, MEETING_VISIBLE).map((m) => {
                 const inRoom = liveRooms.some((room) => room.meetingId === m.id);
-                const faceIds = attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id));
-                for (const id of liveIdentitiesFor(liveRooms, m.id)) {
-                  if (!faceIds.includes(id)) faceIds.push(id);
-                }
+                // 진행중은 지금 방 인원, 끝난 회의는 그때 들어왔던 사람 전부입니다.
+                const people = inRoom
+                  ? liveParticipantCount(liveRooms, m.id)
+                  : meetingAttendeeCount(m, nicknameToIdByGroup.get(m.group_id));
                 return (
                 <div
                   key={m.id}
@@ -396,7 +409,7 @@ export default function MainPage() {
                     {inRoom ? '진행중' : '완료'}
                   </span>
                   <span className={styles.date}>{formatMeetingDate(m.date)}</span>
-                  <MeetingAttendeeFaces ids={faceIds} avatarByUserId={avatarByUserId} />
+                  <span className={styles.attendees}>{people > 0 ? `${people}명` : '—'}</span>
                   <span className={styles.aiIcon}>
                     <img src={m.summary ? aiCheckDone : aiCheckPending} alt={m.summary ? '요약 완료' : '요약 미완'} />
                   </span>
