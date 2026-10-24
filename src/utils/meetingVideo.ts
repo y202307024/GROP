@@ -31,8 +31,36 @@ export function meetingVideoStatusLabel(status: string | null | undefined): stri
   return null;
 }
 
+const HIDDEN_MEETINGS_KEY = 'grop.hiddenMeetings';
+
+/** 이번 브라우저에서 지운 회의. 목록을 다시 읽어도 그 탭에 남지 않게 합니다. */
+export function hiddenMeetingIds(): Set<string> {
+  const ids = new Set<string>();
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(HIDDEN_MEETINGS_KEY) || '[]') as unknown;
+    if (!Array.isArray(raw)) return ids;
+    for (const id of raw) {
+      if (typeof id === 'string' && id) ids.add(id);
+    }
+  } catch {
+    // 저장된 목록이 없으면 숨길 회의가 없는 것으로 봅니다.
+  }
+  return ids;
+}
+
+function rememberHiddenMeeting(id: string) {
+  const ids = hiddenMeetingIds();
+  ids.add(id);
+  try {
+    sessionStorage.setItem(HIDDEN_MEETINGS_KEY, JSON.stringify([...ids].slice(-200)));
+  } catch {
+    // 저장이 막혀도 방금 지운 응답으로 목록에서는 빼집니다.
+  }
+}
+
 /**
  * 이 회의 전체를 지웁니다. 녹화 파일이 있으면 먼저 지우고, 요약·기록 행도 삭제합니다.
+ * 삭제가 한 줄도 안 지워지면 성공으로 치지 않습니다. 그러면 그룹 탭에 회의가 남습니다.
  */
 export async function deleteMeetingRecord(meeting: {
   id: string;
@@ -43,8 +71,10 @@ export async function deleteMeetingRecord(meeting: {
     const video = await deleteStoredMeetingVideo(meeting);
     if (!video.ok) return video;
   }
-  const { error } = await supabase.from('meetings').delete().eq('id', meeting.id);
+  const { data, error } = await supabase.from('meetings').delete().eq('id', meeting.id).select('id');
   if (error) return { ok: false, error: error.message };
+  if (!data?.length) return { ok: false, error: '회의를 목록에서 지우지 못했습니다.' };
+  rememberHiddenMeeting(meeting.id);
   return { ok: true };
 }
 

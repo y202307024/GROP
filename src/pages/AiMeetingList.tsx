@@ -6,6 +6,7 @@ import Icon from '../components/Icon';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { getAppShellScale } from '../hooks/useAppShellScale';
+import { hiddenMeetingIds } from '../utils/meetingVideo';
 // 문서 페이지와 같은 틀(탭 줄/검색/목록/하단 요약)을 그대로 쓰려고 DocumentList의 스타일을 가져옵니다.
 import d from './DocumentList.module.css';
 import s from './AiMeetingList.module.css';
@@ -52,6 +53,7 @@ export default function AiMeetingList() {
       if (ids.length === 0) {
         if (mounted) {
           setGroups([]);
+          setMeetings([]);
           setLoading(false);
         }
         return;
@@ -66,15 +68,24 @@ export default function AiMeetingList() {
           .order('date', { ascending: false }),
       ]);
       if (!mounted) return;
-      // 탭 순서는 가입한 순서
+      // 탭 순서는 가입한 순서. 방금 지운 회의는 다시 읽혀도 이 탭에 넣지 않습니다.
+      const hidden = hiddenMeetingIds();
       const byId = new Map((groupRows ?? []).map((g) => [g.id, g as GroupRow]));
       setGroups(ids.map((id) => byId.get(id)).filter((g): g is GroupRow => !!g));
-      setMeetings((meetingRows ?? []) as MeetingRow[]);
+      setMeetings(((meetingRows ?? []) as MeetingRow[]).filter((row) => !hidden.has(row.id)));
       setLoading(false);
     };
     void load();
+    const onFocus = () => {
+      if (document.visibilityState === 'hidden') return;
+      void load();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
     return () => {
       mounted = false;
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
     };
   }, [navigate]);
 

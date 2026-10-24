@@ -11,6 +11,7 @@ import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
 import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingAttendeeFaces';
 import { liveHeadcount, liveRoomForMeeting, useLiveRooms } from '../utils/liveMeeting';
+import { hiddenMeetingIds } from '../utils/meetingVideo';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
@@ -225,7 +226,9 @@ export default function MainPage() {
       return;
     }
     // 참석자 수는 attendees·채팅·저장한 사람으로 셉니다. 없는 칸만 빼고 다시 읽습니다.
-    setMeetings(await loadRecentMeetings(ids));
+    const loadedMeetings = await loadRecentMeetings(ids);
+    const hidden = hiddenMeetingIds();
+    setMeetings(loadedMeetings.filter((row) => !hidden.has(row.id)));
     // 카드 4장은 가입 순이 아니라, 그 그룹에서 가장 최근에 회의한 순입니다.
     const latestMeetingAt = await latestMeetingTimeByGroup(ids);
     const ranked = list
