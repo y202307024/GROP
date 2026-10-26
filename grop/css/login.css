@@ -399,3 +399,292 @@ body {
 .signup a:hover {
     text-decoration: underline;
 }
+
+
+/* =========================================
+   로그인 페이지 시안 반영 (피그마 2048 캔버스 × 0.703 = 1440 캔버스)
+   · 회원가입 페이지도 위 전역 클래스(.field/.btn 등)를 같이 쓰므로, 아래는 전부 .login-shell 안으로만 한정합니다.
+   · 값은 피그마 값 × 0.703 (예: 36px → 25px, 입력칸 58.6px → 41px)
+========================================= */
+
+.login-shell {
+    background: var(--color-bg-soft);
+}
+
+/* ---------- 왼쪽 히어로 ---------- */
+.login-shell .hero {
+    /* 시안: GROP 글자 x 75 / y 62, 기능 카드 아래끝 → 화면 아래 80px (× 0.703) */
+    padding: 43.6px 0 56.3px 52.7px;
+    overflow: hidden;
+}
+
+/* 회의 일러스트: 시안 1396 × 624 / 왼쪽 −49 / 위 343 → 981 × 439, 왼쪽 −34, 위 241.
+   일러스트 가장자리가 배경색(#FAF8F6)보다 살짝 하얘서 상자 모양이 비치지 않게 multiply로 섞습니다. */
+.login-shell .hero-art {
+    position: absolute;
+    left: -34.4px;
+    top: 241.1px;
+    width: 981.4px;
+    height: auto;
+
+    mix-blend-mode: multiply;
+    pointer-events: none;
+    user-select: none;
+}
+
+.login-shell .hero-content,
+.login-shell .features {
+    position: relative;
+}
+
+.login-shell .brand {
+    /* 시안 100px / 줄 109px / 자간 0.05em */
+    font-size: 70.3px;
+    line-height: 76.6px;
+    letter-spacing: 0.05em;
+}
+
+.login-shell .tagline {
+    /* 시안 x 83(GROP보다 8px 안쪽) / 48px / 줄 52px / 자간 0.04em */
+    margin: -1.4px 0 0 5.7px;
+    font-size: 33.7px;
+    line-height: 36.6px;
+    letter-spacing: 0.04em;
+}
+
+.login-shell .desc {
+    /* 시안 24px / 줄 28px */
+    margin: 14.7px 0 0 5.7px;
+    font-size: 16.9px;
+    line-height: 19.7px;
+}
+
+/* 기능 카드 4개 — 시안 237 × 253, 카드 사이 51px, 시작 x 106 */
+.login-shell .features {
+    margin: auto 0 0 21.8px;
+    padding-top: 0;
+
+    grid-template-columns: repeat(4, 166.7px);
+    gap: 35.9px;
+}
+
+.login-shell .feature-card {
+    height: 177.9px;
+    box-sizing: border-box;
+
+    /* 아이콘 윗면 → 카드 위 45px */
+    padding: 31.6px 12px 0;
+    border-radius: 7px;
+
+    box-shadow: none;
+}
+
+.login-shell .feature-icon {
+    width: 40px;
+    height: 40px;
+    flex: none;
+
+    /* 시안 초록 #667C55 — 아이콘 파일의 모양만 쓰고 색은 여기서 */
+    background-color: var(--color-primary);
+    -webkit-mask: var(--icon-url) center / contain no-repeat;
+    mask: var(--icon-url) center / contain no-repeat;
+
+    /* 아이콘 → 제목 12px */
+    margin-bottom: 12px;
+}
+
+.login-shell .feature-card h3 {
+    /* 시안 20px / 줄 24px */
+    margin-bottom: 15.5px;
+    font-size: 14.06px;
+    line-height: 16.9px;
+}
+
+.login-shell .feature-card p {
+    /* 시안 16px / 줄 24px */
+    font-size: 11.25px;
+    line-height: 16.9px;
+}
+
+/* ---------- 오른쪽 로그인 패널 ---------- */
+.login-shell .login-panel {
+    /* 시안 x 1347 / y 80 / 621 × 992 (오른쪽·아래 여백 80px) */
+    flex: 0 0 436.6px;
+    max-width: none;
+    margin: 56.4px 56.4px 56.4px 0;
+    padding: 34.4px 34.9px 0;
+    border-radius: 14px;
+
+    justify-content: flex-start;
+    box-shadow: none;
+}
+
+.login-shell .login-panel h1 {
+    /* 시안 36px / 줄 42px */
+    font-size: 25.3px;
+    line-height: 29.5px;
+}
+
+.login-shell .login-panel .subtitle {
+    /* 시안 16px / 줄 19px, 제목 → 부제목 10.5px */
+    margin: 7.4px 0 34.7px;
+    font-size: 11.25px;
+    line-height: 13.4px;
+}
+
+.login-shell .field {
+    /* 입력칸 아래 → 다음 라벨 38px */
+    margin-bottom: 26.8px;
+}
+
+.login-shell .field label {
+    /* 시안 16px / 줄 19px, 라벨 → 입력칸 21px */
+    margin-bottom: 14.8px;
+    font-size: 11.25px;
+    line-height: 13.4px;
+}
+
+.login-shell .field input {
+    /* 시안 입력칸 58.64px, 글자 16px, 왼쪽 16px, 모서리 8px */
+    height: 41.2px;
+    padding: 0 11.25px;
+    border-radius: 5.6px;
+    font-size: 11.25px;
+}
+
+/* 로그인 상태 유지 / 비밀번호 찾기 — 시안 14px, 입력칸보다 양쪽 8px 안쪽 */
+.login-shell .row-between {
+    margin: 3px 0 0;
+    padding: 0 5.7px;
+}
+
+.login-shell .checkbox-label {
+    gap: 8.6px;
+    font-size: 9.84px;
+    line-height: 11.25px;
+    color: var(--color-text-muted);
+}
+
+.login-shell .checkbox-label input {
+    width: 14px;
+    height: 14px;
+    border-radius: 3.5px;
+}
+
+.login-shell .forgot-link {
+    font-size: 9.84px;
+    line-height: 11.25px;
+}
+
+/* 오류/안내 문구는 자리를 차지하지 않고 버튼 위 빈 공간(27px)에 겹쳐 보여줍니다 */
+.login-shell .login-message {
+    position: relative;
+    top: 8px;
+    height: 0;
+    min-height: 0;
+    margin: 0;
+    overflow: visible;
+    font-size: 10px;
+    line-height: 14px;
+}
+
+.login-shell .btn {
+    /* 시안 버튼 61px / 글자 20px, 모서리 8px */
+    height: 42.9px;
+    border-radius: 5.6px;
+    font-size: 14.06px;
+}
+
+.login-shell .btn-primary {
+    margin: 27.5px 0 0;
+}
+
+.login-shell .divider {
+    /* 시안 "또는" 15px, 선 220px(→ 155px) / 글자와 선 사이 약 19px, 선 색 #5E5E5E */
+    gap: 19px;
+    margin: 30px 0 38.4px;
+    font-size: 10.5px;
+    line-height: 12.6px;
+}
+
+.login-shell .divider::before,
+.login-shell .divider::after {
+    background: var(--color-text-muted);
+}
+
+.login-shell .btn-google,
+.login-shell .btn-github {
+    /* 시안 버튼 64.75px / 글자 17px */
+    height: 45.5px;
+    font-size: 11.95px;
+}
+
+.login-shell .btn-google {
+    border-color: #b5b5b5;
+    margin-bottom: 16.9px;
+    gap: 7px;
+}
+
+.login-shell .google-icon,
+.login-shell .github-icon {
+    /* 시안 26px */
+    width: 18.3px;
+    height: 18.3px;
+}
+
+.login-shell .btn-github {
+    gap: 7px;
+    margin-bottom: 46.3px;
+}
+
+.login-shell .signup {
+    /* 시안 16px / 줄 19px */
+    font-size: 11.25px;
+    line-height: 13.4px;
+}
+
+.login-shell .signup a {
+    /* 시안: 글자와 링크 사이 72px(→ 약 50px), 링크 색 #727F65 */
+    margin-left: 50.6px;
+    color: #727f65;
+}
+
+
+/* =========================================
+   창 폭에 따른 동작 (useAppShellScale + stageFluid.css 의 .fluidCanvas 와 함께 동작)
+   · 1440 이상: 1440 레이아웃을 통째로 확대 / 1200~1440: 확대 없이 왼쪽 소개 영역만 줄어듦
+   · 1200 미만: 소개 영역(일러스트·기능 카드)을 숨기고 로그인 패널만 가운데에 / 520 미만: 가로 스크롤
+   · 세로는 확대하지 않습니다 — 창이 780px보다 낮으면 페이지가 스크롤됩니다
+========================================= */
+
+.login-shell.fluidCanvas {
+    min-height: max(var(--app-h, 100vh), 780px);
+}
+
+/* 일러스트는 히어로 폭을 따라 줄고(폭 947px일 때 시안 981px), 아래에 붙어 있어서 창이 높아져도 기능 카드와 간격이 벌어지지 않습니다 */
+.login-shell .hero-art {
+    top: auto;
+    bottom: 114.3px;
+    width: calc(100% + 34.4px);
+}
+
+/* 기능 카드 4개 — 히어로가 좁아지면 카드 폭만 줄고 간격(35.9px)은 그대로 */
+.login-shell .features {
+    margin-right: 21.8px;
+    grid-template-columns: repeat(4, minmax(0, 166.7px));
+}
+
+.login-shell .login-panel {
+    flex: 0 1 436.6px;
+    min-width: 0;
+}
+
+@media (max-width: 1200px) {
+    .login-shell .hero {
+        display: none;
+    }
+
+    .login-shell .login-panel {
+        margin: 56.4px auto;
+    }
+}

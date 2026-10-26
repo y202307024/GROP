@@ -38,6 +38,20 @@
   height: 100vh;
   height: 100dvh;
 
-  overflow-x: hidden;
+  /* 가로: AppShell이 사이드바(192) + 중앙 최소 폭(760) = 952px 밑으로 창이 좁아지면 스크롤합니다
+     (예전엔 hidden으로 오른쪽을 잘라냈습니다 — 지금은 잘리는 내용도 스크롤로 볼 수 있게 auto) */
+  overflow-x: auto;
   overflow-y: auto;
+}
+
+
+/* 사이드바 없는 화면(로그인/회원가입)용 캔버스 — .app(AppShell.module.css)과 같은 규칙입니다.
+   useAppShellScale이 정하는 변수를 그대로 씁니다: 폭 --app-w(1440 이상이면 1440px을 통째로 확대, 그 아래는 100%,
+   최소 폭 미만이면 그 폭 + 가로 스크롤), 높이 --app-h. 세로는 확대/스트레치하지 않습니다. */
+.fluidCanvas {
+  width: var(--app-w, 1440px);
+  min-width: var(--app-min-w, 0);
+  min-height: var(--app-h, 100%);
+  transform: scale(var(--app-shell-scale, 1));
+  transform-origin: top left;
 }

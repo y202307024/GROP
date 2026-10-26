@@ -55,8 +55,8 @@ const navItems: { id: string; label: string; iconSrc: string; path: string }[] =
 export default function AppShell({ children, activePage = 'main' }: Props) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  // 뷰포트가 1440px보다 좁은 모니터/배율에서 사이드바·상단바가 잘리지 않도록
-  // .app을 통째로 축소합니다 (자세한 배경은 useAppShellScale.ts 참고).
+  // 창 폭에 따른 가로 규칙(1440 이상은 통째로 확대, 그 아래는 중앙만 줄고 사이드바는 고정,
+  // 952px 미만은 가로 스크롤)을 CSS 변수로 내려 줍니다 (자세한 배경은 useAppShellScale.ts 참고).
   useAppShellScale();
   const [avatar, setAvatar] = useState(DEFAULT_AVATAR_KEY);
   const [notifyOpen, setNotifyOpen] = useState(false);
@@ -138,6 +138,9 @@ export default function AppShell({ children, activePage = 'main' }: Props) {
                 </div>
                 <div className={styles.notificationList}>
                   {/* DB 연동 전까지는 화면만 보여주는 자리표시용 데이터입니다 */}
+                  {PLACEHOLDER_NOTIFICATIONS.length === 0 && (
+                    <div className={styles.notificationEmpty}>새 알림이 없어요</div>
+                  )}
                   {PLACEHOLDER_NOTIFICATIONS.map((n) => (
                     <div className={styles.notificationItem} key={n.id}>
                       <div className={styles.notificationItemTitle}>{n.title}</div>

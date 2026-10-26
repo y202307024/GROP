@@ -5,6 +5,7 @@ import CanvasBoard, { type CanvasBoardHandle } from '../CanvasBoard';
 import MeetingDrawingTools, { type MeetingDrawAction } from '../components/MeetingDrawingTools';
 import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
+import { useAppShellScale } from '../hooks/useAppShellScale';
 import { ensureGroupCanvasAccess } from '../utils/groupAccess';
 import { uploadMeetingAttachment, type MeetingChatFile } from '../utils/meetingChat';
 
@@ -16,7 +17,12 @@ const SHAPE_TOOLS: ExcalidrawTool[] = [
  * 단독 캔버스 페이지
  * 회의방과 같은 meeting.html 껍데기를 쓰되, 채팅·통화 버튼은 없습니다.
  */
+const ROOM_MIN_WIDTH = 700;
+
 export default function CanvasPage() {
+  // 회의방은 화면 폭에 맞춰 보드가 늘고 주는 유동 레이아웃입니다(1440px 이상은 통째로 확대, 최소 폭 미만은 가로 스크롤).
+  // 최소 폭 700px: 1100px 이하에서는 우측 패널이 접히므로(MeetingChatPanel.module.css) 보드 + 하단 도구만 들어갈 폭입니다. 자세한 규칙은 useAppShellScale.ts 참고.
+  useAppShellScale({ minWidth: ROOM_MIN_WIDTH });
   const navigate = useNavigate();
   const { id: groupId } = useParams();
   const [searchParams] = useSearchParams();
@@ -142,7 +148,8 @@ export default function CanvasPage() {
   }
 
   return (
-    <div className="meeting-page stage">
+    <div className="stageFluid">
+    <div className="meeting-page fluidCanvas">
       <header className={shell.meetingHeader}>
         <Link to="/main" className="logo">GROP</Link>
         <span className={shell.meetingTitle}>{groupName || '캔버스'}</span>
@@ -287,6 +294,7 @@ export default function CanvasPage() {
           </button>
         </div>
       </footer>
+    </div>
     </div>
   );
 }

@@ -3,6 +3,17 @@ import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
 import { explainAuthError, isSupabaseEnvConfigured } from '../authErrors';
 import { startOAuth } from '../utils/oauthLogin';
+import { useAppShellScale } from '../hooks/useAppShellScale';
+import signupArt from '../assets/image_signup.png';
+import googleIcon from '../assets/icon_google.svg';
+import githubIcon from '../assets/icon_github.svg';
+
+// 비밀번호 조건(시안): 8자 이상 + 영문/숫자/특수문자 중 2가지 이상 조합.
+// 화면에 안내하는 조건과 실제 검사가 달라지지 않도록 한 곳에서 같이 씁니다.
+const isPasswordValid = (pw: string) => {
+  const kinds = [/[A-Za-z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((re) => re.test(pw)).length;
+  return pw.length >= 8 && kinds >= 2;
+};
 
 /**
  * 회원가입 페이지
@@ -18,6 +29,8 @@ export default function SignUp() {
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState('');
   const navigate = useNavigate();
+  // 창 폭 규칙(1440 이상 확대 / 그 아래 유동 / 최소 폭 520px 미만 가로 스크롤) — 자세한 내용은 useAppShellScale.ts
+  useAppShellScale({ minWidth: 520 });
 
   const envOk = isSupabaseEnvConfigured();
   const isSuccess = errorText.includes('완료');
@@ -40,8 +53,8 @@ export default function SignUp() {
       setErrorText('올바른 이메일을 입력해 주세요. (예: hong@gmail.com)');
       return;
     }
-    if (password.length < 6) {
-      setErrorText('비밀번호는 6자 이상이어야 합니다.');
+    if (!isPasswordValid(password)) {
+      setErrorText('비밀번호는 8자 이상, 영문/숫자/특수문자 중 2가지 이상 조합이어야 합니다.');
       return;
     }
     if (password !== passwordConfirm) {
@@ -93,7 +106,8 @@ export default function SignUp() {
   };
 
   return (
-    <div className="signup-shell stage">
+    <div className="stageFluid">
+    <div className="signup-shell fluidCanvas">
       <section className="signup-left">
         <h1 className="brand">GROP</h1>
         <h2 className="headline">
@@ -104,6 +118,7 @@ export default function SignUp() {
           화이트보드 협업부터 AI요약, 문서화까지<br />
           GROP 하나로 스마트한 회의를 완성하세요.
         </p>
+        <img className="signup-art" src={signupArt} alt="" />
         <p className="login-footer">
           이미 계정이 있으신가요?
           <Link to="/">로그인</Link>
@@ -121,7 +136,7 @@ export default function SignUp() {
             onClick={() => startOAuth('google', { scopes: 'email profile', queryParams: { prompt: 'select_account' } })}
             disabled={loading}
           >
-            <span className="google-g">G</span>
+            <img className="google-icon" src={googleIcon} alt="" />
             Google로 회원가입
           </button>
           <button
@@ -130,6 +145,7 @@ export default function SignUp() {
             onClick={() => startOAuth('github', { scopes: 'read:user user:email' })}
             disabled={loading}
           >
+            <img className="github-icon" src={githubIcon} alt="" />
             GitHub로 회원가입
           </button>
         </div>
@@ -147,8 +163,8 @@ export default function SignUp() {
           </div>
           <div className="field">
             <label htmlFor="password">비밀번호</label>
-            <input id="password" type="password" placeholder="비밀번호를 입력하세요" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />
-            <p className={`helper${password.length > 0 && password.length < 6 ? ' is-error' : ''}`}>6자 이상 입력해주세요.</p>
+            <input id="password" type="password" placeholder="비밀번호를 입력하세요" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            <p className={`helper${password.length > 0 && !isPasswordValid(password) ? ' is-error' : ''}`}>8자 이상, 영문/숫자/특수문자 중 2가지 이상 조합</p>
           </div>
           <div className="field">
             <label htmlFor="password-confirm">비밀번호 확인</label>
@@ -161,17 +177,22 @@ export default function SignUp() {
 
           <div className="agree-row">
             <input type="checkbox" id="agree" checked={agree} onChange={(e) => setAgree(e.target.checked)} />
-            <label htmlFor="agree">서비스 이용약관 및 개인정보 처리방침에 동의합니다.</label>
+            <label htmlFor="agree">
+              서비스 <span className="terms-link">이용약관</span> 및 <span className="terms-link">개인정보 처리방침</span>에 동의합니다.
+            </label>
           </div>
 
           <p className={`signup-message${isSuccess ? ' is-success' : ''}`}>{errorText}</p>
 
           <button type="submit" className="btn btn-primary" disabled={loading}>
-            {loading ? '가입 중…' : '회원가입 완료하기'}
+            {loading ? '가입 중…' : '회원가입'}
           </button>
-          <p className="fine-print">가입하면 GROP의 이용약관 및 개인정보 처리방침에 동의하게 됩니다.</p>
+          <p className="fine-print">
+            가입하면 GROP의 <span className="terms-link">이용약관</span> 및 <span className="terms-link">개인정보 처리방침</span>에 동의하게 됩니다.
+          </p>
         </form>
       </section>
+    </div>
     </div>
   );
 }
