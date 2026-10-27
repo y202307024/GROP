@@ -178,6 +178,10 @@ export default function NoticeList() {
                   <Icon name="plus" className={s.addIcon} />
                 </div>
               )}
+              {/* 리더는 공지가 없어도 목록 화면이 보이므로, 비어 있다는 안내를 여기서 따로 보여줍니다 */}
+              {notices.length === 0 && (
+                <div className={s.emptyHint}>등록된 공지가 없어요. 위의 "새 공지 추가"로 첫 공지를 남겨보세요.</div>
+              )}
               {notices.map((n) => (
                 <div
                   key={n.id}

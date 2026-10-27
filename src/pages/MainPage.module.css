@@ -587,3 +587,63 @@
 .meetingPanel {
   padding: 0 0 20px;
 }
+
+/* 문서 목록 / 최근 AI 요약 패널이 비어 있을 때 안내 문구 — 패널 남은 공간 가운데에 놓습니다 */
+.panelEmpty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+  text-align: center;
+}
+
+/* 그룹이 없을 때 가장 왼쪽 카드 자리에 놓는 점선 칸 — 그룹 카드(.groupCard)와 같은 크기·비율이고,
+   흐리게(opacity) 보이다가 마우스를 올리면 진해집니다. 누르면 그룹 만들기/참가 모달이 열립니다. */
+.groupCardAdd {
+  flex: 0 0 calc((100% - 96px) / 4);
+  aspect-ratio: 395 / 240;
+  container-type: inline-size; /* 안의 글자·아이콘 크기를 카드 폭(cqw) 기준으로 */
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.8cqw;
+  padding: 0;
+
+  border: 2px dashed var(--color-primary);
+  border-radius: 15px;
+  background: rgba(102, 124, 85, 0.04);
+  color: var(--color-primary);
+  font-family: inherit;
+
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.groupCardAdd:hover {
+  opacity: 0.8;
+}
+.groupCardAddPlus {
+  width: 11cqw;
+  height: 11cqw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-primary);
+  border-radius: 50%;
+}
+.groupCardAddPlus svg {
+  width: 55%;
+  height: 55%;
+}
+.groupCardAddTitle {
+  font-size: max(15px, 4.6cqw);
+  font-weight: 600;
+}
+.groupCardAddDesc {
+  font-size: max(11px, 3.1cqw);
+}

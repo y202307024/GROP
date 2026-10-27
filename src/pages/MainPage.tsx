@@ -157,6 +157,8 @@ export default function MainPage() {
   const [joinSuccess, setJoinSuccess] = useState(false);
   const [userId, setUserId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  // 첫 조회가 끝나기 전엔 groups/meetings가 [] 라서 "없어요" 문구가 잠깐 번쩍이는 걸 막습니다
+  const [loaded, setLoaded] = useState(false);
   // 닉네임으로만 남은 참석자를 user id와 겹쳐 세지 않기 위해 그룹별로 둡니다.
   const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
   // 진행중은 AI 요약이 아니라, 그 회의 방에 아직 사람이 있는지로 판단합니다.
@@ -192,7 +194,8 @@ export default function MainPage() {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) { navigate('/'); return; }
       setUserId(userData.user.id);
-      fetchGroups(userData.user.id);
+      await fetchGroups(userData.user.id);
+      setLoaded(true);
     };
     init();
   }, []);
@@ -369,6 +372,17 @@ export default function MainPage() {
           <h2 className={styles.groupSectionTitle}>최근 그룹</h2>
 
           <div className={styles.groupCards}>
+            {/* 그룹이 하나도 없을 때만 가장 왼쪽 카드 자리에 점선 칸을 보여주고, 누르면 그룹 만들기/참가 모달을 엽니다.
+                그룹이 하나라도 생기면 이 칸은 사라지고 그 자리에 카드가 들어옵니다. */}
+            {loaded && groups.length === 0 && (
+              <button type="button" className={styles.groupCardAdd} onClick={() => setModalOpen(true)}>
+                <span className={styles.groupCardAddPlus}>
+                  <Icon name="plus" />
+                </span>
+                <span className={styles.groupCardAddTitle}>그룹 만들기</span>
+                <span className={styles.groupCardAddDesc}>새 그룹을 만들거나 초대 코드로 참가해요</span>
+              </button>
+            )}
             {groups.slice(0, 4).map((g) => {
               // zip 기준 — 카드가 배지(왼쪽 진한 컬러 블록)와 본문(이름/초대코드 +
               // 멤버 아이콘 + 회의·문서 수)으로 나뉩니다.
@@ -436,7 +450,8 @@ export default function MainPage() {
             {/* zip의 rectangleGroup(행 하나 = 독립된 흰 카드) 스타일로 — 예전엔 표 한 줄씩
                 구분선(hr)만 있었는데, 지금은 각 회의가 자기 카드를 갖습니다. */}
             <div className={styles.meetingList}>
-              {/* 데이터가 없을 땐 안내 문구 없이 빈 패널만 보여주고, 회의가 생기면 행이 추가됩니다. */}
+              {/* 데이터가 없을 땐 안내 문구를 보여주고, 회의가 생기면 행이 추가됩니다. */}
+              {loaded && meetings.length === 0 && <div className={styles.panelEmpty}>아직 문서가 없어요</div>}
               {[...meetings].sort((a, b) => {
                 const aLive = liveReady && liveRoomForMeeting(liveRooms, a, meetings) ? 1 : 0;
                 const bLive = liveReady && liveRoomForMeeting(liveRooms, b, meetings) ? 1 : 0;
@@ -475,6 +490,7 @@ export default function MainPage() {
 
           <section className={styles.panel}>
             <div className={styles.summaryList}>
+              {loaded && !meetings.some((m) => m.summary) && <div className={styles.panelEmpty}>아직 AI 요약이 없어요</div>}
               {meetings.filter((m) => m.summary).slice(0, SUMMARY_VISIBLE).map((m) => (
                 <div key={m.id} className={styles.summaryCard}>
                   {/* 시안의 문서 아이콘(icon-description.svg, 초록 고정색) — 임시 선형 아이콘(file-text)을 교체 */}
@@ -495,10 +511,8 @@ export default function MainPage() {
         </div>
       </div>
 
-      {/* 액션바(새 회의 생성/AI 요약/문서 작성/멤버 관리)를 뺐습니다. 다만 "새 회의
-          생성" 버튼이 아래 GroupModal(그룹 생성/참가)을 여는 유일한 진입점이었어서,
-          지금은 이 페이지에서 모달을 열 방법이 없습니다 — modalOpen 상태와
-          GroupModal 자체는 나중에 다른 곳에 다시 연결할 수 있게 그대로 남겨뒀습니다. */}
+      {/* 액션바(새 회의 생성/AI 요약/문서 작성/멤버 관리)를 뺐고, 이 모달(그룹 생성/참가)은
+          그룹이 없을 때 나타나는 점선 "그룹 만들기" 칸(위 groupCardAdd)이 엽니다. */}
       <GroupModal
         open={modalOpen}
         groupName={groupName}

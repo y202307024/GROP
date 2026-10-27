@@ -380,7 +380,10 @@ export default function GroupPage() {
               </span>
             </div>
             {notices.length === 0 ? (
-              <div className="group-preview-muted">등록된 공지가 없어요.</div>
+              // 공지가 있을 때와 같은 자리(.memberList)에 넣어야 카드 세로 길이가 같게 유지됩니다
+              <div className={styles.memberList}>
+                <div className="group-preview-muted">등록된 공지가 없어요.</div>
+              </div>
             ) : (
               <div className={styles.memberList}>
                 {/* 멤버 목록과 같은 줄 구성(아이콘 + 제목/날짜 + 화살표 + 구분선) */}

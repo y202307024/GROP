@@ -153,6 +153,11 @@
 .memberList {
   display: flex;
   flex-direction: column;
+
+  /* 멤버/공지가 몇 개든(0~4개) 카드 세로 길이가 같도록, 가장 높은 경우(공지 4줄)만큼 항상 자리를 잡아 둡니다.
+     공지 한 줄 높이 ≈ 24px + 35.2px × --gz (padding 22 + 제목·날짜 줄, 크기 배율 --gz에 따라 변함) × 4줄.
+     (replica 실측: gz 1 → 236.8px / 0.7 → 194.5px / 0.45 → 159.3px) */
+  min-height: calc(96px + 140.8px * var(--gz, 1));
 }
 
 .memberRow {

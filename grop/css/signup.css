@@ -360,3 +360,252 @@ body {
 .fine-print a:hover {
     text-decoration: underline;
 }
+
+
+/* =========================================
+   회원가입 페이지 시안 반영 (피그마 2048 캔버스 × 0.703 = 1440 캔버스)
+   · .field/.btn/.divider 등은 로그인 페이지와 같은 전역 클래스명을 쓰므로 전부 .signup-shell 안으로만 한정합니다.
+   · 값은 피그마 값 × 0.703 (예: 36px → 25.3px, 입력칸 43.88px → 30.85px)
+========================================= */
+
+/* ---------- 왼쪽 소개 영역 (시안 1165px → 819px) ---------- */
+.signup-shell .signup-left {
+    flex: 0 0 819px;
+    box-sizing: border-box;
+
+    /* 시안: GROP 글자 x 76 / y 68, 아래 문구 끝 → 화면 아래 98px */
+    padding: 47.8px 0 55.9px 53.4px;
+
+    overflow: hidden;
+}
+
+.signup-shell .brand {
+    /* 시안 60px / 줄 65px, 자간 없음 */
+    font-size: 42.2px;
+    line-height: 45.7px;
+    letter-spacing: 0;
+}
+
+.signup-shell .headline {
+    /* 시안 54px / 줄 63px, GROP 아래 10px, 왼쪽 3px 안쪽 */
+    margin: 9.8px 0 0 2.1px;
+    font-size: 38px;
+    line-height: 44.3px;
+}
+
+.signup-shell .subtext {
+    /* 시안 24px / 줄 28px */
+    margin: 9.1px 0 0 4.9px;
+    font-size: 16.9px;
+    line-height: 19.7px;
+}
+
+/* 일러스트: 시안 868 × 578, 왼쪽 156 / 위 401 → 610 × 406 */
+.signup-shell .signup-art {
+    display: block;
+    width: 610.2px;
+    height: auto;
+    flex: none;
+
+    margin: 41.5px 0 0 56.3px;
+
+    pointer-events: none;
+    user-select: none;
+}
+
+.signup-shell .login-footer {
+    /* 시안 16px / 줄 19px, 글자와 링크 사이 44px(→ 31px) */
+    padding: 0 53.4px 0 0;
+    font-size: 11.25px;
+    line-height: 13.4px;
+}
+
+.signup-shell .login-footer a {
+    margin-left: 30.9px;
+    color: #727f65;
+}
+
+/* ---------- 오른쪽 폼 영역 (시안 883px → 621px) ---------- */
+.signup-shell .signup-right {
+    flex: 1 1 0;
+    min-width: 0;
+    box-sizing: border-box;
+
+    /* 시안: 글자 x 1243(패널 왼쪽 78px), 오른쪽 79px, 제목 y 108 */
+    padding: 75.9px 55.5px 0 54.8px;
+
+    justify-content: flex-start;
+}
+
+.signup-shell .signup-right h1 {
+    /* 시안 36px / 줄 42px */
+    font-size: 25.3px;
+    line-height: 29.5px;
+}
+
+.signup-shell .signup-right .subtitle {
+    /* 시안 16px / 줄 19px, 제목 → 부제목 11px */
+    margin: 7.7px 0 0;
+    font-size: 11.25px;
+    line-height: 13.4px;
+}
+
+/* 소셜 버튼 — 시안 346 / 347 × 60, 사이 33px, 위 226 */
+.signup-shell .social-row {
+    gap: 23.2px;
+    margin: 33px 0 0;
+}
+
+.signup-shell .btn {
+    height: 42.2px;
+    border-radius: 5.6px;
+    font-size: 12.65px;
+    gap: 7px;
+}
+
+.signup-shell .btn-google {
+    border: 1px solid #b5b5b5;
+}
+
+.signup-shell .google-icon,
+.signup-shell .github-icon {
+    /* 시안 26px */
+    width: 18.3px;
+    height: 18.3px;
+}
+
+/* 구분선 — 시안 "또는" 16.875px, 선 318px(→ 223px), 글자와 선 사이 28px(→ 19.7px), 선 색 #5E5E5E */
+.signup-shell .divider {
+    gap: 19.7px;
+    margin: 21.1px 0 22.9px;
+    font-size: 11.86px;
+    line-height: 14.06px;
+}
+
+.signup-shell .divider::before,
+.signup-shell .divider::after {
+    background: var(--color-text-muted);
+}
+
+/* 입력칸 — 시안 라벨 18px / 입력칸 43.88px / 글자 16px / 모서리 8px, 칸 사이 70px */
+.signup-shell .field {
+    margin-bottom: 17.2px;
+}
+
+.signup-shell .field label {
+    margin-bottom: 7.3px;
+    font-size: 12.65px;
+    line-height: 14.8px;
+}
+
+.signup-shell .field input {
+    height: 30.85px;
+    padding: 0 11.6px;
+    border: 1px solid #b5b5b5;
+    border-radius: 5.6px;
+    font-size: 11.25px;
+}
+
+.signup-shell .field input:focus {
+    border-color: var(--color-primary);
+}
+
+.signup-shell .field input::placeholder {
+    color: var(--color-text-faint);
+}
+
+/* 비밀번호 안내 문구 — 시안 14px / 줄 17px, 입력칸 아래 5.6px, 다음 라벨까지 27px */
+.signup-shell .field .helper {
+    margin: 3.95px 0 1.8px;
+    font-size: 9.84px;
+    line-height: 11.95px;
+}
+
+/* 약관 동의 — 시안 체크박스 20px, 글자 16px, 사이 8px */
+.signup-shell .agree-row {
+    align-items: center;
+    gap: 5.6px;
+    margin: 26.8px 0 22.5px;
+    padding-left: 2.8px;
+}
+
+.signup-shell .agree-row input {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    border-width: 1px;
+    border-radius: 3.95px;
+}
+
+.signup-shell .agree-row label {
+    font-size: 11.25px;
+    line-height: 13.4px;
+}
+
+/* 오류/안내 문구 — 비어 있을 땐 자리를 차지하지 않고, 내용이 있을 때만 버튼 위에 끼어듭니다 */
+.signup-shell .signup-message {
+    min-height: 0;
+    margin: 0;
+}
+
+.signup-shell .signup-message:not(:empty) {
+    margin: -8px 0 10px;
+}
+
+.signup-shell .btn-primary {
+    /* 시안 버튼 52.87px / 글자 20px(보통 굵기) */
+    height: 37.2px;
+    margin-bottom: 12.7px;
+    font-size: 14.06px;
+    font-weight: 400;
+}
+
+.signup-shell .fine-print {
+    /* 시안 16px / 줄 19px */
+    font-size: 11.25px;
+    line-height: 13.4px;
+    color: #000000;
+}
+
+/* 약관 문구 안의 "이용약관"/"개인정보 처리방침" 강조색 (시안 #427A2A) — 약관 페이지가 아직 없어 링크 대신 글자색만 냅니다 */
+.signup-shell .terms-link {
+    color: #427a2a;
+}
+
+
+/* =========================================
+   창 폭에 따른 동작 (useAppShellScale + stageFluid.css 의 .fluidCanvas 와 함께 동작)
+   · 1440 이상: 1440 레이아웃을 통째로 확대 / 1200~1440: 확대 없이 왼쪽 소개 영역·일러스트가 비율대로 줄어듦
+   · 1200 미만: 소개 영역을 숨기고 가입 폼만 가운데에 / 520 미만: 가로 스크롤
+   · 세로는 확대하지 않습니다 — 창이 780px보다 낮으면 페이지가 스크롤됩니다
+========================================= */
+
+.signup-shell.fluidCanvas {
+    min-height: max(var(--app-h, 100vh), 780px);
+}
+
+/* 왼쪽 폭을 전체의 56.87%(= 819 ÷ 1440)로 두면 1440에서 시안과 같고, 좁아지면 비율대로 줄어듭니다.
+   일러스트도 왼쪽 안쪽 폭의 79.7%(= 610 ÷ 765.6) */
+.signup-shell .signup-left {
+    flex: 0 0 56.87%;
+}
+
+.signup-shell .signup-art {
+    width: 79.7%;
+}
+
+@media (max-width: 1200px) {
+    .signup-shell {
+        justify-content: center;
+        background: #fefefe;
+    }
+
+    .signup-shell .signup-left {
+        display: none;
+    }
+
+    .signup-shell .signup-right {
+        flex: 0 1 520px;
+        margin: 0 auto;
+    }
+}

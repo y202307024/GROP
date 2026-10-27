@@ -50,8 +50,8 @@ const navItems: { id: string; label: string; iconSrc: string; path: string }[] =
 export default function AppShell({ children, activePage = 'main' }: Props) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  // 뷰포트가 1440px보다 좁은 모니터/배율에서 사이드바·상단바가 잘리지 않도록
-  // .app을 통째로 축소합니다 (자세한 배경은 useAppShellScale.ts 참고).
+  // 창 폭에 따른 가로 규칙(1440 이상은 통째로 확대, 그 아래는 중앙만 줄고 사이드바는 고정,
+  // 952px 미만은 가로 스크롤)을 CSS 변수로 내려 줍니다 (자세한 배경은 useAppShellScale.ts 참고).
   useAppShellScale();
   const [avatar, setAvatar] = useState(cachedAvatar ?? DEFAULT_AVATAR_KEY);
   // 상단바 프로필 아이콘을 누르면 페이지 이동 없이 이 모달을 띄웁니다.

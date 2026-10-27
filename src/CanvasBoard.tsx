@@ -14,6 +14,7 @@ import BoardFilePreview from './components/BoardFilePreview';
 import { expandedFileSize, getFilePreviewKind } from './filePreviewUtils';
 import { rasterizeBoardFile } from './rasterizeBoardFile';
 import { chatFileUrl, displayFileName, formatChatFileSize, MAX_CHAT_FILE_BYTES } from './utils/meetingChat';
+import { getAppShellScale } from './hooks/useAppShellScale';
 import StickyNoteOverlay, { type PlacedSticky, type StickyEditMode } from './components/StickyNoteOverlay';
 
 const MEETING_BOARD_TOPIC = 'meeting-board';
@@ -1643,10 +1644,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const area = canvasAreaRef.current;
     if (!canvas || !area) return;
 
-    const rect = area.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    const nextWidth = Math.max(1, Math.floor(rect.width));
-    const nextHeight = Math.max(1, Math.floor(rect.height));
+    // getBoundingClientRect()는 transform: scale(회의방 확대)이 곱해진 크기라, 1440px 이상에서 캔버스가
+    // 배율만큼 더 커져 버립니다 → 배율에 영향받지 않는 clientWidth/Height(레이아웃 px)를 씁니다.
+    // 대신 확대된 화면에서도 선명하도록 픽셀 해상도(dpr)에만 배율을 곱합니다.
+    const dpr = (window.devicePixelRatio || 1) * getAppShellScale();
+    const nextWidth = Math.max(1, Math.floor(area.clientWidth));
+    const nextHeight = Math.max(1, Math.floor(area.clientHeight));
 
     const wantW = Math.floor(nextWidth * dpr);
     const wantH = Math.floor(nextHeight * dpr);
@@ -1704,7 +1707,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = (window.devicePixelRatio || 1) * getAppShellScale();
     for (const file of placedFilesRef.current) {
       if (!file.expanded) continue;
       const x = Math.max(0, Math.floor(file.x * dpr));
@@ -4166,7 +4169,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       eyedropperCallbackRef.current = null;
       setEyedropperActive(false);
       if (canvas && ctx && cb) {
-        const dpr = window.devicePixelRatio || 1;
+        const dpr = (window.devicePixelRatio || 1) * getAppShellScale();
         const x = Math.min(canvas.width - 1, Math.max(0, Math.floor(p.x * dpr)));
         const y = Math.min(canvas.height - 1, Math.max(0, Math.floor(p.y * dpr)));
         try {
@@ -4359,8 +4362,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     if (panningRef.current && panAnchorRef.current) {
-      const dx = e.clientX - panAnchorRef.current.x;
-      const dy = e.clientY - panAnchorRef.current.y;
+      // 화면 확대(scale) 안에서 움직이므로 마우스 이동량을 배율로 나눠야 손에 붙어 움직입니다.
+      const uiScale = getAppShellScale();
+      const dx = (e.clientX - panAnchorRef.current.x) / uiScale;
+      const dy = (e.clientY - panAnchorRef.current.y) / uiScale;
       panAnchorRef.current = { x: e.clientX, y: e.clientY };
       setPanOffset((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
       return;
@@ -4718,7 +4723,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         height: '100%',
         width: '100%',
         fontFamily: "'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
-        background: useGropShell ? '#ffffff' : meetingMode ? '#313338' : '#f3f4f6',
+        background: useGropShell ? '#faf8f6' : meetingMode ? '#313338' : '#f3f4f6',
         overflow: 'hidden',
       }}
     >
@@ -4905,7 +4910,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         className={cb.area}
         style={{
           position: 'relative',
-          background: '#fff',
+          // 그룹 셸(회의방/캔버스)은 시안대로 페이지 배경색(#FAF8F6)과 같은 보드 바탕을 씁니다
+          background: useGropShell ? '#faf8f6' : '#fff',
           overflow: 'hidden',
         }}
       >

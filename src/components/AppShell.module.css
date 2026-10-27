@@ -15,8 +15,11 @@
    1440px 이상이면 1이라 지금 모습 그대로입니다. */
 /* 2048 기준 확대: 폭은 항상 1440px 레이아웃으로 두고(useAppShellScale이 창 폭 ÷ 1440 만큼 scale),
    높이는 확대 후 창 높이에 맞춰 --app-h(= 창 높이 ÷ scale)로 둡니다. */
+/* 폭은 useAppShellScale이 --app-w로 정합니다: 1440 이상이면 1440px(전체를 확대), 그 아래는 100%(창 폭을 그대로 따라감),
+   사이드바 192 + 중앙 최소 760 = 952px 미만이면 952px(가로 스크롤). 사이드바는 어느 폭에서도 192px 그대로입니다. */
 .app {
-  width: 1440px;
+  width: var(--app-w, 1440px);
+  min-width: var(--app-min-w, 952px);
   min-height: var(--app-h, 100%);
   display: flex;
   transform: scale(var(--app-shell-scale, 1));
@@ -104,7 +107,9 @@
      최소 폭을 줬습니다. 이보다 창이 좁아지면 .main은 그대로 두고, 부모 .stageFluid의
      overflow-x:hidden이 넘치는 오른쪽을 스크롤바 없이 잘라냅니다(밴드 웹처럼). 각
      페이지 내부(카드 줄바꿈 등)는 이후에 필요할 때 이 패턴으로 하나씩 손보면 됩니다. */
-  min-width: 1248px;
+  /* 중앙 영역 최소 폭 760px(useAppShellScale의 MAIN_MIN_WIDTH와 같아야 함). 예전엔 1248px(= 1440 − 사이드바)이었고,
+     그 아래로는 전체를 축소했지만 지금은 축소하지 않고 이 폭에서 멈춰 가로 스크롤이 생깁니다. */
+  min-width: 760px;
 
   display: flex;
   flex-direction: column;

@@ -3,7 +3,22 @@ import { supabase } from '../supabaseClient';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { explainAuthError } from '../authErrors';
 import { startOAuth } from '../utils/oauthLogin';
-import Icon from '../components/Icon';
+import { useAppShellScale } from '../hooks/useAppShellScale';
+import heroArt from '../assets/image_login.png';
+import googleIcon from '../assets/icon_google.svg';
+import githubIcon from '../assets/icon_github.svg';
+// 기능 카드 아이콘 — 사이트 사이드바/문서 목록에서 쓰는 아이콘과 같은 파일입니다
+import iconAi from '../assets/sidebar/sidebar-ai.svg';
+import iconDoc from '../assets/icon-description.svg';
+import iconGroup from '../assets/sidebar/sidebar-group.svg';
+import iconRecord from '../assets/sidebar/sidebar-document.svg';
+
+/** 기능 카드 아이콘: 파일 모양만 마스크로 쓰고 색은 CSS(초록)가 정합니다 */
+// 따옴표로 감싸야 합니다 — 작은 svg는 빌드 시 data: 주소로 인라인되는데, 따옴표 없이 url()에 넣으면 주소 안의
+// 괄호/따옴표 때문에 깨져서 마스크가 안 먹고 아이콘이 초록 네모로 나옵니다.
+function FeatureIcon({ src }: { src: string }) {
+  return <span className="feature-icon" style={{ ['--icon-url' as string]: `url("${src}")` }} aria-hidden="true" />;
+}
 
 /**
  * 로그인 페이지
@@ -16,6 +31,8 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const navigate = useNavigate();
+  // 창 폭 규칙(1440 이상 확대 / 그 아래 유동 / 최소 폭 520px 미만 가로 스크롤) — 자세한 내용은 useAppShellScale.ts
+  useAppShellScale({ minWidth: 520 });
   const location = useLocation();
   const afterLogin = (location.state as { afterLogin?: string } | null)?.afterLogin;
 
@@ -57,8 +74,11 @@ export default function Login() {
   };
 
   return (
-    <div className="login-shell stage">
+    <div className="stageFluid">
+    <div className="login-shell fluidCanvas">
       <section className="hero">
+        {/* 왼쪽 아래 회의 일러스트 — 글자/카드 뒤에 깔립니다 */}
+        <img className="hero-art" src={heroArt} alt="" />
         <div className="hero-content">
           <h1 className="brand">GROP</h1>
           <h2 className="tagline">
@@ -73,22 +93,22 @@ export default function Login() {
 
         <div className="features">
           <div className="feature-card">
-            <Icon name="sparkles" />
+            <FeatureIcon src={iconAi} />
             <h3>AI 회의 요약</h3>
             <p>회의 내용을 AI 분석 및<br />핵심내용 요약</p>
           </div>
           <div className="feature-card">
-            <Icon name="file-text" />
+            <FeatureIcon src={iconDoc} />
             <h3>문서 자동 생성</h3>
             <p>회의록 문서<br />자동 생성</p>
           </div>
           <div className="feature-card">
-            <Icon name="users" />
+            <FeatureIcon src={iconGroup} />
             <h3>팀 협업</h3>
             <p>실시간 회의 공유</p>
           </div>
           <div className="feature-card">
-            <Icon name="file-text" />
+            <FeatureIcon src={iconRecord} />
             <h3>회의 기록 관리</h3>
             <p>모든 회의 기록<br />저장 및 관리</p>
           </div>
@@ -153,7 +173,7 @@ export default function Login() {
             onClick={() => startOAuth('google', { scopes: 'email profile', queryParams: { prompt: 'select_account' } })}
             disabled={loading}
           >
-            <span className="google-g">G</span>
+            <img className="google-icon" src={googleIcon} alt="" />
             Google로 로그인
           </button>
           <button
@@ -162,6 +182,7 @@ export default function Login() {
             onClick={() => startOAuth('github', { scopes: 'read:user user:email' })}
             disabled={loading}
           >
+            <img className="github-icon" src={githubIcon} alt="" />
             GitHub로 로그인
           </button>
 
@@ -171,6 +192,7 @@ export default function Login() {
           </p>
         </form>
       </aside>
+    </div>
     </div>
   );
 }
