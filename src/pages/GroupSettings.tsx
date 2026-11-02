@@ -34,7 +34,7 @@ export default function GroupSettings() {
 
   return (
     <AppShell activePage="setting">
-      <div className="page">
+      <div className="page fitPage">
         <div className="page-header">
           <h1>설정</h1>
         </div>

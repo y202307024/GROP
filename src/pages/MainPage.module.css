@@ -50,8 +50,12 @@
   margin-bottom: auto;
 }
 .dashboardSection.thirdsSection {
-  flex: none;
+  /* 높이는 영역의 50%가 기본이지만, 창이 낮아 위 두 블록(일정/그룹 카드)과 합쳐 영역을 넘으면 이 패널이 줄어듭니다
+     (flex-shrink: 1). 예전엔 flex: none 이라 안 줄어서 아래로 넘쳤습니다. 패널 안 목록은 자체 스크롤이라 줄어도 안전하고,
+     min-height 150px(제목 줄 + 목록 한 줄 남짓) 밑으로는 줄지 않습니다. */
+  flex: 0 1 auto;
   height: 50%;
+  min-height: 150px;
 }
 
 /* ---------------- 오늘의 일정 ---------------- */

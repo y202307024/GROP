@@ -15,6 +15,9 @@ const MAIN_MIN_WIDTH = 760;
 /** 사이드바 + 중앙 최소 폭 = AppShell 화면의 기본 최소 폭(952px) */
 const DEFAULT_MIN_APP_WIDTH = SIDEBAR_WIDTH + MAIN_MIN_WIDTH;
 
+/** AppShell 화면의 최소 높이(px) — 이보다 낮은 창에서만 세로 스크롤이 생깁니다 */
+const DEFAULT_MIN_APP_HEIGHT = 500;
+
 /** 가로 스크롤바 두께(px) — 처음 한 번만 재서 저장합니다 (오버레이 스크롤바면 0) */
 let cachedScrollbarSize: number | null = null;
 function getScrollbarSize() {
@@ -44,13 +47,18 @@ function getScrollbarSize() {
  *   --app-vw : 레이아웃 폭의 1%    → 1vw 대신 사용 (확대 구간에선 1440의 1%)
  * 마우스 좌표(clientX/clientY)는 확대 전 화면 기준이라, 레이아웃 안에 놓을 때는 getAppShellScale()로 나눠야 합니다.
  */
-export function useAppShellScale(options: { minWidth?: number } = {}) {
+export function useAppShellScale(options: { minWidth?: number; minHeight?: number } = {}) {
   // 사이드바가 없는 화면(로그인/회원가입 등)은 더 좁게 쓸 수 있도록 최소 폭을 직접 정할 수 있습니다
   const MIN_APP_WIDTH = options.minWidth ?? DEFAULT_MIN_APP_WIDTH;
+  // 레이아웃 높이가 이보다 낮아지면 그때만 세로 스크롤을 켭니다. 그 위에서는 각 페이지가 높이에 맞춰 줄어들어야 하므로
+  // 스크롤바를 아예 끕니다(소수점 오차나 1~2px 넘침으로 스크롤바가 생기는 것도 함께 막습니다).
+  const MIN_APP_HEIGHT = options.minHeight ?? DEFAULT_MIN_APP_HEIGHT;
   useLayoutEffect(() => {
     const applyScale = () => {
       const width = window.innerWidth;
-      const scale = width >= BASE_APP_WIDTH ? width / BASE_APP_WIDTH : 1;
+      // 소수 넷째 자리에서 내림: 1440 × (창 폭 ÷ 1440)이 부동소수점 때문에 창 폭보다 0.0001px 커져서
+      // 가로 스크롤바가 생기고, 그 스크롤바가 높이를 차지해 세로 스크롤까지 따라 생기던 문제를 막습니다.
+      const scale = width >= BASE_APP_WIDTH ? Math.floor((width / BASE_APP_WIDTH) * 10000) / 10000 : 1;
       const layoutWidth = width >= BASE_APP_WIDTH ? BASE_APP_WIDTH : Math.max(width, MIN_APP_WIDTH);
       const hasHScroll = width < MIN_APP_WIDTH;
       const availableHeight = window.innerHeight - (hasHScroll ? getScrollbarSize() : 0);
@@ -64,6 +72,12 @@ export function useAppShellScale(options: { minWidth?: number } = {}) {
       root.setProperty('--app-h', `${layoutHeight}px`);
       root.setProperty('--app-vh', `${layoutHeight / 100}px`);
       root.setProperty('--app-vw', `${layoutWidth / 100}px`);
+      // 진짜 최소 크기보다 작을 때만 스크롤을 켭니다 (stageFluid.css의 .stageFluid가 읽음)
+      root.setProperty('--app-ov-x', hasHScroll ? 'auto' : 'hidden');
+      root.setProperty('--app-ov-y', layoutHeight < MIN_APP_HEIGHT ? 'auto' : 'hidden');
+      // 화면이 낮을 때 장식 요소를 접기 위한 단계(CSS에서 :root[data-app-h="short"] 처럼 읽음) — 미디어쿼리는 확대 전 창 높이를
+      // 기준으로 해서, 확대 구간(1440px 이상)에서는 맞지 않으므로 확대 후 레이아웃 높이로 직접 나눕니다.
+      document.documentElement.dataset.appH = layoutHeight < 690 ? 'tiny' : layoutHeight < 760 ? 'short' : 'normal';
     };
 
     applyScale();
@@ -72,9 +86,10 @@ export function useAppShellScale(options: { minWidth?: number } = {}) {
       window.removeEventListener('resize', applyScale);
       // AppShell 밖 화면(로그인 등)에서 오래된 값이 남지 않게 지웁니다(변수 없으면 배율 1로 동작)
       const root = document.documentElement.style;
-      ['--app-shell-scale', '--app-min-w', '--app-w', '--app-h', '--app-vh', '--app-vw'].forEach((k) => root.removeProperty(k));
+      delete document.documentElement.dataset.appH;
+      ['--app-shell-scale', '--app-min-w', '--app-w', '--app-h', '--app-vh', '--app-vw', '--app-ov-x', '--app-ov-y'].forEach((k) => root.removeProperty(k));
     };
-  }, [MIN_APP_WIDTH]);
+  }, [MIN_APP_WIDTH, MIN_APP_HEIGHT]);
 }
 
 /** 현재 앱 확대 배율(창 폭 ÷ 1440, 1440 미만이면 1). AppShell 밖이면 1 */
