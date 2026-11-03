@@ -577,11 +577,11 @@ body {
    창 폭에 따른 동작 (useAppShellScale + stageFluid.css 의 .fluidCanvas 와 함께 동작)
    · 1440 이상: 1440 레이아웃을 통째로 확대 / 1200~1440: 확대 없이 왼쪽 소개 영역·일러스트가 비율대로 줄어듦
    · 1200 미만: 소개 영역을 숨기고 가입 폼만 가운데에 / 520 미만: 가로 스크롤
-   · 세로는 확대하지 않습니다 — 창이 780px보다 낮으면 페이지가 스크롤됩니다
+   · 세로는 확대하지 않습니다 — 화면이 낮아지면 가입 폼의 세로 여백이 줄고(아래), 일러스트도 접습니다
 ========================================= */
 
 .signup-shell.fluidCanvas {
-    min-height: max(var(--app-h, 100vh), 780px);
+    min-height: var(--app-h, 100vh);
 }
 
 /* 왼쪽 폭을 전체의 56.87%(= 819 ÷ 1440)로 두면 1440에서 시안과 같고, 좁아지면 비율대로 줄어듭니다.
@@ -608,4 +608,37 @@ body {
         flex: 0 1 520px;
         margin: 0 auto;
     }
+}
+
+/* =========================================
+   낮은 화면 — 가입 폼의 세로 여백을 화면 높이(--app-h)에 맞춰 줄입니다
+   · 760px 이상이면 시안 값 그대로, 560px에서 가장 작아지고(그 사이는 부드럽게), 줄이는 양 ÷ 200 이 기울기입니다.
+   · 글자·입력칸·버튼 크기는 그대로, 여백만 줄입니다.
+========================================= */
+.signup-shell .signup-right {
+    padding-top: clamp(12px, calc(12px + (var(--app-h, 100dvh) - 560px) * 0.3195), 75.9px);
+}
+
+.signup-shell .social-row {
+    margin-top: clamp(12px, calc(12px + (var(--app-h, 100dvh) - 560px) * 0.105), 33px);
+}
+
+.signup-shell .divider {
+    margin-top: clamp(8px, calc(8px + (var(--app-h, 100dvh) - 560px) * 0.0655), 21.1px);
+    margin-bottom: clamp(8px, calc(8px + (var(--app-h, 100dvh) - 560px) * 0.0745), 22.9px);
+}
+
+.signup-shell .field {
+    margin-bottom: clamp(6px, calc(6px + (var(--app-h, 100dvh) - 560px) * 0.056), 17.2px);
+}
+
+.signup-shell .agree-row {
+    margin-top: clamp(8px, calc(8px + (var(--app-h, 100dvh) - 560px) * 0.094), 26.8px);
+    margin-bottom: clamp(6px, calc(6px + (var(--app-h, 100dvh) - 560px) * 0.0825), 22.5px);
+}
+
+/* 왼쪽 소개 — 낮으면 일러스트를 접어 위(브랜드·문구)와 아래(로그인 링크)만 남깁니다 */
+:root[data-app-h="short"] .signup-shell .signup-art,
+:root[data-app-h="tiny"] .signup-shell .signup-art {
+    display: none;
 }

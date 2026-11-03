@@ -22,7 +22,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-10);
-  min-height: calc(34px * var(--gz, 1));
+  min-height: 34px;
 }
 
 /* "그룹 편집" + "회의방으로 이동" 버튼을 한 줄에 묶습니다 */
@@ -49,7 +49,7 @@
   padding: var(--space-4) var(--space-8);
   margin-bottom: var(--space-10);
 
-  font-size: calc(12px * var(--gz, 1));
+  font-size: 12px;
   color: var(--color-text);
 }
 
@@ -60,8 +60,8 @@
 }
 
 .memoIcon {
-  width: calc(16px * var(--gz, 1));
-  height: calc(16px * var(--gz, 1));
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
 
   color: var(--color-info);
@@ -110,15 +110,15 @@
 .statDivider {
   width: 1px;
   align-self: center;
-  height: calc(36px * var(--gz, 1));
+  height: 36px;
 
   background: var(--color-border-subtle);
   margin: 0 var(--space-8);
 }
 
 .statIcon {
-  width: calc(20px * var(--gz, 1));
-  height: calc(20px * var(--gz, 1));
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
 }
 
@@ -135,13 +135,13 @@
 }
 
 .statLabel {
-  font-size: calc(11px * var(--gz, 1));
+  font-size: 11px;
   color: var(--color-text-faint);
   margin-bottom: var(--space-1);
 }
 
 .statValue {
-  font-size: calc(13px * var(--gz, 1));
+  font-size: 13px;
   font-weight: var(--weight-bold);
   color: var(--color-text);
 }
@@ -154,10 +154,13 @@
   display: flex;
   flex-direction: column;
 
-  /* 멤버/공지가 몇 개든(0~4개) 카드 세로 길이가 같도록, 가장 높은 경우(공지 4줄)만큼 항상 자리를 잡아 둡니다.
-     공지 한 줄 높이 ≈ 24px + 35.2px × --gz (padding 22 + 제목·날짜 줄, 크기 배율 --gz에 따라 변함) × 4줄.
-     (replica 실측: gz 1 → 236.8px / 0.7 → 194.5px / 0.45 → 159.3px) */
-  min-height: calc(96px + 140.8px * var(--gz, 1));
+  /* 카드가 남는 높이를 채우므로(.previewGrid / .previewCard) 목록은 카드 안에서 남는 만큼만 차지하고,
+     항목이 많아 넘치면 목록 안에서만 스크롤됩니다. 멤버/공지가 몇 개든 카드 세로 길이는 같습니다. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
 }
 
 .memberRow {
@@ -176,12 +179,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 
-  font-size: calc(12px * var(--gz, 1));
+  font-size: 12px;
   color: var(--color-text);
 }
 
 .roleBadge {
-  font-size: calc(10px * var(--gz, 1));
+  font-size: 10px;
   font-weight: var(--weight-bold);
 
   background: var(--color-primary-tint);
@@ -192,8 +195,8 @@
 }
 
 .memberChevron {
-  width: calc(14px * var(--gz, 1));
-  height: calc(14px * var(--gz, 1));
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
 
   color: var(--color-text-faint);
@@ -213,8 +216,8 @@
 }
 
 .noticeIcon {
-  width: calc(18px * var(--gz, 1));
-  height: calc(18px * var(--gz, 1));
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
 
   color: var(--color-text-faint);
@@ -226,7 +229,7 @@
 }
 
 .noticeTitle {
-  font-size: calc(12px * var(--gz, 1));
+  font-size: 12px;
   color: var(--color-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -234,7 +237,7 @@
 }
 
 .noticeDate {
-  font-size: calc(10px * var(--gz, 1));
+  font-size: 10px;
   color: var(--color-text-faint);
   margin-top: 2px;
 }
@@ -255,7 +258,7 @@
 }
 
 .createdDate {
-  font-size: calc(12px * var(--gz, 1));
+  font-size: 12px;
   color: var(--color-text-faint);
   white-space: nowrap;
   line-height: 34px;
@@ -364,10 +367,10 @@
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  height: calc(34px * var(--gz, 1));
-  padding: 0 calc(20px * var(--gz, 1));
-  border-radius: calc(8px * var(--gz, 1));
-  font-size: calc(13px * var(--gz, 1));
+  height: 34px;
+  padding: 0 20px;
+  border-radius: 8px;
+  font-size: 13px;
   font-weight: var(--weight-medium);
   white-space: nowrap;
   /* 회의방 버튼의 전역 그림자 제거 */
@@ -403,7 +406,7 @@
 /* 아바타 28px + 간격 14px */
 .memberRow::after {
   /* 아바타 28px(축소 반영) + 간격 14px */
-  left: calc(28px * var(--gz, 1) + 14px);
+  left: calc(28px + 14px);
 }
 
 /* 리더 배지(없으면 이름) 뒤 → 화살표 간격 */
@@ -424,7 +427,7 @@
 /* 아이콘 18px + 간격 10px + 추가 9px */
 .noticeRow::after {
   /* 아이콘 18px(축소 반영) + 간격 10px + 추가 9px */
-  left: calc(18px * var(--gz, 1) + 19px);
+  left: calc(18px + 19px);
 }
 
 .noticeIcon {
@@ -442,22 +445,7 @@
   padding-bottom: 28px;
 }
 
-/* =========================================
-   [화면이 낮을 때 글자/아이콘/버튼 크기만 줄이는 배율 --gz]
-   · 가로세로 여백(padding/margin/gap)은 작업 전 값 그대로 두고, 글자·아이콘·아바타·버튼 크기에만 --gz(1 이하)를 곱합니다.
-   · --gz = (남는 높이 − 크기 0일 때 내용 높이) ÷ (크기 1일 때와 0일 때 내용 높이 차). 화면이 충분하면 1(작업 전 크기 그대로).
-   · 나눗셈(길이÷길이)을 지원하지 않는 오래된 브라우저에서는 1로 남아 크기가 그대로입니다(@supports) */
-:global(.page).pageFit {
-  --gz: 1;
-}
-
-@supports (width: calc(1px * (4px / 2px))) {
-  :global(.page).pageFit {
-    --gz: clamp(0.45, calc((var(--app-h, 100dvh) - 122px - 441px) / 262px), 1);
-  }
-}
-
-/* 전역(group-detail.css) 크기도 같은 배율로 — 전역 클래스(하나)보다 우선하도록 클래스 두 개로 씁니다 */
+/* 전역(group-detail.css) 크기 — 전역 클래스(하나)보다 우선하도록 클래스 두 개로 씁니다 */
 /* 이름 줄(.nameRow)이 오른쪽 끝까지 펴져야 버튼이 오른쪽에 붙습니다 */
 .heroPanel :global(.group-detail-identity) {
   flex: 1;
@@ -465,49 +453,112 @@
 }
 
 .heroPanel :global(.group-detail-avatar) {
-  width: calc(76px * var(--gz, 1));
-  height: calc(76px * var(--gz, 1));
-  border-radius: calc(18px * var(--gz, 1));
-  font-size: calc(28px * var(--gz, 1));
+  width: 76px;
+  height: 76px;
+  border-radius: 18px;
+  font-size: 28px;
 }
 
 .heroPanel :global(.group-detail-name) {
-  font-size: calc(20px * var(--gz, 1));
+  font-size: 20px;
 }
 
 .heroPanel :global(.group-detail-invite) {
-  font-size: calc(12px * var(--gz, 1));
+  font-size: 12px;
 }
 
 .heroPanel :global(.group-invite-copy-button) {
-  width: calc(20px * var(--gz, 1));
-  height: calc(20px * var(--gz, 1));
+  width: 20px;
+  height: 20px;
 }
 
 .heroPanel :global(.group-invite-copy-button svg) {
-  width: calc(11px * var(--gz, 1));
-  height: calc(11px * var(--gz, 1));
+  width: 11px;
+  height: 11px;
 }
 
 .heroPanel :global(.group-detail-member-summary) {
-  font-size: calc(12.5px * var(--gz, 1));
+  font-size: 12.5px;
 }
 
 .heroPanel :global(.mini-avatar),
 .previewCard :global(.mini-avatar) {
-  width: calc(28px * var(--gz, 1));
-  height: calc(28px * var(--gz, 1));
-  font-size: calc(11px * var(--gz, 1));
+  width: 28px;
+  height: 28px;
+  font-size: 11px;
 }
 
 .previewCard :global(.group-preview-header) {
-  font-size: calc(13px * var(--gz, 1));
+  font-size: 13px;
 }
 
 .previewCard :global(.group-preview-link) {
-  font-size: calc(11px * var(--gz, 1));
+  font-size: 11px;
 }
 
 .previewCard :global(.group-preview-muted) {
-  font-size: calc(12px * var(--gz, 1));
+  font-size: 12px;
+}
+
+/* =========================================
+   세로 레이아웃 — 위쪽(그룹 정보·통계)은 자기 높이만 차지하고, 멤버/공지 카드 줄이 남는 높이를 전부 채웁니다.
+   예전에는 낮은 화면에서 글자·아이콘 크기를 배율(--gz)로 줄였는데, 지금은 글자 크기는 그대로 두고
+   카드가 줄어듭니다(목록은 카드 안에서만 스크롤).
+========================================= */
+.previewGrid {
+  flex: 1;
+  /* 카드 제목 줄 + 목록 두 줄(약 120px)은 보이도록 하는 바닥 — 이보다 낮아지면 페이지 안에서 스크롤됩니다 */
+  min-height: 120px;
+  /* 행 높이를 칸 높이에 고정해야 카드 안 목록이 늘어나지 않고 스크롤됩니다 */
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.previewCard {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.previewCard :global(.group-preview-header) {
+  flex: none;
+}
+
+/* =========================================
+   낮은 화면에서 위쪽 세로 여백만 줄이기
+   · 글자 크기는 그대로 두고, 세로 여백(padding/margin)과 큰 그림(아바타)만 화면 높이(--app-h)에 따라 줄입니다.
+   · 화면이 700px 이상이면 원래 값 그대로, 560px 이하에서 가장 작아지고(그 사이는 부드럽게 변함), 그 아래로는
+     페이지 안 스크롤이 생깁니다. 700 − 560 = 140px 구간에서 줄이는 양을 나눠 갖는 기울기(= 줄이는 양 ÷ 140)를 씁니다.
+   · 원래 값 = 최대값(clamp 세 번째 인자)이라 높은 화면에서는 이전 모습과 같습니다.
+========================================= */
+:global(.page).pageFit {
+  /* 위 48 → 16 / 아래 28 → 12 */
+  padding-top: clamp(16px, calc(16px + (var(--app-h, 100dvh) - 560px) * 0.2286), 48px);
+  padding-bottom: clamp(12px, calc(12px + (var(--app-h, 100dvh) - 560px) * 0.1143), 28px);
+}
+
+/* 구분선 아래 20 → 10 */
+.topRow {
+  margin-bottom: clamp(10px, calc(10px + (var(--app-h, 100dvh) - 560px) * 0.0714), 20px);
+}
+
+/* 패널 아래 18 → 10, 안쪽 위 10 → 6 / 아래 20 → 10 */
+.heroPanel {
+  margin-bottom: clamp(10px, calc(10px + (var(--app-h, 100dvh) - 560px) * 0.0571), 18px);
+  padding-top: clamp(6px, calc(6px + (var(--app-h, 100dvh) - 560px) * 0.0286), 10px);
+  padding-bottom: clamp(10px, calc(10px + (var(--app-h, 100dvh) - 560px) * 0.0714), 20px);
+}
+
+/* 그룹 아바타 76 → 56 (글자 28 → 22) */
+.heroPanel :global(.group-detail-avatar) {
+  width: clamp(56px, calc(56px + (var(--app-h, 100dvh) - 560px) * 0.1429), 76px);
+  height: clamp(56px, calc(56px + (var(--app-h, 100dvh) - 560px) * 0.1429), 76px);
+  border-radius: clamp(14px, calc(14px + (var(--app-h, 100dvh) - 560px) * 0.0286), 18px);
+  font-size: clamp(22px, calc(22px + (var(--app-h, 100dvh) - 560px) * 0.0429), 28px);
+}
+
+/* 통계 카드 위아래 안쪽 16 → 10, 아래 바깥 16 → 10 */
+.statsCard {
+  padding-top: clamp(10px, calc(10px + (var(--app-h, 100dvh) - 560px) * 0.0429), 16px);
+  padding-bottom: clamp(10px, calc(10px + (var(--app-h, 100dvh) - 560px) * 0.0429), 16px);
+  margin-bottom: clamp(10px, calc(10px + (var(--app-h, 100dvh) - 560px) * 0.0429), 16px);
 }

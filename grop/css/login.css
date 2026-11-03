@@ -654,11 +654,11 @@ body {
    창 폭에 따른 동작 (useAppShellScale + stageFluid.css 의 .fluidCanvas 와 함께 동작)
    · 1440 이상: 1440 레이아웃을 통째로 확대 / 1200~1440: 확대 없이 왼쪽 소개 영역만 줄어듦
    · 1200 미만: 소개 영역(일러스트·기능 카드)을 숨기고 로그인 패널만 가운데에 / 520 미만: 가로 스크롤
-   · 세로는 확대하지 않습니다 — 창이 780px보다 낮으면 페이지가 스크롤됩니다
+   · 세로는 확대하지 않습니다 — 화면이 낮아지면 세로 여백이 줄고(아래), 760px 미만이면 소개 카드, 690px 미만이면 일러스트도 접습니다
 ========================================= */
 
 .login-shell.fluidCanvas {
-    min-height: max(var(--app-h, 100vh), 780px);
+    min-height: var(--app-h, 100vh);
 }
 
 /* 일러스트는 히어로 폭을 따라 줄고(폭 947px일 때 시안 981px), 아래에 붙어 있어서 창이 높아져도 기능 카드와 간격이 벌어지지 않습니다 */
@@ -687,4 +687,50 @@ body {
     .login-shell .login-panel {
         margin: 56.4px auto;
     }
+}
+
+/* =========================================
+   낮은 화면 — 로그인 패널의 세로 여백을 화면 높이(--app-h)에 맞춰 줄입니다
+   · 760px 이상이면 시안 값 그대로, 560px에서 가장 작아지고(그 사이는 부드럽게), 줄이는 양 ÷ 200 이 기울기입니다.
+   · 글자·버튼 크기는 그대로, 여백만 줄입니다.
+========================================= */
+.login-shell .login-panel {
+    margin-top: clamp(16px, calc(16px + (var(--app-h, 100dvh) - 560px) * 0.202), 56.4px);
+    margin-bottom: clamp(16px, calc(16px + (var(--app-h, 100dvh) - 560px) * 0.202), 56.4px);
+    padding-top: clamp(16px, calc(16px + (var(--app-h, 100dvh) - 560px) * 0.092), 34.4px);
+}
+
+.login-shell .login-panel .subtitle {
+    margin-bottom: clamp(18px, calc(18px + (var(--app-h, 100dvh) - 560px) * 0.0835), 34.7px);
+}
+
+.login-shell .field {
+    margin-bottom: clamp(14px, calc(14px + (var(--app-h, 100dvh) - 560px) * 0.064), 26.8px);
+}
+
+.login-shell .btn-primary {
+    margin-top: clamp(14px, calc(14px + (var(--app-h, 100dvh) - 560px) * 0.0675), 27.5px);
+}
+
+.login-shell .divider {
+    margin-top: clamp(14px, calc(14px + (var(--app-h, 100dvh) - 560px) * 0.08), 30px);
+    margin-bottom: clamp(16px, calc(16px + (var(--app-h, 100dvh) - 560px) * 0.112), 38.4px);
+}
+
+.login-shell .btn-github {
+    margin-bottom: clamp(16px, calc(16px + (var(--app-h, 100dvh) - 560px) * 0.1515), 46.3px);
+}
+
+/* 왼쪽 소개 영역 — 낮으면 기능 카드(4개)를 접고 일러스트를 아래 끝에 붙이며, 더 낮으면 일러스트도 접습니다 */
+:root[data-app-h="short"] .login-shell .features,
+:root[data-app-h="tiny"] .login-shell .features {
+    display: none;
+}
+
+:root[data-app-h="short"] .login-shell .hero-art {
+    bottom: 56.3px;
+}
+
+:root[data-app-h="tiny"] .login-shell .hero-art {
+    display: none;
 }

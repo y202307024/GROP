@@ -32,7 +32,7 @@ export default function Login() {
   const [message, setMessage] = useState('');
   const navigate = useNavigate();
   // 창 폭 규칙(1440 이상 확대 / 그 아래 유동 / 최소 폭 520px 미만 가로 스크롤) — 자세한 내용은 useAppShellScale.ts
-  useAppShellScale({ minWidth: 520 });
+  useAppShellScale({ minWidth: 520, minHeight: 560 });
   const location = useLocation();
   const afterLogin = (location.state as { afterLogin?: string } | null)?.afterLogin;
 

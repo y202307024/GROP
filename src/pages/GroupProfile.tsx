@@ -132,14 +132,14 @@ export default function GroupProfile() {
   if (loading) {
     return (
       <AppShell activePage="setting">
-        <div className="page">불러오는 중...</div>
+        <div className="page fitPage">불러오는 중...</div>
       </AppShell>
     );
   }
 
   return (
     <AppShell activePage="setting">
-      <div className="page">
+      <div className="page fitPage">
         <div className="profile-modal">
           <div className="profile-modal-header">
             <h2>프로필 수정</h2>

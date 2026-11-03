@@ -140,7 +140,7 @@ export default function TimelapsePage() {
 
   return (
     <AppShell activePage="document">
-      <div className="page">
+      <div className="page fitPage">
         <div className="page-header">
           <h1>타임랩스</h1>
           <button type="button" className="primary-button" onClick={() => navigate(boardId ? `/canvas?boardId=${boardId}` : '/canvas')}>

@@ -38,10 +38,10 @@
   height: 100vh;
   height: 100dvh;
 
-  /* 가로: AppShell이 사이드바(192) + 중앙 최소 폭(760) = 952px 밑으로 창이 좁아지면 스크롤합니다
-     (예전엔 hidden으로 오른쪽을 잘라냈습니다 — 지금은 잘리는 내용도 스크롤로 볼 수 있게 auto) */
-  overflow-x: auto;
-  overflow-y: auto;
+  /* 기본은 스크롤 없음(hidden) — 창이 진짜 최소 크기(가로 952px 등, 세로 500px)보다 작을 때만 useAppShellScale이
+     --app-ov-x / --app-ov-y 를 auto 로 바꿔 스크롤을 켭니다. 그 위 크기에서는 페이지들이 높이에 맞춰 스스로 줄어듭니다. */
+  overflow-x: var(--app-ov-x, hidden);
+  overflow-y: var(--app-ov-y, hidden);
 }
 
 
@@ -54,4 +54,14 @@
   min-height: var(--app-h, 100%);
   transform: scale(var(--app-shell-scale, 1));
   transform-origin: top left;
+}
+
+/* 높이를 따로 정하지 않는 페이지(그룹 설정/프로필, 타임랩스)용 — 공용 .page 의 height:100% 는
+   바깥 .app 에 정해진 높이가 없어 계산되지 않고, 내용만큼 계속 늘어나 화면 전체가 스크롤됐습니다.
+   다른 페이지들과 똑같이 화면 높이 − 122px(.main 위 패딩 28 + 상단바 28 + 간격 26 + 아래 패딩 40)로 고정하고,
+   내용이 넘치면 공용 .page 의 overflow-y: auto 로 페이지 안에서만 스크롤됩니다.
+   전역 .page(클래스 하나)보다 우선하도록 클래스 두 개로 씁니다. */
+.page.fitPage {
+  height: calc(var(--app-h, 100dvh) - 122px);
+  min-height: 0;
 }

@@ -940,7 +940,7 @@ const ROOM_MIN_WIDTH = 700;
 export default function Room() {
   // 회의방은 화면 폭에 맞춰 보드가 늘고 주는 유동 레이아웃입니다(1440px 이상은 통째로 확대, 최소 폭 미만은 가로 스크롤).
   // 최소 폭 700px: 1100px 이하에서는 우측 패널이 화면에서 빠지므로(MeetingChatPanel.module.css) 보드 + 하단 도구만 들어갈 폭입니다. 자세한 규칙은 useAppShellScale.ts 참고.
-  useAppShellScale({ minWidth: ROOM_MIN_WIDTH });
+  useAppShellScale({ minWidth: ROOM_MIN_WIDTH, minHeight: 560 });
   const { id } = useParams();
   const navigate = useNavigate();
   // 개발 전용 미리보기: `npm run dev` 중에 주소 뒤에 ?preview=1 을 붙이면(예: /room/test?preview=1)
