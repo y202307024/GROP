@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { createScaledPortal } from '../components/AppScaleLayer';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
+import { uniqueMembersByUserId } from '../utils/joinGroup';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 // 멤버 페이지와 같은 틀(상단 줄/카드/스크롤 영역/하단 요약)을 그대로 쓰려고 MemberList의 스타일을 가져옵니다.
@@ -73,7 +74,7 @@ export default function NoticeList() {
 
       const { data: memberRows } = await supabase.rpc('get_group_members_with_profiles', { p_group_id: groupId });
       setMembers(
-        ((memberRows as { user_id: string; nickname: string }[] | null) ?? []).map((r) => ({
+        uniqueMembersByUserId((memberRows as { user_id: string; nickname: string }[] | null) ?? []).map((r) => ({
           user_id: r.user_id,
           nickname: r.nickname || '알 수 없음',
         })),
@@ -176,6 +177,10 @@ export default function NoticeList() {
                   <span className={s.addLabel}>새 공지 추가</span>
                   <Icon name="plus" className={s.addIcon} />
                 </div>
+              )}
+              {/* 리더는 공지가 없어도 목록 화면이 보이므로, 비어 있다는 안내를 여기서 따로 보여줍니다 */}
+              {notices.length === 0 && (
+                <div className={s.emptyHint}>등록된 공지가 없어요. 위의 “새 공지 추가”로 첫 공지를 남겨보세요.</div>
               )}
               {notices.map((n) => (
                 <div

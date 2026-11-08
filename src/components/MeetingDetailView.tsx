@@ -6,6 +6,8 @@ import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
 import { chatLogForSummary } from '../utils/liveMeeting';
 import {
+  deleteMeetingRecord,
+  formatStorageBytes,
   meetingHasStoredVideo,
   meetingVideoStatusLabel,
   primeWebmSeeking,
@@ -30,6 +32,8 @@ type Meeting = {
   video_key?: string | null;
   /** pending_upload | uploaded | backed_up | failed */
   video_status?: string | null;
+  /** 이 회의 영상 파일 크기(바이트). 없으면 용량 칸은 — 로 둡니다. */
+  video_size_bytes?: number | null;
   group_id: string;
   created_at?: string | null;
   chapters?: unknown;
@@ -438,6 +442,7 @@ function parseSummaryForPdf(raw: string | null): {
  */
 export default function MeetingDetailView({ meetingId, onBack, backLabel = '회의록 목록', variant = 'page' }: Props) {
   const [meeting, setMeeting] = useState<Meeting | null>(null);
+  const [removingVideo, setRemovingVideo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryInput, setSummaryInput] = useState('');
@@ -555,6 +560,20 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       setMeeting(null);
     }
     setLoading(false);
+  };
+
+  /** 용량 옆 제거. 이 회의 탭(요약·영상·기록)을 통째로 지우고 목록으로 돌아갑니다. */
+  const removeRecording = async () => {
+    if (!meeting || removingVideo) return;
+    if (!window.confirm('이 회의를 삭제할까요? 요약, 영상, 회의 기록이 함께 지워집니다.')) return;
+    setRemovingVideo(true);
+    const result = await deleteMeetingRecord(meeting);
+    if (!result.ok) {
+      setRemovingVideo(false);
+      window.alert(result.error);
+      return;
+    }
+    onBack?.();
   };
 
   const saveSummary = async () => {
@@ -832,6 +851,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     const hasTranscript = !!m.transcript?.trim();
     const memberNames = nicknames.length > 0 ? nicknames : attendeeNames(m);
     const videoStatusLabel = meetingVideoStatusLabel(m.video_status);
+    // R2 녹화는 video_url 없이 video_key만 있습니다. 둘 중 하나만 있어도 재생합니다.
+    const hasVideoFile = meetingHasStoredVideo(m);
     // 회의 시간은 방 체류 시간이 아니라 녹화 길이입니다.
     const recordingSec = duration > 0 ? duration : Number(m.recording_seconds) || 0;
     const durationLabel = recordingSec > 0 ? formatMinutesDuring(recordingSec * 1000) : '—';
@@ -978,6 +999,24 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
               <Icon name="clock" />
               {durationLabel} ({sessionLabel})
             </span>
+            {/* 날짜 줄 오른쪽 끝 — 이 회의 영상 용량. 그 옆 제거는 회의 전체를 지웁니다. */}
+            <span className={a.storageStat}>
+              <span>
+                {Number(m.video_size_bytes) > 0
+                  ? formatStorageBytes(Number(m.video_size_bytes))
+                  : '—'}
+              </span>
+              {meeting && (
+                <button
+                  type="button"
+                  className={a.removeVideo}
+                  onClick={() => { void removeRecording(); }}
+                  disabled={removingVideo}
+                >
+                  {removingVideo ? '제거 중...' : '제거'}
+                </button>
+              )}
+            </span>
           </div>
         </div>
 
@@ -1087,7 +1126,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                     )
                   ) : (
                     <p className={`${a.paragraph} ${a.muted}`}>
-                      아무 내용이 없습니다.{m.video_url ? ' 왼쪽 “AI 회의 요약”에서 생성을 누르면 요약이 만들어져요.' : ''}
+                      아무 내용이 없습니다.{hasVideoFile ? ' 왼쪽 “AI 회의 요약”에서 생성을 누르면 요약이 만들어져요.' : ''}
                     </p>
                   )}
                 </div>
@@ -1121,7 +1160,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
           /* =============== 회의 영상 탭 =============== */
           <div className={`${a.grid} ${a.gridVideo}`}>
             <section className={`${a.panel} ${a.videoPanel}`}>
-              {m.video_url && playbackUrl ? (
+              {hasVideoFile && playbackUrl ? (
                 <video
                   ref={videoRef}
                   key={playbackUrl}
@@ -1135,7 +1174,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                 />
               ) : (
                 <div className={`${a.video} ${a.videoEmpty}`}>
-                  {m.video_url ? playbackError || videoStatusLabel || '녹화 파일 불러오는 중...' : '녹화 파일이 없어요'}
+                  {hasVideoFile ? playbackError || videoStatusLabel || '녹화 파일 불러오는 중...' : '녹화 파일이 없어요'}
                 </div>
               )}
 
@@ -1378,7 +1417,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <div style={{ fontSize: 15, fontWeight: 600 }}>🤖 AI 회의록</div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {meeting.video_url && !aiLoading && (
+            {meetingHasStoredVideo(meeting) && !aiLoading && (
               <button onClick={generateAiSummary}
                 style={{ fontSize: 12, padding: '5px 12px', background: '#1D9E75', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
                 ✨ AI 요약 생성
@@ -1439,7 +1478,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
             <div style={{ fontSize: 28, marginBottom: 8 }}>🤖</div>
             <div style={{ fontSize: 14 }}>아무 내용이 없습니다</div>
             <div style={{ fontSize: 12, marginTop: 4 }}>
-              {meeting.video_url
+              {meetingHasStoredVideo(meeting)
                 ? '✨ AI 요약 생성 버튼을 누르면 요약이 만들어집니다.'
                 : '파일만 올린 문서이거나, 아직 녹화가 없어요.'}
             </div>

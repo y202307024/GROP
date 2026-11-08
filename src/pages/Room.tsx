@@ -65,6 +65,7 @@ import {
   isSecureMediaContext,
   localhostAppUrl,
 } from '../utils/microphoneAccess';
+import { useAppShellScale } from '../hooks/useAppShellScale';
 import { isNoneDevice, loadVoiceSettings, subscribeVoiceSettings, syncMicrophoneSetting, voiceCaptureOptions } from '../utils/voiceSettings';
 
 type RecordingSyncHandle = {
@@ -802,11 +803,6 @@ function RoomContent({
         onResume={onResumeRecording}
       />
       <RoomRecordingBridge bridgeRef={recordingBridgeRef} />
-      {(isRecording || savingRecording) ? (
-        <div className={styles.meetingRecordingBanner}>
-          {savingRecording ? '회의록 저장 중...' : '회의 화면 녹화 중...'}
-        </div>
-      ) : null}
       <main className={`${shell.meetingMain} ${styles.roomMain}`}>
         <div className={`${shell.whiteboard} ${styles.roomWhiteboard}`}>
           <CanvasBoard
@@ -939,7 +935,12 @@ function RoomContent({
   );
 }
 
+const ROOM_MIN_WIDTH = 700;
+
 export default function Room() {
+  // 회의방은 화면 폭에 맞춰 보드가 늘고 주는 유동 레이아웃입니다(1440px 이상은 통째로 확대, 최소 폭 미만은 가로 스크롤).
+  // 최소 폭 700px: 1100px 이하에서는 우측 패널이 화면에서 빠지므로(MeetingChatPanel.module.css) 보드 + 하단 도구만 들어갈 폭입니다. 자세한 규칙은 useAppShellScale.ts 참고.
+  useAppShellScale({ minWidth: ROOM_MIN_WIDTH, minHeight: 560 });
   const { id } = useParams();
   const navigate = useNavigate();
   // 개발 전용 미리보기: `npm run dev` 중에 주소 뒤에 ?preview=1 을 붙이면(예: /room/test?preview=1)
@@ -1235,7 +1236,9 @@ export default function Room() {
           activeRecordingIdRef.current = null;
           void deleteLocalRecording(recordingId);
         }
-        remember(fallback.meetingId);
+        // 이미 영상이 있는 회의 행은 그대로 두고, 이번 녹화만 새 행으로 남깁니다.
+        if (!fallback.extraRecording || !sessionMeetingIdRef.current) remember(fallback.meetingId);
+        else rememberLastMeeting(fallback.meetingId);
         await saveSessionMeta(fallback.meetingId);
         return { ok: true, meetingId: fallback.meetingId };
       }
@@ -1256,7 +1259,9 @@ export default function Room() {
       activeRecordingIdRef.current = null;
       clearActiveRecording(recordingId);
       if (result.meetingId && !result.alreadyDone) {
-        remember(result.meetingId);
+        // 추가 녹화는 세션 회의 행을 바꾸지 않습니다. 바꾸면 다음 녹화가 방금 만든 영상을 다시 덮습니다.
+        if (!result.extraRecording || !sessionMeetingIdRef.current) remember(result.meetingId);
+        else rememberLastMeeting(result.meetingId);
         await saveSessionMeta(result.meetingId);
       }
       return { ok: true, meetingId: result.meetingId, alreadyDone: result.alreadyDone };
@@ -1480,10 +1485,20 @@ export default function Room() {
       recorderMimeRef.current = mimeType || 'video/webm';
 
       let mediaRecorder: MediaRecorder;
+      // 화면 글자와 필기가 뭉개지지 않게 5Mbps로 인코딩합니다. 브라우저가 거절하면 기본값으로 돌립니다.
+      const recorderOptions: MediaRecorderOptions = {
+        ...(mimeType ? { mimeType } : {}),
+        videoBitsPerSecond: 5_000_000,
+        audioBitsPerSecond: 128_000,
+      };
       try {
-        mediaRecorder = new MediaRecorder(combined, mimeType ? { mimeType } : undefined);
+        mediaRecorder = new MediaRecorder(combined, recorderOptions);
       } catch {
-        mediaRecorder = new MediaRecorder(combined);
+        try {
+          mediaRecorder = new MediaRecorder(combined, mimeType ? { mimeType } : undefined);
+        } catch {
+          mediaRecorder = new MediaRecorder(combined);
+        }
         recorderMimeRef.current = mediaRecorder.mimeType || 'video/webm';
       }
 
@@ -1717,7 +1732,8 @@ export default function Room() {
   }
 
   return (
-    <div className={`meeting-page stage ${styles.roomPage}`}>
+    <div className="stageFluid">
+    <div className={`meeting-page fluidCanvas ${styles.roomPage}`}>
       <LiveKitRoom
         token={token}
         serverUrl={import.meta.env.VITE_LIVEKIT_URL}
@@ -1739,6 +1755,12 @@ export default function Room() {
           style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}
         >
           <MicInsecureBanner />
+          {/* 녹화 안내는 GROP 로고 바로 윗줄에 둡니다. */}
+          {(isRecording || savingRecording) ? (
+            <div className={styles.meetingRecordingBanner}>
+              {savingRecording ? '회의록 저장 중...' : '회의 화면 녹화 중...'}
+            </div>
+          ) : null}
           <RoomTopHeader isRecording={isRecording} openedAtRef={roomOpenedAtRef} groupId={id} />
           <ParticipantCountTracker countRef={participantCountRef} />
           <MeetingAttendeesTracker attendeeIdsRef={attendeeIdsRef} />
@@ -1781,6 +1803,7 @@ export default function Room() {
           />
         </div>
       </LiveKitRoom>
+    </div>
     </div>
   );
 }

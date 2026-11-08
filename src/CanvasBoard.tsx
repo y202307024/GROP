@@ -14,6 +14,7 @@ import BoardFilePreview from './components/BoardFilePreview';
 import { expandedFileSize, getFilePreviewKind } from './filePreviewUtils';
 import { rasterizeBoardFile } from './rasterizeBoardFile';
 import { chatFileUrl, displayFileName, formatChatFileSize, MAX_CHAT_FILE_BYTES } from './utils/meetingChat';
+import { getAppShellScale } from './hooks/useAppShellScale';
 import StickyNoteOverlay, { type PlacedSticky, type StickyEditMode } from './components/StickyNoteOverlay';
 
 const MEETING_BOARD_TOPIC = 'meeting-board';
@@ -1075,6 +1076,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const room = useMaybeRoomContext();
   const localParticipant = room?.localParticipant;
   const [showInitChoice, setShowInitChoice] = useState(false);
+  /** 최초 선택에서 새 보드를 고르면, 만들기 전에 이름을 받습니다. */
+  const [askNewBoardName, setAskNewBoardName] = useState(false);
+  const [newBoardName, setNewBoardName] = useState('');
+  const newBoardNameRef = useRef<HTMLInputElement>(null);
   const initChoiceHandledRef = useRef(false);
   const latestBoardSelectionRef = useRef<MeetingBoardMessage | null>(null);
 
@@ -1177,11 +1182,21 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   }, [room, room?.state, room?.remoteParticipants.size, meetingMode]);
 
   useEffect(() => {
-    if (!showInitChoice) return;
+    if (!showInitChoice) {
+      setAskNewBoardName(false);
+      return;
+    }
     clearAllLocal();
     setBoardId('');
     setBoardTitle('새 보드');
+    setAskNewBoardName(false);
+    setNewBoardName('');
   }, [showInitChoice]);
+
+  useEffect(() => {
+    if (!askNewBoardName) return;
+    newBoardNameRef.current?.focus();
+  }, [askNewBoardName]);
 
   // LiveKit으로 보드 선택 정보를 주고받는 영역입니다.
   // 다른 참가자에게 현재 선택된 보드를 알려주고, 누가 새로 들어오거나 다시 들어와도
@@ -1337,18 +1352,33 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, meetingMode, localParticipant?.identity]);
 
-  // 초기 선택창에서 '새 보드 생성'을 눌렀을 때 실행되는 함수입니다.
-  // 새 보드를 데이터베이스에 만들고, 그 보드 ID를 현재 캔버스에 연결합니다.
-  const handleCreateNewBoardChoice = async () => {
+  /** 최초 선택에서 새 보드를 고르면 이름 입력 창을 엽니다. */
+  const openNewBoardNamePrompt = () => {
     if (!canChangeBoard) {
       alert('보드 변경 권한이 없습니다.');
       return;
     }
+    setNewBoardName('');
+    setAskNewBoardName(true);
+  };
+
+  // 초기 선택창에서 이름을 정한 뒤 실행됩니다.
+  // 새 보드를 데이터베이스에 만들고, 그 보드 ID를 현재 캔버스에 연결합니다.
+  const handleCreateNewBoardChoice = async (rawTitle: string) => {
+    if (!canChangeBoard) {
+      alert('보드 변경 권한이 없습니다.');
+      return;
+    }
+    const chosen = rawTitle.trim() || '새 보드';
+    boardTitleRef.current = chosen;
+    setBoardTitle(chosen);
     setShowInitChoice(false);
+    setAskNewBoardName(false);
     initChoiceHandledRef.current = true;
     markMeetingBoardReady();
     try {
-      const title = isGroupCanvas ? `${GROUP_BOARD_TITLE_PREFIX}${groupId ?? ''}${Date.now()}` : '새 보드';
+      // 사용자가 적은 이름을 그대로 저장합니다. group_id 가 있으면 그룹 보드 목록에도 나옵니다.
+      const title = chosen;
       // group_id 를 함께 넣어야 그룹 보드 목록(fetchGroupBoards)에 나타나 늦게 온 참가자 목록에도 보입니다.
       const insertPayload: { title: string; group_id?: string } = { title };
       if (isGroupCanvas && groupId) insertPayload.group_id = groupId;
@@ -1614,10 +1644,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const area = canvasAreaRef.current;
     if (!canvas || !area) return;
 
-    const rect = area.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    const nextWidth = Math.max(1, Math.floor(rect.width));
-    const nextHeight = Math.max(1, Math.floor(rect.height));
+    // getBoundingClientRect()는 transform: scale(회의방 확대)이 곱해진 크기라, 1440px 이상에서 캔버스가
+    // 배율만큼 더 커져 버립니다 → 배율에 영향받지 않는 clientWidth/Height(레이아웃 px)를 씁니다.
+    // 대신 확대된 화면에서도 선명하도록 픽셀 해상도(dpr)에만 배율을 곱합니다.
+    const dpr = (window.devicePixelRatio || 1) * getAppShellScale();
+    const nextWidth = Math.max(1, Math.floor(area.clientWidth));
+    const nextHeight = Math.max(1, Math.floor(area.clientHeight));
 
     const wantW = Math.floor(nextWidth * dpr);
     const wantH = Math.floor(nextHeight * dpr);
@@ -1675,7 +1707,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const canvas = canvasRef.current;
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = (window.devicePixelRatio || 1) * getAppShellScale();
     for (const file of placedFilesRef.current) {
       if (!file.expanded) continue;
       const x = Math.max(0, Math.floor(file.x * dpr));
@@ -2020,7 +2052,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       return;
     }
 
-    const title = boardTitle.trim() || (isGroupCanvas ? `${groupName || '그룹'} 보드` : '새 보드');
+    // 이름 창에서 방금 적은 값은 state보다 ref가 먼저 갱신됩니다.
+    const title = boardTitleRef.current.trim() || (isGroupCanvas ? `${groupName || '그룹'} 보드` : '새 보드');
     const insertPayload: { title: string; group_id?: string } = { title };
     if (isGroupCanvas && groupId) insertPayload.group_id = groupId;
 
@@ -4136,7 +4169,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       eyedropperCallbackRef.current = null;
       setEyedropperActive(false);
       if (canvas && ctx && cb) {
-        const dpr = window.devicePixelRatio || 1;
+        const dpr = (window.devicePixelRatio || 1) * getAppShellScale();
         const x = Math.min(canvas.width - 1, Math.max(0, Math.floor(p.x * dpr)));
         const y = Math.min(canvas.height - 1, Math.max(0, Math.floor(p.y * dpr)));
         try {
@@ -4329,8 +4362,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     if (panningRef.current && panAnchorRef.current) {
-      const dx = e.clientX - panAnchorRef.current.x;
-      const dy = e.clientY - panAnchorRef.current.y;
+      // 화면 확대(scale) 안에서 움직이므로 마우스 이동량을 배율로 나눠야 손에 붙어 움직입니다.
+      const uiScale = getAppShellScale();
+      const dx = (e.clientX - panAnchorRef.current.x) / uiScale;
+      const dy = (e.clientY - panAnchorRef.current.y) / uiScale;
       panAnchorRef.current = { x: e.clientX, y: e.clientY };
       setPanOffset((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
       return;
@@ -4688,7 +4723,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         height: '100%',
         width: '100%',
         fontFamily: "'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
-        background: useGropShell ? '#ffffff' : meetingMode ? '#313338' : '#f3f4f6',
+        background: useGropShell ? '#faf8f6' : meetingMode ? '#313338' : '#f3f4f6',
         overflow: 'hidden',
       }}
     >
@@ -4875,7 +4910,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         className={cb.area}
         style={{
           position: 'relative',
-          background: '#fff',
+          // 그룹 셸(회의방/캔버스)은 시안대로 페이지 배경색(#FAF8F6)과 같은 보드 바탕을 씁니다
+          background: useGropShell ? '#faf8f6' : '#fff',
           overflow: 'hidden',
         }}
       >
@@ -5560,7 +5596,65 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
             }}
           >
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>새 보드 생성 또는 기존 보드 불러오기</div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>
+              {askNewBoardName ? '새 보드 이름' : '새 보드 생성 또는 기존 보드 불러오기'}
+            </div>
+            {askNewBoardName ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void handleCreateNewBoardChoice(newBoardName);
+                }}
+              >
+                <div style={{ fontSize: 13, color: meetingMode ? '#c7c9cc' : '#374151', marginBottom: 10 }}>
+                  이 회의에서 쓸 보드 이름을 입력하세요.
+                </div>
+                <input
+                  ref={newBoardNameRef}
+                  value={newBoardName}
+                  onChange={(e) => setNewBoardName(e.target.value)}
+                  placeholder="새 보드"
+                  maxLength={40}
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    padding: '8px 10px',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: 6,
+                    background: meetingMode ? '#313338' : 'white',
+                    color: meetingMode ? '#dbdee1' : '#111827',
+                  }}
+                />
+                <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'flex-end' }}>
+                  <button
+                    type="button"
+                    onClick={() => setAskNewBoardName(false)}
+                    style={{
+                      padding: '8px 12px',
+                      border: '1px solid #e5e7eb',
+                      background: meetingMode ? '#313338' : 'white',
+                      color: meetingMode ? '#dbdee1' : '#111827',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    뒤로
+                  </button>
+                  <button
+                    type="submit"
+                    style={{
+                      padding: '8px 12px',
+                      border: 'none',
+                      background: '#111827',
+                      color: 'white',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    만들기
+                  </button>
+                </div>
+              </form>
+            ) : (
+            <>
             <div style={{ fontSize: 13, color: meetingMode ? '#c7c9cc' : '#374151' }}>
               {canChangeBoard
                 ? '원하는 작업을 선택하세요.'
@@ -5583,7 +5677,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               </button>
               <button
                 type="button"
-                onClick={handleCreateNewBoardChoice}
+                onClick={openNewBoardNamePrompt}
                 disabled={!canChangeBoard}
                 style={{
                   padding: '8px 12px',
@@ -5597,6 +5691,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 새 보드 생성
               </button>
             </div>
+            </>
+            )}
           </div>
         </div>
       ) : null}

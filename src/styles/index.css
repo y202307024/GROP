@@ -45,26 +45,21 @@
 
 /* AppShell(사이드바 있는 화면 껍데기)은 더 이상 이 .stage(고정 1440x810 + transform:
    scale) 시스템을 쓰지 않습니다 — 대신 stageFluid.css의 .stageFluid를 씁니다
-   (AppShell.tsx/AppShell.module.css, src/styles/stageFluid.css 참고). 로그인/회의
-   화면은 아직 이 .stage 시스템을 그대로 쓰고 있어서 .login-shell/.signup-shell/
-   .meeting-page는 남겨뒀습니다. */
-.login-shell.stage,
-.signup-shell.stage,
-.meeting-page.stage {
-  min-height: 100%;
-  height: 100%;
-}
-
-.meeting-page.stage {
+   (AppShell.tsx/AppShell.module.css, src/styles/stageFluid.css 참고). 로그인/회원가입/회의
+   화면도 모두 .stageFluid 로 옮겨서, .stage 시스템은 더 이상 쓰는 화면이 없습니다.
+   주의: 높이를 `height: 100%`로 주면 transform: scale이 한 번 더 곱해져 위아래가 잘립니다 —
+   그래서 높이는 항상 useAppShellScale이 이미 배율로 나눠 둔 --app-h 를 씁니다. */
+/* 회의/캔버스도 이제 .stageFluid + .fluidCanvas 를 씁니다(로그인과 같은 방식). 세로는 늘리거나 확대하지 않고
+   창 높이(--app-h)에 맞춰 보드가 남는 높이를 채우며, 너무 낮아지면(560px 미만) 세로 스크롤합니다. */
+.meeting-page.fluidCanvas {
   display: flex;
   flex-direction: column;
-  /* .stage가 이제 고정 900px를 화면 비율에 맞춰 스케일하므로, 실제 뷰포트 높이(100vh)를
-     그대로 강제하면 스케일된 캔버스보다 커져 버립니다. height:100%만 씁니다. */
-  height: 100%;
+  height: var(--app-h, 100%);
+  min-height: 560px;
 }
 
-.meeting-page.stage > [data-lk-theme],
-.meeting-page.stage > div {
+.meeting-page.fluidCanvas > [data-lk-theme],
+.meeting-page.fluidCanvas > div {
   flex: 1;
   min-height: 0;
   display: flex;

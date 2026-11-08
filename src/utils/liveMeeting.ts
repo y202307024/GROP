@@ -47,6 +47,8 @@ export type LiveRoomSnapshot = {
   name: string;
   meetingId: string | null;
   identities: string[];
+  /** 서버가 센 방 인원. 참가자 id를 못 읽어도 진행중 인원으로 씁니다. */
+  numParticipants?: number;
 };
 
 /** 지금 사람이 있는 LiveKit 방. meetingId 가 목록에서 진행중으로 보일 행입니다. */
@@ -60,21 +62,28 @@ export async function fetchLiveRooms(): Promise<LiveRoomSnapshot[]> {
       name: String(room.name || ''),
       meetingId: typeof room.meetingId === 'string' && isUserId(room.meetingId) ? room.meetingId : null,
       identities: Array.isArray(room.identities) ? room.identities.filter((id) => typeof id === 'string') : [],
+      numParticipants: Number(room.numParticipants) > 0 ? Number(room.numParticipants) : undefined,
     }));
   } catch {
     return [];
   }
 }
 
-/** 목록이 열려 있는 동안 방 인원을 다시 읽어 진행중/완료를 맞춥니다. */
+/**
+ * 목록이 열려 있는 동안 방 인원을 다시 읽습니다.
+ * ready 전에는 방이 비어 있어 진행중 회의가 완료로 보였다가 바뀌므로, 첫 응답 뒤에만 상태를 그립니다.
+ */
 export function useLiveRooms() {
   const [rooms, setRooms] = useState<LiveRoomSnapshot[]>([]);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let stop = false;
     const tick = async () => {
       const next = await fetchLiveRooms();
-      if (!stop) setRooms(next);
+      if (stop) return;
+      setRooms(next);
+      setReady(true);
     };
     void tick();
     const id = window.setInterval(tick, 4000);
@@ -84,11 +93,35 @@ export function useLiveRooms() {
     };
   }, []);
 
-  return rooms;
+  return { rooms, ready };
 }
 
 export function liveIdentitiesFor(rooms: LiveRoomSnapshot[], meetingId: string) {
   return rooms.find((room) => room.meetingId === meetingId)?.identities.filter(isUserId) ?? [];
+}
+
+/** 지금 그 방에 붙어 있는 사람 수. id 목록이 비어도 서버가 센 인원을 씁니다. */
+export function liveHeadcount(room: LiveRoomSnapshot) {
+  const ids = new Set(room.identities.map((id) => id.trim()).filter(Boolean));
+  return Math.max(ids.size, room.numParticipants ?? 0);
+}
+
+/**
+ * 이 회의 행이 지금 사람이 있는 방인지.
+ * 방 이름은 그룹 id입니다. 녹화가 새 행을 만들어도, 사람이 있는 그 회의만 진행중입니다.
+ */
+export function liveRoomForMeeting(
+  rooms: LiveRoomSnapshot[],
+  meeting: { id: string; group_id: string },
+  meetingsNewestFirst: { id: string; group_id: string }[],
+): LiveRoomSnapshot | null {
+  const byId = rooms.find((room) => room.meetingId === meeting.id);
+  if (byId) return byId;
+  const byGroup = rooms.find((room) => room.name === meeting.group_id);
+  if (!byGroup || (byGroup.meetingId && byGroup.meetingId !== meeting.id)) return null;
+  // 방에 회의 id가 없으면, 그 그룹에서 가장 최근 행만 진행중으로 봅니다.
+  const newest = meetingsNewestFirst.find((row) => row.group_id === meeting.group_id);
+  return newest?.id === meeting.id ? byGroup : null;
 }
 
 /**

@@ -152,6 +152,18 @@
   }
   .attendees svg{ width:18px; height:18px; margin-left:-6px; stroke-width:1.5; color:var(--gray-text); }
   .attendees svg:first-child{ margin-left:0; }
+  /* 진행 중 참석자처럼 img로 그릴 때 원본 크기 그대로 늘어나 칸 밖으로 튀지 않게 합니다 */
+  .attendees img{
+    width:18px;
+    height:18px;
+    margin-left:-6px;
+    box-sizing:border-box;
+    border:1.5px solid #fff;
+    border-radius:50%;
+    object-fit:cover;
+    background:#e6f4e8;
+  }
+  .attendees img:first-child{ margin-left:0; }
 
   .ai-icon{ display:flex; justify-content:center; }
   .ai-icon svg{ width:16px; height:16px; stroke-width:2; color:var(--done-text); }

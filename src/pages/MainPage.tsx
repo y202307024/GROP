@@ -2,15 +2,16 @@
 import aiCheckDone from '../assets/ai-status/ai-check-done.svg';
 import aiCheckPending from '../assets/ai-status/ai-check-pending.svg';
 import docIcon from '../assets/icon-description.svg';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { addGroupMember, joinGroupByInviteCode } from '../utils/joinGroup';
 import AppShell from '../components/AppShell';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
-import MeetingAttendeeFaces, { attendeeUserIds, loadGroupFaceIndex } from '../components/MeetingAttendeeFaces';
-import { liveIdentitiesFor, useLiveRooms } from '../utils/liveMeeting';
+import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingAttendeeFaces';
+import { liveHeadcount, liveRoomForMeeting, useLiveRooms } from '../utils/liveMeeting';
+import { isListedMeeting } from '../utils/meetingVideo';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
@@ -45,13 +46,85 @@ type MeetingRow = {
   attendees?: unknown;
   chat_log?: unknown;
   created_by?: string | null;
+  video_status?: string | null;
 };
+
+/**
+ * 그룹마다 마지막 회의 시각. date는 회의가 만들어진 시각이고,
+ * started_at·ended_at은 방에 들어온 뒤 갱신되므로 그 중 가장 늦은 시각을 씁니다.
+ */
+async function latestMeetingTimeByGroup(ids: string[]) {
+  const withTimes = await supabase
+    .from('meetings')
+    .select('group_id, date, started_at, ended_at')
+    .in('group_id', ids);
+  const rows = withTimes.error && /started_at|ended_at/i.test(withTimes.error.message)
+    ? (await supabase.from('meetings').select('group_id, date').in('group_id', ids)).data
+    : withTimes.data;
+  const latest = new Map<string, number>();
+  for (const row of (rows ?? []) as { group_id?: string; date?: string | null; started_at?: string | null; ended_at?: string | null }[]) {
+    if (!row.group_id) continue;
+    const at = Math.max(
+      0,
+      ...[row.date, row.started_at, row.ended_at].map((value) => {
+        const time = value ? new Date(value).getTime() : 0;
+        return Number.isFinite(time) ? time : 0;
+      }),
+    );
+    if (at > (latest.get(row.group_id) ?? 0)) latest.set(row.group_id, at);
+  }
+  return latest;
+}
 
 /** 하단 패널에 보여줄 카드 수 — 회의 목록 5장, 최근 AI 요약 4장. 카드 높이는 패널 높이를 이 수로 나눠 가집니다 */
 const MEETING_VISIBLE = 5;
 const SUMMARY_VISIBLE = 4;
 /** 회의를 넉넉히 가져와서, 그중 요약이 있는 것만 골라 AI 요약 4장을 채웁니다 */
 const MAX_MEETINGS = 12;
+
+/**
+ * 최근 회의. 참석자 칸이 아직 없는 DB에서는 그 칸만 빼고 다시 읽습니다.
+ * 한 칸이 없다고 참석자 정보를 통째로 버리지 않습니다.
+ */
+async function loadRecentMeetings(groupIds: string[]): Promise<MeetingRow[]> {
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status'];
+  const base = ['id', 'title', 'date', 'summary', 'group_id'];
+  for (let attempt = 0; attempt < columns.length; attempt += 1) {
+    const result = await supabase
+      .from('meetings')
+      .select(columns.join(', '))
+      .in('group_id', groupIds)
+      .order('date', { ascending: false })
+      .limit(MAX_MEETINGS);
+    if (!result.error) return (result.data || []) as unknown as MeetingRow[];
+    const missing = columns.find((col) => new RegExp(`\\b${col}\\b`, 'i').test(result.error.message));
+    if (!missing || base.includes(missing)) break;
+    columns.splice(columns.indexOf(missing), 1);
+  }
+  const fallback = await supabase
+    .from('meetings')
+    .select(base.join(', '))
+    .in('group_id', groupIds)
+    .order('date', { ascending: false })
+    .limit(MAX_MEETINGS);
+  return (fallback.data || []) as unknown as MeetingRow[];
+}
+
+/** 진행중 방이 최근 목록 밖에 있으면 그 회의 행을 따로 읽습니다. */
+async function loadMeetingsByIds(ids: string[]): Promise<MeetingRow[]> {
+  if (ids.length === 0) return [];
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status'];
+  const base = ['id', 'title', 'date', 'summary', 'group_id'];
+  for (let attempt = 0; attempt < columns.length; attempt += 1) {
+    const result = await supabase.from('meetings').select(columns.join(', ')).in('id', ids);
+    if (!result.error) return (result.data || []) as unknown as MeetingRow[];
+    const missing = columns.find((col) => new RegExp(`\\b${col}\\b`, 'i').test(result.error.message));
+    if (!missing || base.includes(missing)) break;
+    columns.splice(columns.indexOf(missing), 1);
+  }
+  const fallback = await supabase.from('meetings').select(base.join(', ')).in('id', ids);
+  return (fallback.data || []) as unknown as MeetingRow[];
+}
 
 function formatMeetingDate(dateStr: string) {
   const d = new Date(dateStr);
@@ -84,17 +157,45 @@ export default function MainPage() {
   const [joinSuccess, setJoinSuccess] = useState(false);
   const [userId, setUserId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
-  const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
+  // 첫 조회가 끝나기 전엔 groups/meetings가 [] 라서 "없어요" 문구가 잠깐 번쩍이는 걸 막습니다
+  const [loaded, setLoaded] = useState(false);
+  // 닉네임으로만 남은 참석자를 user id와 겹쳐 세지 않기 위해 그룹별로 둡니다.
   const [nicknameToIdByGroup, setNicknameToIdByGroup] = useState<Map<string, Map<string, string>>>(() => new Map());
   // 진행중은 AI 요약이 아니라, 그 회의 방에 아직 사람이 있는지로 판단합니다.
-  const liveRooms = useLiveRooms();
+  // ready 전에는 목록을 그리지 않아, 진행중 회의가 완료로 잠깐 보이지 않습니다.
+  const { rooms: liveRooms, ready: liveReady } = useLiveRooms();
+  const fetchedLiveIds = useRef(new Set<string>());
+
+  // 사람이 있는 회의가 최근 녹화 행에 가려져 있으면 그 행을 목록 앞에 붙입니다.
+  useEffect(() => {
+    const missing = liveRooms
+      .map((room) => room.meetingId)
+      .filter((id): id is string => {
+        if (!id) return false;
+        return !meetings.some((row) => row.id === id) && !fetchedLiveIds.current.has(id);
+      });
+    if (missing.length === 0) return;
+    for (const id of missing) fetchedLiveIds.current.add(id);
+    let stop = false;
+    void (async () => {
+      const rows = await loadMeetingsByIds(missing);
+      if (stop || rows.length === 0) return;
+      setMeetings((prev) => {
+        const have = new Set(prev.map((row) => row.id));
+        const extra = rows.filter((row) => !have.has(row.id) && isListedMeeting(row));
+        return extra.length > 0 ? [...extra, ...prev] : prev;
+      });
+    })();
+    return () => { stop = true; };
+  }, [liveRooms, meetings]);
 
   useEffect(() => {
     const init = async () => {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) { navigate('/'); return; }
       setUserId(userData.user.id);
-      fetchGroups(userData.user.id);
+      await fetchGroups(userData.user.id);
+      setLoaded(true);
     };
     init();
   }, []);
@@ -121,23 +222,24 @@ export default function MainPage() {
         list.push(g);
       }
     }
-    setGroups(list);
-
     const ids = list.map((g) => g.id);
     if (ids.length === 0) {
+      setGroups([]);
       setMeetings([]);
       setGroupStats({});
       return;
     }
-    const { data: meetingRows } = await supabase
-      .from('meetings')
-      .select('id, title, date, summary, group_id')
-      .in('group_id', ids)
-      .order('date', { ascending: false })
-      .limit(MAX_MEETINGS);
-    setMeetings(meetingRows || []);
+    // 참석자 수는 attendees·채팅·저장한 사람으로 셉니다. 없는 칸만 빼고 다시 읽습니다.
+    const loadedMeetings = await loadRecentMeetings(ids);
+    setMeetings(loadedMeetings.filter((row) => isListedMeeting(row)));
+    // 카드 4장은 가입 순이 아니라, 그 그룹에서 가장 최근에 회의한 순입니다.
+    const latestMeetingAt = await latestMeetingTimeByGroup(ids);
+    const ranked = list
+      .map((g, index) => ({ g, index, at: latestMeetingAt.get(g.id) ?? 0 }))
+      .sort((a, b) => b.at - a.at || a.index - b.index)
+      .map((row) => row.g);
+    setGroups(ranked);
     const faces = await loadGroupFaceIndex(ids);
-    setAvatarByUserId(faces.avatarByUserId);
     setNicknameToIdByGroup(faces.nicknameToIdByGroup);
 
     // 그룹 카드의 "회의 N / 문서 N" 표시용 — 위 meetingRows는 최근 4건만 잘라서 가져와서
@@ -147,24 +249,30 @@ export default function MainPage() {
     // 파싱까지는 안 하고 단순 length만 씁니다 — 카드 배지용 숫자라 정확도보다 가벼움이 우선).
     const { data: statsRows } = await supabase
       .from('meetings')
-      .select('group_id, attachments')
+      .select('id, title, group_id, attachments')
       .in('group_id', ids);
     const { data: memberRows } = await supabase
       .from('group_members')
-      .select('group_id')
+      .select('group_id, user_id')
       .in('group_id', ids);
 
     const stats: Record<string, GroupStats> = {};
     for (const id of ids) stats[id] = { meetingCount: 0, docCount: 0, memberCount: 0 };
-    for (const row of (statsRows || []) as { group_id: string; attachments: unknown }[]) {
+    for (const row of (statsRows || []) as { id: string; title?: string | null; group_id: string; attachments: unknown }[]) {
       const s = stats[row.group_id];
-      if (!s) continue;
+      // 목록에서 뺀 회의는 카드의 회의 수에 넣지 않습니다.
+      if (!s || !isListedMeeting(row)) continue;
       s.meetingCount += 1;
       s.docCount += Array.isArray(row.attachments) ? row.attachments.length : 0;
     }
-    for (const row of (memberRows || []) as { group_id: string }[]) {
+    // 같은 사람이 멤버 표에 여러 줄이면 카드 인원도 두 배로 셉니다. 그룹+사람 한 쌍만 셉니다.
+    const seenMembers = new Set<string>();
+    for (const row of (memberRows || []) as { group_id: string; user_id: string }[]) {
       const s = stats[row.group_id];
-      if (s) s.memberCount += 1;
+      const key = `${row.group_id}:${row.user_id}`;
+      if (!s || seenMembers.has(key)) continue;
+      seenMembers.add(key);
+      s.memberCount += 1;
     }
     setGroupStats(stats);
   };
@@ -258,14 +366,23 @@ export default function MainPage() {
 
         {/* 참고로 받은 최신 Figma 변환본(titleWrapper/h37 "최근 그룹")엔 카드 위에
             섹션 제목이 붙어있어서 추가했습니다.
-            캐러셀(좌우 화살표 + 가로 스크롤)은 없앴습니다 — 최신 그룹 4개까지만
-            스크롤 없이 한 화면에 고정으로 보여주는 스택 형태로 바꿨습니다. 5번째
-            그룹부터는 이 카드 영역엔 아예 안 나타납니다(전체 그룹은 그룹 목록
-            페이지에서 봅니다). */}
+            캐러셀(좌우 화살표 + 가로 스크롤)은 없앴습니다 — 최근에 회의한 그룹 4개만
+            스크롤 없이 한 화면에 고정으로 보여줍니다. 회의 기록이 없는 그룹은 그 뒤에 둡니다. */}
         <div className={`${styles.groupSection} ${styles.thirdsSection}`}>
           <h2 className={styles.groupSectionTitle}>최근 그룹</h2>
 
           <div className={styles.groupCards}>
+            {/* 그룹이 하나도 없을 때만 가장 왼쪽 카드 자리에 점선 칸을 보여주고, 누르면 그룹 만들기/참가 모달을 엽니다.
+                그룹이 하나라도 생기면 이 칸은 사라지고 그 자리에 카드가 들어옵니다. */}
+            {loaded && groups.length === 0 && (
+              <button type="button" className={styles.groupCardAdd} onClick={() => setModalOpen(true)}>
+                <span className={styles.groupCardAddPlus}>
+                  <Icon name="plus" />
+                </span>
+                <span className={styles.groupCardAddTitle}>그룹 만들기</span>
+                <span className={styles.groupCardAddDesc}>새 그룹을 만들거나 초대 코드로 참가해요</span>
+              </button>
+            )}
             {groups.slice(0, 4).map((g) => {
               // zip 기준 — 카드가 배지(왼쪽 진한 컬러 블록)와 본문(이름/초대코드 +
               // 멤버 아이콘 + 회의·문서 수)으로 나뉩니다.
@@ -333,25 +450,35 @@ export default function MainPage() {
             {/* zip의 rectangleGroup(행 하나 = 독립된 흰 카드) 스타일로 — 예전엔 표 한 줄씩
                 구분선(hr)만 있었는데, 지금은 각 회의가 자기 카드를 갖습니다. */}
             <div className={styles.meetingList}>
-              {/* 데이터가 없을 땐 안내 문구 없이 빈 패널만 보여주고, 회의가 생기면 행이 추가됩니다. */}
-              {meetings.slice(0, MEETING_VISIBLE).map((m) => {
-                const inRoom = liveRooms.some((room) => room.meetingId === m.id);
-                const faceIds = attendeeUserIds(m, nicknameToIdByGroup.get(m.group_id));
-                for (const id of liveIdentitiesFor(liveRooms, m.id)) {
-                  if (!faceIds.includes(id)) faceIds.push(id);
-                }
+              {/* 데이터가 없을 땐 안내 문구를 보여주고, 회의가 생기면 행이 추가됩니다. */}
+              {loaded && meetings.length === 0 && <div className={styles.panelEmpty}>아직 문서가 없어요</div>}
+              {[...meetings].sort((a, b) => {
+                const aLive = liveReady && liveRoomForMeeting(liveRooms, a, meetings) ? 1 : 0;
+                const bLive = liveReady && liveRoomForMeeting(liveRooms, b, meetings) ? 1 : 0;
+                return bLive - aLive;
+              }).slice(0, MEETING_VISIBLE).map((m) => {
+                // 방 인원을 알기 전에는 완료로 그리지 않습니다. 아는 순간 진행중이면 처음부터 진행중입니다.
+                const room = liveReady ? liveRoomForMeeting(liveRooms, m, meetings) : null;
+                const inRoom = room != null;
+                const people = inRoom
+                  ? liveHeadcount(room)
+                  : meetingAttendeeCount(m, nicknameToIdByGroup.get(m.group_id));
                 return (
                 <div
                   key={m.id}
                   className={styles.meetingCard}
-                  onClick={() => navigate(`/group/${m.group_id}/meeting/${m.id}`)}
+                  onClick={() => {
+                    // 진행중은 회의록이 아니라, 그 그룹 화면(저장 공간·멤버가 있는 위쪽)으로 갑니다.
+                    if (inRoom) navigate(`/group/${m.group_id}`);
+                    else navigate(`/group/${m.group_id}/meeting/${m.id}`);
+                  }}
                 >
                   <span className={styles.title}>{m.title || '회의'}</span>
-                  <span className={`${styles.statusPill} ${inRoom ? styles.statusPillProgress : styles.statusPillDone}`}>
-                    {inRoom ? '진행중' : '완료'}
+                  <span className={`${styles.statusPill} ${!liveReady ? '' : inRoom ? styles.statusPillProgress : styles.statusPillDone}`}>
+                    {!liveReady ? '' : inRoom ? '진행중' : '완료'}
                   </span>
                   <span className={styles.date}>{formatMeetingDate(m.date)}</span>
-                  <MeetingAttendeeFaces ids={faceIds} avatarByUserId={avatarByUserId} />
+                  <span className={styles.attendees}>{people > 0 ? `${people}명` : '—'}</span>
                   <span className={styles.aiIcon}>
                     <img src={m.summary ? aiCheckDone : aiCheckPending} alt={m.summary ? '요약 완료' : '요약 미완'} />
                   </span>
@@ -363,6 +490,7 @@ export default function MainPage() {
 
           <section className={styles.panel}>
             <div className={styles.summaryList}>
+              {loaded && !meetings.some((m) => m.summary) && <div className={styles.panelEmpty}>아직 AI 요약이 없어요</div>}
               {meetings.filter((m) => m.summary).slice(0, SUMMARY_VISIBLE).map((m) => (
                 <div key={m.id} className={styles.summaryCard}>
                   {/* 시안의 문서 아이콘(icon-description.svg, 초록 고정색) — 임시 선형 아이콘(file-text)을 교체 */}
@@ -383,10 +511,8 @@ export default function MainPage() {
         </div>
       </div>
 
-      {/* 액션바(새 회의 생성/AI 요약/문서 작성/멤버 관리)를 뺐습니다. 다만 "새 회의
-          생성" 버튼이 아래 GroupModal(그룹 생성/참가)을 여는 유일한 진입점이었어서,
-          지금은 이 페이지에서 모달을 열 방법이 없습니다 — modalOpen 상태와
-          GroupModal 자체는 나중에 다른 곳에 다시 연결할 수 있게 그대로 남겨뒀습니다. */}
+      {/* 액션바(새 회의 생성/AI 요약/문서 작성/멤버 관리)를 뺐고, 이 모달(그룹 생성/참가)은
+          그룹이 없을 때 나타나는 점선 "그룹 만들기" 칸(위 groupCardAdd)이 엽니다. */}
       <GroupModal
         open={modalOpen}
         groupName={groupName}

@@ -9,7 +9,7 @@ export type RepeatType = 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly' | 
 
 // 팝업으로 추가한 일정(아직 DB 저장 없이 이 브라우저 localStorage에만 보관됩니다)
 // date = 시작 일시. endDate/repeat/remindMinutes는 수정 패널에서 넣는 선택 값이라,
-// 없는 기존 일정도 그대로 동작합니다(하위 호환). remindMinutes는 저장만 하고 실제 알림은 보내지 않습니다.
+// 없는 기존 일정도 그대로 동작합니다(하위 호환). remindMinutes는 시작 몇 분 전에 그룹 알림을 보낼지입니다.
 export type LocalSchedule = {
   id: string;
   title: string;
@@ -73,23 +73,30 @@ export function occursOn(sc: LocalSchedule, day: Date) {
 }
 
 
+/** 반복 일정에서 그 날짜의 시작 시각. 시·분은 처음 등록한 시작 시각을 그대로 씁니다. */
+export function occurrenceStart(sc: LocalSchedule, day: Date) {
+  const s = new Date(sc.date);
+  return new Date(day.getFullYear(), day.getMonth(), day.getDate(), s.getHours(), s.getMinutes(), 0, 0);
+}
+
 /**
  * 지금 이후로 가장 가까운 일정 한 건(반복 일정은 그 발생분 기준). 없으면 null.
  * 반복 일정이 끝없이 이어지므로 앞으로 days일 안에서만 찾습니다(캘린더의 UPCOMING_DAYS와 같은 이유).
- * 시각은 일정의 원래 시작 시각(date의 시:분)을 그 날짜에 붙여서 계산합니다.
+ * groupId를 주면 그 그룹 일정만 봅니다.
  */
 export function findNextLocalSchedule(
   schedules: LocalSchedule[],
   now: Date,
   days: number,
+  groupId?: string,
 ): { schedule: LocalSchedule; when: Date } | null {
+  const list = groupId ? schedules.filter((sc) => sc.groupId === groupId) : schedules;
   let best: { schedule: LocalSchedule; when: Date } | null = null;
   for (let i = 0; i <= days; i += 1) {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
-    for (const sc of schedules) {
+    for (const sc of list) {
       if (!occursOn(sc, day)) continue;
-      const s = new Date(sc.date);
-      const when = new Date(day.getFullYear(), day.getMonth(), day.getDate(), s.getHours(), s.getMinutes());
+      const when = occurrenceStart(sc, day);
       if (when.getTime() > now.getTime() && (!best || when < best.when)) best = { schedule: sc, when };
     }
     // 날짜 순으로 보고 있으므로 이 날에 찾았으면 더 먼 날은 볼 필요가 없습니다

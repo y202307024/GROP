@@ -24,6 +24,19 @@ import {
   fetchGroupChatFiles,
   isSameLocalDay,
 } from '../utils/meetingDocs';
+import { isListedMeeting } from '../utils/meetingVideo';
+
+/** 별표는 DB 칸이 없어서 이 브라우저에만 저장합니다. 다시 열어도 그 문서가 위에 남습니다. */
+const DOC_BOOKMARKS_KEY = 'grop.favoriteDocuments';
+
+function loadDocBookmarks(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DOC_BOOKMARKS_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
 
 type MeetingAttachment = Pick<MeetingSharedFile, 'id' | 'name' | 'path' | 'size' | 'mime' | 'ts'>;
 
@@ -158,11 +171,11 @@ export default function DocumentList() {
   /** "연결할 회의를 선택하세요" 드롭다운 옵션 — 내가 속한 그룹 목록 */
   const [groups, setGroups] = useState<GroupOption[]>([]);
   /**
-   * 아래 3가지는 전부 화면에서만 쓰는 상태라 새로고침하면 초기화됩니다.
-   * (북마크/연결 확정을 서버에 저장하는 기능은 아직 없어서, 디자인/동작만 먼저 반영합니다.)
+   * 연결 확정은 화면에서만 쓰는 상태라 새로고침하면 초기화됩니다.
+   * 별표는 localStorage에 남기고, 목록에서는 그 문서를 맨 앞에 둡니다.
    */
-  /** 북마크 토글한 문서 id 모음 */
-  const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(new Set());
+  /** 별표한 문서 id */
+  const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(loadDocBookmarks);
   /** 지금 "더보기(⋮)" 메뉴가 열려 있는 문서 id */
   const [openMenuDocId, setOpenMenuDocId] = useState<string | null>(null);
   // ⋮ 메뉴를 위로 펼칠지 — 목록 영역(스크롤 박스)이 메뉴를 잘라내서, 아래 공간이 모자라면 위로 엽니다.
@@ -293,7 +306,7 @@ export default function DocumentList() {
         }),
       );
 
-      const merged = mergeSameDayMeetings([...byId.values()]);
+      const merged = mergeSameDayMeetings([...byId.values()]).filter((doc) => isListedMeeting(doc));
 
       // 「올린 사람」 열에 쓸 닉네임을 한 번에 조회합니다(문서마다 따로 부르지 않도록 id를 모아서).
       // profiles를 못 읽거나 닉네임이 없으면 이름 없이 "—"로 남습니다.
@@ -414,12 +427,17 @@ export default function DocumentList() {
     });
   };
 
-  /** 북마크 아이콘 클릭 — bookmark ↔ bookmark-fill 토글 (화면에서만) */
+  /** 별표 — 켜면 그 문서를 목록 앞으로, 끄면 날짜 순 자리로 되돌립니다. */
   const toggleBookmark = (docId: string) => {
     setBookmarkedIds((prev) => {
       const next = new Set(prev);
       if (next.has(docId)) next.delete(docId);
       else next.add(docId);
+      try {
+        localStorage.setItem(DOC_BOOKMARKS_KEY, JSON.stringify([...next]));
+      } catch {
+        // 저장이 막혀도 이번 화면의 순서는 바뀝니다
+      }
       return next;
     });
   };

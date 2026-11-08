@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { addGroupMember, joinGroupByInviteCode } from '../utils/joinGroup';
+import { isListedMeeting } from '../utils/meetingVideo';
 import AppShell from '../components/AppShell';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
@@ -95,26 +96,31 @@ export default function GroupListPage() {
 
     const { data: meetingRows } = await supabase
       .from('meetings')
-      .select('group_id, date, attachments')
+      .select('id, title, group_id, date, attachments')
       .in('group_id', ids);
     const { data: memberRows } = await supabase
       .from('group_members')
-      .select('group_id')
+      .select('group_id, user_id')
       .in('group_id', ids);
 
     const next: Record<string, GroupStats> = {};
     for (const id of ids) next[id] = { meetingCount: 0, docCount: 0, memberCount: 0, lastActivity: 0 };
-    for (const row of (meetingRows || []) as { group_id: string; date: string; attachments: unknown }[]) {
+    for (const row of (meetingRows || []) as { id: string; title?: string | null; group_id: string; date: string; attachments: unknown }[]) {
       const s = next[row.group_id];
-      if (!s) continue;
+      // 목록에서 뺀 회의는 카드의 회의 수와 최근 활동에도 넣지 않습니다.
+      if (!s || !isListedMeeting(row)) continue;
       s.meetingCount += 1;
       s.docCount += Array.isArray(row.attachments) ? row.attachments.length : 0;
       // "최근 활동순" 정렬 기준 = 가장 최근 회의 저장 시각
       s.lastActivity = Math.max(s.lastActivity, new Date(row.date).getTime() || 0);
     }
-    for (const row of (memberRows || []) as { group_id: string }[]) {
+    const seenMembers = new Set<string>();
+    for (const row of (memberRows || []) as { group_id: string; user_id: string }[]) {
       const s = next[row.group_id];
-      if (s) s.memberCount += 1;
+      const key = `${row.group_id}:${row.user_id}`;
+      if (!s || seenMembers.has(key)) continue;
+      seenMembers.add(key);
+      s.memberCount += 1;
     }
     setStats(next);
   };
@@ -131,12 +137,20 @@ export default function GroupListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 정렬된 목록 — 최근 활동순은 회의가 없는 그룹이 맨 뒤로(원래 순서 유지) */
+  /**
+   * 정렬된 목록. 별표한 그룹은 선택한 정렬(최근 활동순/이름순)보다 앞에 둡니다.
+   * 별표끼리, 그리고 나머지끼리만 그 정렬을 적용합니다.
+   */
   const sortedGroups = useMemo(() => {
     const list = [...groups];
-    if (sortKey === 'name') return list.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
-    return list.sort((a, b) => (stats[b.id]?.lastActivity ?? 0) - (stats[a.id]?.lastActivity ?? 0));
-  }, [groups, stats, sortKey]);
+    const byChosen = sortKey === 'name'
+      ? (a: Group, b: Group) => a.name.localeCompare(b.name, 'ko')
+      : (a: Group, b: Group) => (stats[b.id]?.lastActivity ?? 0) - (stats[a.id]?.lastActivity ?? 0);
+    return list.sort((a, b) => {
+      const priority = Number(favorites.has(b.id)) - Number(favorites.has(a.id));
+      return priority !== 0 ? priority : byChosen(a, b);
+    });
+  }, [groups, stats, sortKey, favorites]);
 
   const toggleFavorite = (groupId: string) => {
     setFavorites((prev) => {

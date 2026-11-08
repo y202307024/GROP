@@ -1,8 +1,7 @@
 /**
- * 회의 AI 요약 공용 모듈
- * - Express 서버(server/index.js)와 Netlify 함수(netlify/functions/summarize.mjs)가 같이 씁니다.
- * - 영상 파일을 어디서 읽어오는지는 호출하는 쪽이 정하고(loadVideo), 여기서는
- *   오디오 추출 → Whisper 받아쓰기 → LLM 요약/챕터 생성만 담당합니다.
+ * 회의 AI 요약 모듈. Express 서버(server/index.js)가 씁니다.
+ * 영상 파일을 어디서 읽어오는지는 호출하는 쪽이 정하고(loadVideo), 여기서는
+ * 오디오 추출 → Whisper 받아쓰기 → LLM 요약/챕터 생성만 담당합니다.
  */
 const fs = require('fs')
 const os = require('os')
@@ -10,30 +9,22 @@ const path = require('path')
 const { execFile } = require('child_process')
 
 /**
- * groq-sdk 는 처음 쓸 때 불러옵니다.
- * Netlify 번들러는 server/ 폴더 안의 require 를 함수 번들에 넣지 못해 실행 시 "Cannot find module" 이 나므로,
- * Netlify 함수는 직접 import 한 모듈을 configureAiSummaryDeps 로 넘겨줍니다. Express 는 아래 require 를 그대로 씁니다.
- * 음성 추출 ffmpeg 는 서버에 설치된 바이너리를 child_process 로 실행합니다. ffmpeg-static 은 여기서 불러오지 않습니다.
+ * groq-sdk 는 처음 요약할 때 불러옵니다.
+ * 음성 추출 ffmpeg 는 서버에 설치된 바이너리를 child_process 로 실행합니다.
  */
 let deps = null
-
-/** @param {{ Groq: any, toFile: Function, ffmpegPath?: string | null }} next */
-function configureAiSummaryDeps(next) {
-  deps = next
-}
 
 function getDeps() {
   if (!deps) {
     const groqSdk = require('groq-sdk')
-    // Express 는 시스템 ffmpeg 만 씁니다. Netlify 가 넘긴 경로는 아래 getFfmpegPath 에서 유지됩니다.
-    deps = { Groq: groqSdk, toFile: groqSdk.toFile, ffmpegPath: null }
+    deps = { Groq: groqSdk, toFile: groqSdk.toFile }
   }
   return deps
 }
 
-// FFMPEG_PATH 가 있으면 그 경로, Netlify 가 넣어 준 경로, 없으면 PATH 의 ffmpeg.
+/** FFMPEG_PATH 가 있으면 그 경로, 없으면 PATH 의 ffmpeg. */
 function getFfmpegPath() {
-  return process.env.FFMPEG_PATH || getDeps().ffmpegPath || 'ffmpeg'
+  return process.env.FFMPEG_PATH || 'ffmpeg'
 }
 
 function ffmpegMissingError() {
@@ -576,7 +567,7 @@ async function transcribeInChunks(audioBuffer) {
  *
  * @param {object} options
  * @param {(() => Promise<{ filePath?: string, buffer?: Buffer }>) | null} options.loadVideo
- *   영상을 읽어오는 함수. 저장 위치(서버 디스크, Netlify Blobs 등)는 호출하는 쪽이 정합니다.
+ *   영상을 읽어오는 함수. 저장 위치(서버 디스크, Cloudflare R2)는 호출하는 쪽이 정합니다.
  * @param {Array|null} options.chatLog 회의 채팅 기록
  * @param {string} [options.meetingDateLabel] 카드 "회의 날짜"에 쓸 실제 날짜 (예: 2026년 10월 8일)
  * @returns {Promise<object>} 클라이언트에 그대로 내려줄 요약 결과
@@ -706,7 +697,6 @@ function summaryErrorMessage(err) {
 }
 
 module.exports = {
-  configureAiSummaryDeps,
   getChatModel,
   getTranscribeModel,
   summarizeMeeting,

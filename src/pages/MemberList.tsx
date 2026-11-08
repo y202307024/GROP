@@ -5,6 +5,7 @@ import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import LeaveGroupModal from '../components/LeaveGroupModal';
 import { getAvatarSrc } from '../utils/avatarOptions';
+import { uniqueMembersByUserId } from '../utils/joinGroup';
 import styles from './MemberList.module.css';
 
 type Member = {
@@ -44,7 +45,7 @@ export default function MemberList() {
       return;
     }
 
-    setMembers(data || []);
+    setMembers(uniqueMembersByUserId((data || []) as Member[]));
 
     // 그룹 삭제 확인(이름 입력)에 쓸 그룹 이름
     const { data: groupRow } = await supabase.from('groups').select('name').eq('id', groupId).maybeSingle();

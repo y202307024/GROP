@@ -16,6 +16,16 @@
   color: white;
 }
 
+/* 창이 좁아지면(1100px 이하) 우측 패널을 화면에서 아예 뺍니다 — 보드가 남는 폭을 다 씁니다.
+   (1440 미만에서는 배율이 1이라 이 값이 곧 실제 창 폭이고, 이때 보드 폭은 약 800px 입니다)
+   display:none 이어도 컴포넌트는 그대로 마운트돼 있어서 채팅 수신/참가자 목록 상태는 유지됩니다.
+   .roomMain 의 gap 은 숨겨진 요소에는 적용되지 않아 보드 오른쪽에 빈 틈도 남지 않습니다. */
+@media (max-width: 1100px) {
+  .chatPanel {
+    display: none;
+  }
+}
+
 /* 참가자 / 채팅 스택 */
 .sideStack {
   flex: 1;
@@ -53,7 +63,8 @@
 
 /* ===== 그룹명 ===== */
 .groupNameRow {
-  padding: var(--space-7) var(--space-7) var(--space-3);
+  /* 피그마: 제목 왼쪽 23px → 16.2px, 카드 위 21px → 14.8px (예전 14/14). 아래 간격은 목록 쪽(.participantList) padding이 맡습니다 */
+  padding: 14.8px 16.2px 0;
 }
 
 .groupNameButton {
@@ -74,7 +85,9 @@
 
 .groupNameText {
   min-width: 0;
-  font-size: var(--text-lg);
+  /* 피그마 24px/24px × 0.703 ≈ 16.9px (예전 15px) */
+  font-size: 16.9px;
+  line-height: 16.9px;
   font-weight: var(--weight-bold);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -106,7 +119,8 @@
 .participantList {
   list-style: none;
   margin: 0;
-  padding: var(--space-2) var(--space-5) var(--space-6);
+  /* 피그마: 첫 아바타 윗면이 카드 위 48.5px, 왼쪽 16.2px, 마지막 아이콘 오른쪽 14px */
+  padding: 9.8px 14px var(--space-6) 16.2px;
   overflow-y: auto;
   min-height: 0;
 }
@@ -116,19 +130,22 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  padding: var(--space-3) var(--space-2);
+  /* 피그마 행 간격 60.7px → 42.7px = 아바타 28.6px + 위아래 7px씩 (예전 약 36px) */
+  padding: 7px 0;
 }
 
 .participantIdentity {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  /* 피그마 아바타 → 이름 19.4px → 13.6px (예전 8px) */
+  gap: 13.6px;
   min-width: 0;
 }
 
 .participantAvatar {
-  width: 28px;
-  height: 28px;
+  /* 피그마 40.62px × 0.703 ≈ 28.6px */
+  width: 28.6px;
+  height: 28.6px;
   border-radius: var(--radius-full);
   background: rgba(255, 255, 255, 0.28);
   color: white;
@@ -156,8 +173,10 @@
 }
 
 .participantName {
-  font-size: var(--text-base);
-  font-weight: var(--weight-semibold);
+  /* 피그마 18px/400, 색 #FAF8F6 → 12.65px (예전 13px 세미볼드 흰색) */
+  font-size: 12.65px;
+  font-weight: var(--weight-normal);
+  color: #faf8f6;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -206,7 +225,8 @@
 /* ===== 채팅 ===== */
 .chatSectionTitle {
   margin: 0;
-  padding: var(--space-7) var(--space-8) var(--space-3);
+  /* 피그마: 제목 위 19px → 13.4px, 왼쪽 약 16px */
+  padding: 13.4px 16.2px var(--space-3);
   /* 전역 h2 규칙(base.css)이 어두운 글자색을 지정해서 제목만 색이 달랐습니다.
      카드 글자색(흰색)을 그대로 따르도록 상속시킵니다 */
   color: inherit;
@@ -225,16 +245,17 @@
   flex-direction: column;
   gap: var(--space-4);
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.55) transparent;
+  /* 피그마 스크롤바: 폭 6px → 4.2px, 막대 검정 15%, 완전 둥근 모서리 */
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
 }
 
 .chatMessages::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
 }
 
 .chatMessages::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.45);
-  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 1000px;
 }
 
 .chatMessages::-webkit-scrollbar-track {
@@ -302,17 +323,18 @@
   min-width: 0;
   /* 피그마 35px → 약 25px, 모서리 6px → 약 4px */
   height: 25px;
-  padding: 0 var(--space-5);
-  border: 1px solid white;
-  border-radius: 4px;
+  /* 피그마: 테두리·글자·안내 문구 모두 #FAF8F6, 글자 14px → 9.84px, 왼쪽 안쪽 15.7px → 11px */
+  border: 1px solid #faf8f6;
+  border-radius: 4.2px;
   outline: none;
   background: transparent;
-  color: white;
-  font-size: var(--text-base);
+  color: #faf8f6;
+  font-size: 9.84px;
+  padding: 0 11px;
 }
 
 .chatInputArea input[type='text']::placeholder {
-  color: rgba(255, 255, 255, 0.85);
+  color: #faf8f6;
 }
 
 .chatInputArea button {
@@ -321,11 +343,12 @@
   height: 25px;
   padding: 0;
   border: none;
-  border-radius: 3px;
-  background: white;
-  color: #222;
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
+  border-radius: 2.8px;
+  /* 피그마: 배경 #FAF8F6, 글자 검정 14px/500 → 9.84px */
+  background: #faf8f6;
+  color: #000000;
+  font-size: 9.84px;
+  font-weight: var(--weight-medium);
   cursor: pointer;
   flex-shrink: 0;
 }

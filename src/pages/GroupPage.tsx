@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import GroupEditModal from '../components/GroupEditModal';
 import { getAvatarSrc } from '../utils/avatarOptions';
+import { uniqueMembersByUserId } from '../utils/joinGroup';
+import { formatStorageBytes } from '../utils/meetingVideo';
+import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
 import styles from './GroupPage.module.css';
 
 // created_at 은 groups 테이블에 있을 때만 채워집니다(select('*')라 컬럼이 없으면 undefined → 날짜를 그리지 않음).
@@ -16,6 +19,25 @@ type MemberPreview = { user_id: string; nickname: string; avatar: string };
 type Notice = { id: string; title: string; created_at: string
   is_pinned?: boolean;
 };
+
+/** 그룹 카드의 다음 일정. "10월 24일 오전 10:00" */
+function formatNextSchedule(when: Date) {
+  const h = when.getHours();
+  return `${when.getMonth() + 1}월 ${when.getDate()}일 ${h >= 12 ? '오후' : '오전'} ${h % 12 || 12}:${String(when.getMinutes()).padStart(2, '0')}`;
+}
+
+/** 그룹 하나당 저장 한도. 막대는 이 값 대비 지금 쓴 용량입니다. */
+const GROUP_STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
+
+/** 첨부 목록에 적힌 파일 크기만 더합니다. 크기 없는 항목은 0으로 둡니다. */
+function attachmentBytes(raw: unknown) {
+  if (!Array.isArray(raw)) return 0;
+  return raw.reduce((sum, item) => {
+    if (!item || typeof item !== 'object') return sum;
+    const size = (item as { size?: unknown }).size;
+    return sum + (typeof size === 'number' && Number.isFinite(size) && size > 0 ? size : 0);
+  }, 0);
+}
 
 /** 그룹 생성일을 "2026.10.21" 형식으로 */
 function formatCreatedDate(dateStr: string) {
@@ -55,6 +77,13 @@ export default function GroupPage() {
    * 편집 모달에서 저장을 누르면 이 세션 동안만 기억해서 아래 배너에 보여줍니다.
    */
   const [memo, setMemo] = useState('');
+  /** 이 그룹 회의 영상 + 첨부 파일 용량. 아직 못 읽으면 null */
+  const [storageBytes, setStorageBytes] = useState<number | null>(null);
+  // 캘린더에서 이 그룹으로 등록한 일정 중, 아직 시작 전인 가장 가까운 것
+  const nextSchedule = useMemo(
+    () => (id ? findNextLocalSchedule(loadLocalSchedules(), new Date(), 62, id) : null),
+    [id],
+  );
 
   const copyInviteCode = async () => {
     if (!group) return;
@@ -93,10 +122,30 @@ export default function GroupPage() {
       .limit(4)
       .then(({ data }) => setNotices((data as Notice[] | null) ?? []));
 
+    // 저장 공간 — 회의 영상(video_size_bytes)과 첨부(attachments.size)를 더합니다.
+    // 영상 칸이 없는 배포에서는 첨부만 셉니다.
+    setStorageBytes(null);
+    void (async () => {
+      const withVideo = await supabase
+        .from('meetings')
+        .select('video_size_bytes, attachments')
+        .eq('group_id', id);
+      const rows = withVideo.error && /video_size_bytes/i.test(withVideo.error.message)
+        ? (await supabase.from('meetings').select('attachments').eq('group_id', id)).data
+        : withVideo.data;
+      const total = ((rows as { video_size_bytes?: number | null; attachments?: unknown }[] | null) ?? []).reduce(
+        (sum, row) => sum + (Number(row.video_size_bytes) || 0) + attachmentBytes(row.attachments),
+        0,
+      );
+      setStorageBytes(total);
+    })();
+
     supabase.rpc('get_group_members_with_profiles', { p_group_id: id })
       .then(({ data }) => {
         if (data) {
-          setMembers(data.map((m: { user_id: string; nickname: string; avatar: string }) => ({
+          // 같은 user_id 가 여러 줄이면 화면에도 두 번 나옵니다. 가입이 빠른 한 명만 남깁니다.
+          const rows = uniqueMembersByUserId(data as { user_id: string; nickname: string; avatar: string }[]);
+          setMembers(rows.map((m) => ({
             user_id: m.user_id,
             nickname: m.nickname || '멤버',
             avatar: m.avatar || '🙂',
@@ -224,19 +273,46 @@ export default function GroupPage() {
           </div>
         </div>
 
-        {/* 메모 배너 — 아직 메모를 저장할 DB 컬럼이 없어서, 편집 모달에서 입력한 내용을
-            이 세션 동안만 기억합니다. 입력된 적이 없으면 안내 문구만 조용히 보여줍니다. */}
-        {memo ? (
-          // 메모가 있을 땐 말풍선 아이콘 없이 글자만 보여줍니다(아이콘은 "메모 없음" 안내에서만 사용)
-          <div className={styles.memoBanner}>
-            <span className={styles.memoText}>{memo}</span>
+        {/* 맨 아래 줄: 왼쪽은 메모, 오른쪽(회의방으로 이동 아래)은 이 그룹이 쓴 저장 공간 */}
+        <div className={styles.heroBottom}>
+          {memo ? (
+            <div className={styles.memoBanner}>
+              <span className={styles.memoText}>{memo}</span>
+            </div>
+          ) : (
+            <div className={`${styles.memoBanner} ${styles.memoBannerMuted}`}>
+              <Icon name="message-circle" className={styles.memoIcon} />
+              <span className={styles.memoText}>그룹 메모가 아직 없어요. 그룹 편집에서 추가해보세요.</span>
+            </div>
+          )}
+          <div className={styles.storageStat}>
+            <span className={styles.storageLabel}>저장 공간</span>
+            {/* 10GB 한도 대비 사용량. 아주 적어도 막대가 보이도록 사용 중이면 최소 너비를 둡니다. */}
+            <div
+              className={styles.storageTrack}
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={GROUP_STORAGE_LIMIT_BYTES}
+              aria-valuenow={storageBytes ?? 0}
+              aria-label="그룹 저장 공간"
+            >
+              <div
+                className={styles.storageFill}
+                style={{
+                  width:
+                    storageBytes == null || storageBytes <= 0
+                      ? '0%'
+                      : `${Math.min(100, Math.max((storageBytes / GROUP_STORAGE_LIMIT_BYTES) * 100, 2))}%`,
+                }}
+              />
+            </div>
+            <span className={styles.storageValue}>
+              {storageBytes == null
+                ? `— / ${formatStorageBytes(GROUP_STORAGE_LIMIT_BYTES)}`
+                : `${formatStorageBytes(storageBytes)} / ${formatStorageBytes(GROUP_STORAGE_LIMIT_BYTES)}`}
+            </span>
           </div>
-        ) : (
-          <div className={`${styles.memoBanner} ${styles.memoBannerMuted}`}>
-            <Icon name="message-circle" className={styles.memoIcon} />
-            <span className={styles.memoText}>그룹 메모가 아직 없어요. 그룹 편집에서 추가해보세요.</span>
-          </div>
-        )}
+        </div>
         </section>
 
         <div className={styles.statsCard}>
@@ -244,7 +320,9 @@ export default function GroupPage() {
             <Icon name="calendar" className={`${styles.statIcon} ${styles.statIconInfo}`} />
             <div>
               <div className={styles.statLabel}>다음 일정</div>
-              <div className={styles.statValue}>미정</div>
+              <div className={styles.statValue}>
+                {nextSchedule ? formatNextSchedule(nextSchedule.when) : '미정'}
+              </div>
             </div>
           </div>
           <div className={styles.statDivider} />
@@ -302,7 +380,10 @@ export default function GroupPage() {
               </span>
             </div>
             {notices.length === 0 ? (
-              <div className="group-preview-muted">등록된 공지가 없어요.</div>
+              // 공지가 있을 때와 같은 자리(.memberList)에 넣어야 카드 세로 길이가 같게 유지됩니다
+              <div className={styles.memberList}>
+                <div className="group-preview-muted">등록된 공지가 없어요.</div>
+              </div>
             ) : (
               <div className={styles.memberList}>
                 {/* 멤버 목록과 같은 줄 구성(아이콘 + 제목/날짜 + 화살표 + 구분선) */}

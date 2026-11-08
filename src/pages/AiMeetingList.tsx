@@ -1,16 +1,25 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
+import { getAppShellScale } from '../hooks/useAppShellScale';
+import { isListedMeeting } from '../utils/meetingVideo';
 // 문서 페이지와 같은 틀(탭 줄/검색/목록/하단 요약)을 그대로 쓰려고 DocumentList의 스타일을 가져옵니다.
 import d from './DocumentList.module.css';
 import s from './AiMeetingList.module.css';
 
 type GroupRow = { id: string; name: string };
-type MeetingRow = { id: string; title: string | null; date: string; summary: string | null; group_id: string };
+type MeetingRow = {
+  id: string;
+  title: string | null;
+  date: string;
+  summary: string | null;
+  group_id: string;
+  video_status?: string | null;
+};
 
 /** '2026.09.06 10:00AM' 형식 (AI 요약 상세의 회의 목록과 같은 표기) */
 function formatMeetingDate(dateStr: string) {
@@ -51,29 +60,44 @@ export default function AiMeetingList() {
       if (ids.length === 0) {
         if (mounted) {
           setGroups([]);
+          setMeetings([]);
           setLoading(false);
         }
         return;
       }
 
-      const [{ data: groupRows }, { data: meetingRows }] = await Promise.all([
-        supabase.from('groups').select('id, name').in('id', ids),
-        supabase
+      const groupQuery = supabase.from('groups').select('id, name').in('id', ids);
+      const withStatus = await supabase
+        .from('meetings')
+        .select('id, title, date, summary, group_id, video_status')
+        .in('group_id', ids)
+        .order('date', { ascending: false });
+      const meetingRows = withStatus.error && /video_status/i.test(withStatus.error.message)
+        ? (await supabase
           .from('meetings')
           .select('id, title, date, summary, group_id')
           .in('group_id', ids)
-          .order('date', { ascending: false }),
-      ]);
+          .order('date', { ascending: false })).data
+        : withStatus.data;
+      const { data: groupRows } = await groupQuery;
       if (!mounted) return;
-      // 탭 순서는 가입한 순서
+      // 탭 순서는 가입한 순서. 숨긴 회의와 방금 지운 회의는 이 탭에 넣지 않습니다.
       const byId = new Map((groupRows ?? []).map((g) => [g.id, g as GroupRow]));
       setGroups(ids.map((id) => byId.get(id)).filter((g): g is GroupRow => !!g));
-      setMeetings((meetingRows ?? []) as MeetingRow[]);
+      setMeetings(((meetingRows ?? []) as MeetingRow[]).filter((row) => isListedMeeting(row)));
       setLoading(false);
     };
     void load();
+    const onFocus = () => {
+      if (document.visibilityState === 'hidden') return;
+      void load();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
     return () => {
       mounted = false;
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
     };
   }, [navigate]);
 
@@ -97,12 +121,90 @@ export default function AiMeetingList() {
     setSearchParams({ group: id }, { replace: true });
   };
 
+  const tabsRef = useRef<HTMLDivElement>(null);
+  // 드래그로 탭을 넘긴 뒤에는 그 동작이 탭 클릭으로 이어지지 않게 구분합니다.
+  const tabDragRef = useRef({ active: false, startX: 0, scrollLeft: 0, moved: false });
+  const tabDragCleanupRef = useRef<(() => void) | null>(null);
+  const [tabDragging, setTabDragging] = useState(false);
+
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    // 휠은 세로로 들어오므로, 넘치는 탭 줄에서는 가로로 옮깁니다. passive면 preventDefault가 막힙니다.
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth) return;
+      const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      if (delta === 0) return;
+      el.scrollLeft += delta / getAppShellScale();
+      e.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  const endTabDrag = () => {
+    const drag = tabDragRef.current;
+    drag.active = false;
+    setTabDragging(false);
+    // click은 pointerup 다음에 오므로, 넘긴 직후의 탭 선택은 그 클릭에서 막습니다.
+    const moved = drag.moved;
+    window.setTimeout(() => {
+      if (tabDragRef.current.moved === moved) tabDragRef.current.moved = false;
+    }, 0);
+  };
+
+  const onTabPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    const el = tabsRef.current;
+    if (!el || e.pointerType !== 'mouse' || e.button !== 0) return;
+    if (el.scrollWidth <= el.clientWidth) return;
+    // 포인터를 잡으면 클릭이 그룹 버튼까지 전달되지 않습니다. 창에서 움직임을 듣고, 4px 넘긴 뒤만 드래그로 봅니다.
+    tabDragRef.current = { active: true, startX: e.clientX, scrollLeft: el.scrollLeft, moved: false };
+
+    const onMove = (ev: globalThis.PointerEvent) => {
+      const drag = tabDragRef.current;
+      if (!drag.active) return;
+      const screenDx = ev.clientX - drag.startX;
+      if (Math.abs(screenDx) <= 4) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        setTabDragging(true);
+      }
+      el.scrollLeft = drag.scrollLeft - screenDx / getAppShellScale();
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      tabDragCleanupRef.current = null;
+      endTabDrag();
+    };
+    tabDragCleanupRef.current?.();
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    tabDragCleanupRef.current = onUp;
+  };
+
+  useEffect(() => () => tabDragCleanupRef.current?.(), []);
+
+  const onTabClickCapture = (e: MouseEvent<HTMLDivElement>) => {
+    if (!tabDragRef.current.moved) return;
+    e.preventDefault();
+    e.stopPropagation();
+    tabDragRef.current.moved = false;
+  };
+
   return (
     <AppShell activePage="ai">
       <div className={`page ${d.docPage}`}>
         <div className={d.docHeader}>
           {/* 그룹이 많아 탭이 넘치면 이 줄 안에서만 가로 스크롤 */}
-          <div className={`${d.tabs} ${s.tabsScroll}`}>
+          <div
+            ref={tabsRef}
+            className={`${d.tabs} ${s.tabsScroll}${tabDragging ? ` ${s.tabsDragging}` : ''}`}
+            onPointerDown={onTabPointerDown}
+            onClickCapture={onTabClickCapture}
+          >
             {groups.map((g) => (
               <button
                 key={g.id}

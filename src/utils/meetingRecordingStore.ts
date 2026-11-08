@@ -20,6 +20,11 @@ export type LocalRecording = {
   createdAt: number;
   /** 이미 회의 행이 있으면 재시도 때 새 행을 만들지 않고 이 행에 영상을 붙입니다. */
   meetingId?: string | null;
+  /**
+   * 이 녹화가 그 회의 행의 영상을 이미 쓴 뒤입니다.
+   * 다시 올릴 때는 그 행을 갱신하고, 아직이면 영상이 있는 행을 덮지 않습니다.
+   */
+  ownsMeetingRow?: boolean;
   title?: string;
   attachments?: unknown;
   chatLog?: unknown;

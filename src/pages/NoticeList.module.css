@@ -277,3 +277,11 @@
   opacity: 0.6;
   cursor: default;
 }
+
+/* 리더 화면에서 공지가 하나도 없을 때(추가 행 아래) 안내 문구 */
+.emptyHint {
+  padding: 28px 0;
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+}

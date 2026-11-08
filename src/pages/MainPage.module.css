@@ -50,8 +50,12 @@
   margin-bottom: auto;
 }
 .dashboardSection.thirdsSection {
-  flex: none;
+  /* 높이는 영역의 50%가 기본이지만, 창이 낮아 위 두 블록(일정/그룹 카드)과 합쳐 영역을 넘으면 이 패널이 줄어듭니다
+     (flex-shrink: 1). 예전엔 flex: none 이라 안 줄어서 아래로 넘쳤습니다. 패널 안 목록은 자체 스크롤이라 줄어도 안전하고,
+     min-height 150px(제목 줄 + 목록 한 줄 남짓) 밑으로는 줄지 않습니다. */
+  flex: 0 1 auto;
   height: 50%;
+  min-height: 150px;
 }
 
 /* ---------------- 오늘의 일정 ---------------- */
@@ -461,13 +465,13 @@
   background: var(--progress-bg, #dce1f5);
   color: var(--progress-text, #2a4f7a);
 }
+/* 참석자 칸은 얼굴 대신 인원 수입니다. 끝난 회의는 누적, 진행중은 지금 방 인원. */
 .attendees {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 2px;
   font-size: 11.25px;
-  opacity: 0.7;
 }
 .attendees svg {
   /* 피그마 27.5px × 0.703 ≈ 19px */
@@ -586,4 +590,64 @@
    28.8px × 0.703)만 padding을 갖습니다. 좌우 inset은 머리글/행이 각자 갖습니다. .panel 뒤에 둬서 덮어씁니다 */
 .meetingPanel {
   padding: 0 0 20px;
+}
+
+/* 문서 목록 / 최근 AI 요약 패널이 비어 있을 때 안내 문구 — 패널 남은 공간 가운데에 놓습니다 */
+.panelEmpty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+  text-align: center;
+}
+
+/* 그룹이 없을 때 가장 왼쪽 카드 자리에 놓는 점선 칸 — 그룹 카드(.groupCard)와 같은 크기·비율이고,
+   흐리게(opacity) 보이다가 마우스를 올리면 진해집니다. 누르면 그룹 만들기/참가 모달이 열립니다. */
+.groupCardAdd {
+  flex: 0 0 calc((100% - 96px) / 4);
+  aspect-ratio: 395 / 240;
+  container-type: inline-size; /* 안의 글자·아이콘 크기를 카드 폭(cqw) 기준으로 */
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.8cqw;
+  padding: 0;
+
+  border: 2px dashed var(--color-primary);
+  border-radius: 15px;
+  background: rgba(102, 124, 85, 0.04);
+  color: var(--color-primary);
+  font-family: inherit;
+
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.groupCardAdd:hover {
+  opacity: 0.8;
+}
+.groupCardAddPlus {
+  width: 11cqw;
+  height: 11cqw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-primary);
+  border-radius: 50%;
+}
+.groupCardAddPlus svg {
+  width: 55%;
+  height: 55%;
+}
+.groupCardAddTitle {
+  font-size: max(15px, 4.6cqw);
+  font-weight: 600;
+}
+.groupCardAddDesc {
+  font-size: max(11px, 3.1cqw);
 }
