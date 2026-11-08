@@ -16,7 +16,7 @@ import styles from './GroupListPage.module.css';
 // 그 사이드바 항목을 유지하게 합니다(state가 없으면 예전처럼 "메인").
 const GROUP_FROM_LIST = { from: 'member' } as const;
 
-type Group = { id: string; name: string; invite_code: string };
+type Group = { id: string; name: string; invite_code: string; avatar_url: string | null };
 
 /** 카드에 표시할 "회의 N / 문서 N / 멤버 N" + 정렬용 마지막 회의 시각 */
 type GroupStats = {
@@ -76,7 +76,7 @@ export default function GroupListPage() {
   const fetchGroups = async (uid: string) => {
     const { data } = await supabase
       .from('group_members')
-      .select('group_id, groups(id, name, invite_code)')
+      .select('group_id, groups(id, name, invite_code, avatar_url)')
       .eq('user_id', uid);
     const seen = new Set<string>();
     const list: Group[] = [];
@@ -275,7 +275,9 @@ export default function GroupListPage() {
                     onClick={() => navigate(`/group/${g.id}`, { state: GROUP_FROM_LIST })}
                   >
                     {/* 각 요소는 카드 SVG 좌표계의 %로 배치합니다(CSS 참고) */}
-                    <div className={styles.badge}>{g.name.trim().charAt(0) || 'G'}</div>
+                    <div className={styles.badge}>
+                      {g.avatar_url ? <img src={g.avatar_url} alt="" /> : g.name.trim().charAt(0) || 'G'}
+                    </div>
                     <div className={styles.name}>{g.name}</div>
                     <div className={styles.invite}>초대코드 {g.invite_code}</div>
                     <div className={styles.members}>

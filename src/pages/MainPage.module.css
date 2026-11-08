@@ -197,6 +197,15 @@
 
   pointer-events: none;
 }
+
+/* 그룹 대표 이미지가 있으면 글자 대신 — 글자와 같은 자리에 같은 크기(1em 정사각형)로 */
+.groupCardBadge img {
+  display: block;
+  width: 1em;
+  height: 1em;
+  border-radius: 20%;
+  object-fit: cover;
+}
 /* 그룹명 — 시안: 초록 #667C55, 600. 왼쪽 43.88%(텍스트 칼럼 시작), 위 13.29% */
 .groupCardName {
   position: absolute;

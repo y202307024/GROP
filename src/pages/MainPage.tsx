@@ -28,6 +28,7 @@ type Group = {
   id: string;
   name: string;
   invite_code: string;
+  avatar_url: string | null;
 };
 
 // 그룹 카드에 표시할 "회의 N / 문서 N / 멤버 N" — group_id별로 집계해서 보관합니다.
@@ -209,7 +210,7 @@ export default function MainPage() {
   const fetchGroups = async (uid: string) => {
     const { data } = await supabase
       .from('group_members')
-      .select('group_id, groups(id, name, invite_code)')
+      .select('group_id, groups(id, name, invite_code, avatar_url)')
       .eq('user_id', uid);
     const seen = new Set<string>();
     const list: Group[] = [];
@@ -396,7 +397,9 @@ export default function MainPage() {
                   onClick={() => navigate(`/group/${g.id}`)}
                 >
                   {/* 시안처럼 각 요소를 카드 안에 비율 좌표로 배치합니다(CSS 참고) */}
-                  <div className={styles.groupCardBadge}>{g.name.trim().charAt(0) || 'G'}</div>
+                  <div className={styles.groupCardBadge}>
+                    {g.avatar_url ? <img src={g.avatar_url} alt="" /> : g.name.trim().charAt(0) || 'G'}
+                  </div>
                   <div className={styles.groupCardName}>{g.name}</div>
                   <div className={styles.groupCardInvite}>초대코드 {g.invite_code}</div>
                   <div className={styles.groupCardMembers}>
