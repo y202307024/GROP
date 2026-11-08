@@ -11,7 +11,7 @@ import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedul
 import styles from './GroupPage.module.css';
 
 // created_at 은 groups 테이블에 있을 때만 채워집니다(select('*')라 컬럼이 없으면 undefined → 날짜를 그리지 않음).
-type Group = { id: string; name: string; invite_code: string; created_at?: string | null };
+type Group = { id: string; name: string; invite_code: string; created_at?: string | null; avatar_url?: string | null };
 type MyProfile = { nickname: string | null; avatar: string | null; avatar_url: string | null };
 // user_id는 "나" 표시와 그룹 편집 모달의 멤버 권한 목록에 필요해서 함께 들고 있습니다.
 type MemberPreview = { user_id: string; nickname: string; avatar: string };
@@ -408,10 +408,14 @@ export default function GroupPage() {
         groupId={group.id}
         groupName={group.name}
         groupMemo={memo}
+        groupAvatarUrl={group.avatar_url ?? null}
         members={members}
         currentUserId={currentUserId}
         onClose={() => setEditOpen(false)}
         onMemberProfileSaved={() => setProfileReload((n) => n + 1)}
+        onAvatarSaved={(avatarUrl) => {
+          setGroup((prev) => (prev ? { ...prev, avatar_url: avatarUrl } : prev));
+        }}
         onSaved={(name, nextMemo) => {
           setGroup((prev) => (prev ? { ...prev, name } : prev));
           setMemo(nextMemo);

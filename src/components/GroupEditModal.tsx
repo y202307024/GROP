@@ -6,6 +6,8 @@ import Icon from './Icon';
 import GroupProfileEditModal from './GroupProfileEditModal';
 import styles from './GroupEditModal.module.css';
 
+const MAX_FILE_SIZE_MB = 3;
+
 export type GroupEditMember = {
   user_id: string;
   nickname: string;
@@ -18,6 +20,8 @@ type Props = {
   groupName: string;
   /** 그룹 상세 페이지의 메모 배너와 세션 동안 공유하는 값 (DB에 저장되진 않습니다). */
   groupMemo: string;
+  /** 그룹 대표 이미지 — groups.avatar_url (GroupSettings 페이지와 같은 컬럼) */
+  groupAvatarUrl: string | null;
   /**
    * 멤버 목록 — GroupPage/MemberList와 똑같이 "배열의 첫 번째가 방장"이라는 규칙을 따릅니다.
    * (group_members에 role 컬럼이 없어서 이 프로젝트 전체가 이 방식으로 방장을 구분하고 있습니다.)
@@ -27,6 +31,8 @@ type Props = {
   onClose: () => void;
   /** 그룹 이름 저장이 성공했을 때 호출 — 호출한 쪽(GroupPage)이 화면에 바로 반영할 수 있도록 알려줍니다. */
   onSaved: (name: string, memo: string) => void;
+  /** 이미지 업로드가 끝나 groups.avatar_url에 저장된 직후 호출 — 호출한 쪽이 화면에 바로 반영합니다. */
+  onAvatarSaved?: (avatarUrl: string | null) => void;
   /** 내 "그룹 프로필 편집"을 저장했을 때 호출 — 호출한 쪽이 멤버 목록(이름/아바타)을 다시 불러옵니다. */
   onMemberProfileSaved?: () => void;
 };
@@ -43,21 +49,25 @@ export default function GroupEditModal({
   groupId,
   groupName,
   groupMemo,
+  groupAvatarUrl,
   members,
   currentUserId,
   onClose,
   onSaved,
+  onAvatarSaved,
   onMemberProfileSaved,
 }: Props) {
   const [name, setName] = useState(groupName);
   /**
-   * 그룹 메모 / 대표 이미지 / 멤버 권한 변경은 전부 화면에서만 동작합니다.
-   * groups 테이블에 memo·avatar 컬럼이 없고 group_members에도 role 컬럼이 없어서,
+   * 그룹 메모 / 멤버 권한 변경은 아직 화면에서만 동작합니다.
+   * groups 테이블에 memo 컬럼이 없고 group_members에도 role 컬럼이 없어서,
    * 지금은 저장을 눌러도 그룹 "이름"만 실제로 저장되고 나머지는 모달을 다시 열면 초기화됩니다.
    * 실제로 저장하려면 DB 스키마 추가가 먼저 필요합니다.
+   * (대표 이미지는 groups.avatar_url에 바로 저장됩니다 — GroupSettings 페이지와 같은 방식)
    */
   const [memo, setMemo] = useState('');
-  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(groupAvatarUrl);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [roleDraft, setRoleDraft] = useState<Record<string, '멤버' | '리더'>>({});
   const [saving, setSaving] = useState(false);
   /** 내 줄을 눌렀을 때 뜨는 "그룹 프로필 편집" 팝업 */
@@ -71,10 +81,10 @@ export default function GroupEditModal({
     if (!open) return;
     setName(groupName);
     setMemo(groupMemo);
-    setAvatarPreview(null);
+    setAvatarUrl(groupAvatarUrl);
     setRoleDraft({});
     setProfileOpen(false);
-  }, [open, groupName, groupMemo]);
+  }, [open, groupName, groupMemo, groupAvatarUrl]);
 
   if (!open) return null;
 
@@ -91,15 +101,38 @@ export default function GroupEditModal({
 
   const initial = groupName.trim().charAt(0) || 'G';
 
-  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  /** 그룹 대표 이미지 업로드 — avatars 버킷에 올리고 groups.avatar_url을 바로 갱신합니다(GroupSettings와 동일) */
+  const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    // 업로드 API가 따로 없어서, 레거시 group-edit-modal.js와 똑같이 미리보기만 보여줍니다.
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') setAvatarPreview(reader.result);
-    };
-    reader.readAsDataURL(file);
+    if (!file || readOnly) return;
+    if (!file.type.startsWith('image/')) {
+      alert('이미지 파일만 업로드할 수 있어요');
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+      alert(`이미지 용량은 ${MAX_FILE_SIZE_MB}MB 이하로 올려주세요`);
+      return;
+    }
+
+    setUploadingAvatar(true);
+    const ext = file.name.split('.').pop() || 'jpg';
+    const path = `${currentUserId}/group-avatar-${groupId}-${Date.now()}.${ext}`;
+    const { error: uploadError } = await supabase.storage.from('avatars').upload(path, file, { upsert: true });
+    if (uploadError) {
+      alert(`사진 업로드 실패: ${uploadError.message}`);
+      setUploadingAvatar(false);
+      return;
+    }
+    const { data: publicUrlData } = supabase.storage.from('avatars').getPublicUrl(path);
+    const url = publicUrlData.publicUrl;
+    const { error } = await supabase.from('groups').update({ avatar_url: url }).eq('id', groupId);
+    setUploadingAvatar(false);
+    if (error) {
+      alert(`저장 실패: ${error.message}`);
+      return;
+    }
+    setAvatarUrl(url);
+    onAvatarSaved?.(url);
   };
 
   const handleSave = async () => {
@@ -149,19 +182,19 @@ export default function GroupEditModal({
 
         <div className={styles.photoSection}>
           <div className={styles.photoPreview}>
-            {avatarPreview ? <img src={avatarPreview} alt="" /> : initial}
+            {avatarUrl ? <img src={avatarUrl} alt="" /> : initial}
           </div>
           <div>
             <button
               type="button"
               className={`secondary-button ${styles.photoButton}`}
-              disabled={readOnly}
+              disabled={readOnly || uploadingAvatar}
               onClick={() => fileInputRef.current?.click()}
             >
               <Icon name="image" />
-              이미지 변경
+              {uploadingAvatar ? '업로드 중...' : '이미지 변경'}
             </button>
-            <p className={styles.photoCaption}>PNG, JPG · 최대 5MB</p>
+            <p className={styles.photoCaption}>PNG, JPG · 최대 {MAX_FILE_SIZE_MB}MB</p>
           </div>
           <input
             ref={fileInputRef}
