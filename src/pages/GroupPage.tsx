@@ -222,8 +222,8 @@ export default function GroupPage() {
         <div className={`group-detail-profile-row ${styles.profileRow}`}>
           <div className="group-detail-identity">
             <div className="group-detail-avatar">
-              {myProfile?.avatar_url
-                ? <img src={myProfile.avatar_url} alt="" />
+              {group.avatar_url || myProfile?.avatar_url
+                ? <img src={group.avatar_url || myProfile?.avatar_url || ''} alt="" />
                 : (group.name.trim().charAt(0) || 'G')}
             </div>
             <div className={styles.identityText}>
