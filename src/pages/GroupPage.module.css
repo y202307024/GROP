@@ -41,9 +41,8 @@
   align-items: center;
   gap: var(--space-5);
 
-  /* 메모가 있을 때 연두색. 기존 민트(#e6f4e8)는 화면에서 파랑으로 보여서, 노란 기가 있는 연두로 둡니다.
-     비어 있을 때는 아래 .memoBannerMuted가 베이지로 덮습니다. */
-  background: #e7f6c4;
+  /* 메모가 있을 때 민트. 비어 있을 때는 아래 .memoBannerMuted가 베이지로 덮습니다. */
+  background: #e6f4e8;
   border-radius: var(--radius-lg);
 
   /* 위아래 12px → 8px: 글자만 들어올 때(아이콘 없음) 글자 줄 높이가 박스 높이를 정하므로 여백을 줄이고,
