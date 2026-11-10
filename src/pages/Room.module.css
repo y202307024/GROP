@@ -133,7 +133,7 @@
   border-color: #c6c6c6;
 }
 
-/* 경과 시간 앞 빨간 점 — 피그마는 녹화 중이 아니어도 항상 보입니다(24px → 17px, #FF0101, 글자와 간격 7px → 5px) */
+/* 경과 시간 앞 녹화 표시 — 녹화 전에는 회색, 녹화 버튼을 누르면 빨강(24px → 17px, 글자와 간격 7px → 5px) */
 :global(.meeting-page) .meetingTitleTime {
   gap: 5px;
 }
@@ -144,10 +144,15 @@
   width: 17px;
   height: 17px;
   border-radius: 50%;
-  /* 라디오 버튼(바깥 링 + 안쪽 점) 모양 */
-  border: 1.4px solid #ff0101;
-  background: radial-gradient(circle, #ff0101 0 38%, transparent 42%);
+  /* 라디오 버튼(바깥 링 + 안쪽 점). 녹화 전에는 눌러지지 않은 회색입니다. */
+  border: 1.4px solid #b5b5b5;
+  background: radial-gradient(circle, #b5b5b5 0 38%, transparent 42%);
   box-shadow: none;
+}
+
+:global(.meeting-page) .meetingTitleTime.isRecording::before {
+  border-color: #ff0101;
+  background: radial-gradient(circle, #ff0101 0 38%, transparent 42%);
 }
 
 /* 하단 도구 줄: 캔버스 아래 간격 16px → 11px. 높이는 도구 버튼(32px) 때문에 피그마(26px)보다

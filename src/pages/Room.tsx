@@ -192,17 +192,17 @@ function RoomTopHeader({
   groupId?: string;
 }) {
   const room = useRoomContext();
-  const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [elapsed, setElapsed] = useState(0);
+  // 화면에 보이는 시간은 회의 입장 시각이 아니라 녹화 길이입니다. 녹화 전에는 0초에 멈춥니다.
+  const [recordingElapsed, setRecordingElapsed] = useState(0);
 
   useEffect(() => {
-    // 늦게 들어온 사람도 먼저 있던 사람의 시작 시각을 써야 진행 시간이 같아집니다.
+    // 화면 시계와는 별개로, 회의 기록에 남길 입장 시각을 참가자끼리 맞춥니다.
     const adopt = (ms: number) => {
       if (!Number.isFinite(ms) || ms <= 0) return;
       const now = Date.now();
       if (ms > now + 10_000) return;
       const value = Math.min(ms, now);
-      setStartedAt((prev) => (prev == null || value < prev ? value : prev));
+      // 화면 시계와 별개로, 회의 기록용 입장 시각만 가장 이른 값으로 유지합니다.
       if (openedAtRef.current == null || value < openedAtRef.current) {
         openedAtRef.current = value;
         rememberRoomOpened(groupId, value);
@@ -259,19 +259,24 @@ function RoomTopHeader({
   }, [room, openedAtRef, groupId]);
 
   useEffect(() => {
-    if (!startedAt) return;
-    const tick = () => setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    // 녹화 버튼을 누르기 전에는 시간을 올리지 않습니다. 누르면 그 시점부터 1초씩 셉니다.
+    if (!isRecording) {
+      setRecordingElapsed(0);
+      return;
+    }
+    const started = Date.now();
+    const tick = () => setRecordingElapsed(Math.floor((Date.now() - started) / 1000));
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [startedAt]);
+  }, [isRecording]);
 
   // 그룹명은 우측 사이드바에서 편집 — 헤더는 로고 + 타이머만 둡니다.
   return (
     <header className={`${shell.meetingHeader} ${styles.roomHeader}`}>
       <Link to="/main" className={styles.roomLogo}>GROP</Link>
       <span className={`${styles.meetingTitleTime}${isRecording ? ` ${styles.isRecording}` : ''}`}>
-        {startedAt ? formatMeetingElapsed(elapsed) : '00:00:00'}
+        {formatMeetingElapsed(recordingElapsed)}
       </span>
     </header>
   );

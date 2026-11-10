@@ -82,7 +82,8 @@
     font-size: 13px;
     font-weight: 700;
 
-    border-bottom: 1px solid #f2f2f2;
+    /* 제목과 목록을 나눕니다. #f2f2f2는 흰 배경에서 거의 안 보였습니다. */
+    border-bottom: 1px solid #c6c6c6;
 }
 
 
@@ -94,15 +95,11 @@
 
 
 .notification-item {
+    position: relative;
+
     padding: 12px 16px;
 
-    border-bottom: 1px solid #f5f5f5;
-
     cursor: default;
-}
-
-.notification-item:last-child {
-    border-bottom: none;
 }
 
 .notification-item:hover {
@@ -170,8 +167,22 @@
     width: 100%;
     text-align: left;
     background: transparent;
+    /* 버튼 기본 테두리를 지우면 border-bottom 구분선도 같이 사라지므로, 선은 ::after로 둡니다. */
     border: none;
     cursor: pointer;
+}
+
+.notification-item::after {
+    content: '';
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    bottom: 0;
+    border-bottom: 1px solid #c6c6c6;
+}
+
+.notification-item:last-child::after {
+    display: none;
 }
 
 .notification-item.unread .notification-item-title {
