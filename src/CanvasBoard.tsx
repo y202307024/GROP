@@ -865,6 +865,25 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const strokeStartPointRef = useRef<Point | null>(null);
   const pendingChunkRef = useRef<Point[]>([]);
   const chunkTimerRef = useRef<number | null>(null);
+  /**
+   * 보드 비트맵이 월드 좌표에서 차지하는 범위입니다.
+   * origin 은 월드 (0,0) — 처음 연 화면의 왼쪽 위 — 이 비트맵 안에서 떨어진 거리이고,
+   * 화면을 옮기면 그 방향으로 이 범위가 늘어나 그릴 수 있는 끝이 생기지 않습니다.
+   */
+  const boardExtentRef = useRef<{
+    originX: number;
+    originY: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  /** getPoint·스포이트가 읽는 원점. boardExtentRef 와 항상 같이 갱신합니다. */
+  const boardOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const [boardFrame, setBoardFrame] = useState<{
+    originX: number;
+    originY: number;
+    width: number;
+    height: number;
+  } | null>(null);
   /** 보드를 바꾸기 전에 아직 저장 중인 획을 끝냅니다. flushChunk가 생긴 뒤 채웁니다. */
   const flushBoardWritesRef = useRef<() => Promise<void>>(async () => {});
   const strokeWriteChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -1001,6 +1020,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [showLibrary, setShowLibrary] = useState(false);
   const [pendingStampKind, setPendingStampKind] = useState<'rect' | 'circle' | 'triangle' | null>(null);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  /** 드래그 중 이동은 렌더 전에도 최신 값이 필요해서 ref 로 같이 둡니다. */
+  const panOffsetRef = useRef({ x: 0, y: 0 });
   const [zoomIndex, setZoomIndex] = useState(DEFAULT_ZOOM_INDEX);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -1480,6 +1501,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const activeTool = spacePressed ? 'hand' : tool;
   const zoomScale = ZOOM_STEPS[zoomIndex];
+  /** 리사이즈 콜백은 첫 렌더에 고정되므로, 확대 배율은 ref 로 읽습니다. */
+  const zoomScaleRef = useRef(zoomScale);
+  zoomScaleRef.current = zoomScale;
   const zoomPercent = Math.round(zoomScale * 100);
   const isShapeTool = (t: Tool): t is ShapeTool =>
     t === 'rectangle' || t === 'diamond' || t === 'triangle' || t === 'pentagon' || t === 'hexagon' || t === 'star' || t === 'ellipse' || t === 'arrow' || t === 'line' || t === 'elbowArrow' || t === 'curveArrow';
@@ -1645,6 +1669,181 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     return ctx;
   };
 
+  const boardDeviceScale = () => (window.devicePixelRatio || 1) * getAppShellScale();
+
+  /** 월드 좌표가 처음 화면의 왼쪽 위에 맞게 캔버스 변환을 다시 겁니다. */
+  const applyBoardTransform = () => {
+    const extent = boardExtentRef.current;
+    const ctx = ctxRef.current ?? ensureContext();
+    if (!extent || !ctx) return;
+    const dpr = boardDeviceScale();
+    ctx.setTransform(dpr, 0, 0, dpr, extent.originX * dpr, extent.originY * dpr);
+  };
+
+  /** 비트맵을 현재 boardExtentRef 크기로 맞추고, 기존 그림은 제자리(shift 만큼 민 자리)에 둡니다. */
+  const commitBoardBitmap = (shiftCssX = 0, shiftCssY = 0) => {
+    const canvas = canvasRef.current;
+    const extent = boardExtentRef.current;
+    if (!canvas || !extent) return;
+
+    const dpr = boardDeviceScale();
+    boardOriginRef.current = { x: extent.originX, y: extent.originY };
+    setBoardFrame((prev) => {
+      if (
+        prev
+        && prev.originX === extent.originX
+        && prev.originY === extent.originY
+        && prev.width === extent.width
+        && prev.height === extent.height
+      ) {
+        return prev;
+      }
+      return {
+        originX: extent.originX,
+        originY: extent.originY,
+        width: extent.width,
+        height: extent.height,
+      };
+    });
+
+    const wantW = Math.max(1, Math.floor(extent.width * dpr));
+    const wantH = Math.max(1, Math.floor(extent.height * dpr));
+    if (canvas.width === wantW && canvas.height === wantH && shiftCssX === 0 && shiftCssY === 0) {
+      // 크기 그대로여도 변환이 풀려 있으면 기존 획이 화면 밖에 그려집니다.
+      applyBoardTransform();
+      return;
+    }
+
+    // 브라우저 캔버스 한도(가로·세로 16384, 면적 약 2.6억 픽셀)를 넘기면 그림이 사라지므로 여기서 멈춥니다.
+    if (wantW > 16384 || wantH > 16384 || wantW * wantH > 268_435_456) return;
+
+    const oldCssW = Number.parseFloat(canvas.style.width);
+    const oldCssH = Number.parseFloat(canvas.style.height);
+    const sameCss = oldCssW === extent.width && oldCssH === extent.height;
+
+    const prev = document.createElement('canvas');
+    prev.width = canvas.width;
+    prev.height = canvas.height;
+    const prevCtx = prev.getContext('2d');
+    if (prevCtx && canvas.width > 0 && canvas.height > 0) prevCtx.drawImage(canvas, 0, 0);
+
+    canvas.width = wantW;
+    canvas.height = wantH;
+    // 왼쪽·위 여백이 늘면 원점도 커집니다. 리렌더 전에 어긋나지 않게 위치까지 바로 맞춥니다.
+    canvas.style.position = 'absolute';
+    canvas.style.left = `${-extent.originX}px`;
+    canvas.style.top = `${-extent.originY}px`;
+    canvas.style.width = `${extent.width}px`;
+    canvas.style.height = `${extent.height}px`;
+
+    const ctx = canvas.getContext('2d', { alpha: true });
+    if (!ctx) return;
+    ctxRef.current = ctx;
+    // 좌표 0,0 이 처음 화면의 왼쪽 위에 오도록 원점만큼 밀어 그립니다.
+    ctx.setTransform(dpr, 0, 0, dpr, extent.originX * dpr, extent.originY * dpr);
+
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (prev.width > 0 && prev.height > 0) {
+      if (sameCss) {
+        // 배율만 바뀐 경우에는 같은 자리에 새 해상도로 맞춥니다.
+        ctx.drawImage(prev, 0, 0, wantW, wantH);
+      } else {
+        ctx.drawImage(prev, Math.round(shiftCssX * dpr), Math.round(shiftCssY * dpr));
+      }
+    }
+    ctx.restore();
+
+    revealExpandedFilesOnCanvas();
+    // 픽셀 크기가 바뀌면 이전 ImageData 히스토리는 쓸 수 없어 현재 화면만 기준으로 다시 둡니다.
+    initHistory();
+  };
+
+  /**
+   * 월드 사각형이 비트맵 안에 들어오게 그 방향으로 보드를 늘립니다.
+   * 조금 움직일 때마다 통째로 복사하지 않도록, 늘릴 때는 화면 한 장 단위로 붙입니다.
+   */
+  const growBoardToCover = (minX: number, minY: number, maxX: number, maxY: number) => {
+    const extent = boardExtentRef.current;
+    const area = canvasAreaRef.current;
+    if (!extent || !area) return;
+
+    const viewW = Math.max(1, area.clientWidth);
+    const viewH = Math.max(1, area.clientHeight);
+    let addL = Math.max(0, Math.ceil(-minX - extent.originX));
+    let addT = Math.max(0, Math.ceil(-minY - extent.originY));
+    let addR = Math.max(0, Math.ceil(maxX - (extent.width - extent.originX)));
+    let addB = Math.max(0, Math.ceil(maxY - (extent.height - extent.originY)));
+    if (addL === 0 && addT === 0 && addR === 0 && addB === 0) return;
+
+    if (addL > 0) addL = Math.max(addL, Math.ceil(viewW));
+    if (addR > 0) addR = Math.max(addR, Math.ceil(viewW));
+    if (addT > 0) addT = Math.max(addT, Math.ceil(viewH));
+    if (addB > 0) addB = Math.max(addB, Math.ceil(viewH));
+
+    const dpr = boardDeviceScale();
+    const fits = (l: number, t: number, r: number, b: number) => {
+      const dw = Math.floor((extent.width + l + r) * dpr);
+      const dh = Math.floor((extent.height + t + b) * dpr);
+      return dw > 0 && dh > 0 && dw <= 16384 && dh <= 16384 && dw * dh <= 268_435_456;
+    };
+    let guard = 0;
+    while (!fits(addL, addT, addR, addB) && guard < 24) {
+      if (addR >= addL && addR >= addT && addR >= addB && addR > 0) addR = Math.floor(addR / 2);
+      else if (addB >= addL && addB >= addT && addB > 0) addB = Math.floor(addB / 2);
+      else if (addL >= addT && addL > 0) addL = Math.floor(addL / 2);
+      else if (addT > 0) addT = Math.floor(addT / 2);
+      else break;
+      guard += 1;
+    }
+    if (!fits(addL, addT, addR, addB)) return;
+    if (addL === 0 && addT === 0 && addR === 0 && addB === 0) return;
+
+    boardExtentRef.current = {
+      originX: extent.originX + addL,
+      originY: extent.originY + addT,
+      width: extent.width + addL + addR,
+      height: extent.height + addT + addB,
+    };
+    // 왼쪽·위를 늘리면 기존 픽셀을 그만큼 오른쪽으로 옮겨야 그림 위치가 유지됩니다.
+    commitBoardBitmap(addL, addT);
+  };
+
+  /** 지금 보이는 화면과 그 바깥 한 화면이 보드 안에 있게 합니다. */
+  const ensureVisibleBoard = (panX: number, panY: number) => {
+    const area = canvasAreaRef.current;
+    const extent = boardExtentRef.current;
+    if (!area || !extent) return;
+    const viewW = area.clientWidth;
+    const viewH = area.clientHeight;
+    const z = zoomScaleRef.current || 1;
+    const left = (0 - panX) / z;
+    const top = (0 - panY) / z;
+    const right = (viewW - panX) / z;
+    const bottom = (viewH - panY) / z;
+    // 가장자리에 닿기 전에 한 화면씩 미리 붙여, 그 자리에서 바로 그릴 수 있게 합니다.
+    growBoardToCover(left - viewW, top - viewH, right + viewW, bottom + viewH);
+  };
+
+  /** 브라우저 한도 때문에 더 못 늘리면, 빈 곳으로 넘어가지 않게 화면만 보드 안에 붙입니다. */
+  const clampPanToBoard = (x: number, y: number) => {
+    const extent = boardExtentRef.current;
+    const area = canvasAreaRef.current;
+    if (!extent || !area) return { x, y };
+    const z = zoomScaleRef.current || 1;
+    const viewW = area.clientWidth;
+    const viewH = area.clientHeight;
+    const minX = viewW - z * (extent.width - extent.originX);
+    const maxX = extent.originX * z;
+    const minY = viewH - z * (extent.height - extent.originY);
+    const maxY = extent.originY * z;
+    return {
+      x: Math.min(maxX, Math.max(minX, x)),
+      y: Math.min(maxY, Math.max(minY, y)),
+    };
+  };
+
   const resizeCanvasIfNeeded = () => {
     const canvas = canvasRef.current;
     const area = canvasAreaRef.current;
@@ -1653,47 +1852,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // getBoundingClientRect()는 transform: scale(회의방 확대)이 곱해진 크기라, 1440px 이상에서 캔버스가
     // 배율만큼 더 커져 버립니다 → 배율에 영향받지 않는 clientWidth/Height(레이아웃 px)를 씁니다.
     // 대신 확대된 화면에서도 선명하도록 픽셀 해상도(dpr)에만 배율을 곱합니다.
-    const dpr = (window.devicePixelRatio || 1) * getAppShellScale();
-    const nextWidth = Math.max(1, Math.floor(area.clientWidth));
-    const nextHeight = Math.max(1, Math.floor(area.clientHeight));
-
-    const wantW = Math.floor(nextWidth * dpr);
-    const wantH = Math.floor(nextHeight * dpr);
-
-    if (canvas.width === wantW && canvas.height === wantH) return;
-
-    // 리사이즈 시 기존 그림을 유지합니다.
-    const prev = document.createElement('canvas');
-    prev.width = canvas.width;
-    prev.height = canvas.height;
-    const prevCtx = prev.getContext('2d');
-    if (prevCtx) prevCtx.drawImage(canvas, 0, 0);
-
-    canvas.width = wantW;
-    canvas.height = wantH;
-    canvas.style.width = `${nextWidth}px`;
-    canvas.style.height = `${nextHeight}px`;
-
-    const ctx = canvas.getContext('2d', { alpha: true });
-    if (!ctx) return;
-    ctxRef.current = ctx;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
-
-    // 배경은 보드 영역(#fff)과 펼친 파일이 비치도록 투명하게 둡니다.
-    ctx.clearRect(0, 0, nextWidth, nextHeight);
-
-    // 기존 내용을 최대한 복원합니다.
-    if (prev.width > 0 && prev.height > 0) {
-      const prevCssW = prev.width / dpr;
-      const prevCssH = prev.height / dpr;
-      ctx.drawImage(prev, 0, 0, prev.width, prev.height, 0, 0, prevCssW, prevCssH);
+    const viewW = Math.max(1, Math.floor(area.clientWidth));
+    const viewH = Math.max(1, Math.floor(area.clientHeight));
+    // 레이아웃이 잡히기 전의 1px 측정으로 보드 크기가 고정되지 않게 합니다.
+    if (!boardExtentRef.current && viewW >= 80 && viewH >= 80) {
+      // 처음에는 보이는 화면과 사방 한 화면씩만 만들고, 이동하면 그 다음이 붙습니다.
+      boardExtentRef.current = {
+        originX: viewW,
+        originY: viewH,
+        width: viewW * 3,
+        height: viewH * 3,
+      };
     }
+    if (!boardExtentRef.current) return;
 
-    revealExpandedFilesOnCanvas();
-    // 픽셀 크기가 바뀌면 이전 ImageData 히스토리는 쓸 수 없어 현재 화면만 기준으로 다시 둡니다.
-    // (도형 직후 툴바 높이 변화로 리사이즈가 나면 실행취소가 통째로 사라지던 원인)
-    initHistory();
+    commitBoardBitmap(0, 0);
+    ensureVisibleBoard(panOffsetRef.current.x, panOffsetRef.current.y);
   };
 
   const captureCanvasState = (): ImageData | null => {
@@ -1701,6 +1875,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx || canvas.width === 0 || canvas.height === 0) return null;
     try {
+      // 여백을 포함한 큰 보드의 전체 스냅샷은 메모리를 너무 쓰므로 건너뜁니다. 실행취소는 이벤트 로그를 씁니다.
+      if (canvas.width * canvas.height > 8_000_000) return null;
       return ctx.getImageData(0, 0, canvas.width, canvas.height);
     } catch {
       // 오염된 캔버스·메모리 부족 등에서는 히스토리를 건너뜁니다.
@@ -1714,10 +1890,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const ctx = ctxRef.current ?? ensureContext();
     if (!canvas || !ctx) return;
     const dpr = (window.devicePixelRatio || 1) * getAppShellScale();
+    const origin = boardOriginRef.current ?? { x: 0, y: 0 };
     for (const file of placedFilesRef.current) {
       if (!file.expanded) continue;
-      const x = Math.max(0, Math.floor(file.x * dpr));
-      const y = Math.max(0, Math.floor((file.y + FILE_CARD_HEADER_H) * dpr));
+      const x = Math.max(0, Math.floor((file.x + origin.x) * dpr));
+      const y = Math.max(0, Math.floor((file.y + origin.y + FILE_CARD_HEADER_H) * dpr));
       const w = Math.min(canvas.width - x, Math.floor(file.width * dpr));
       const h = Math.min(
         canvas.height - y,
@@ -1886,6 +2063,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   useEffect(() => {
     requestAnimationFrame(() => resizeCanvasIfNeeded());
   }, [replaySession]);
+
+  // 축소하면 보이는 월드가 넓어지므로, 그 범위까지 보드를 늘립니다.
+  useEffect(() => {
+    ensureVisibleBoard(panOffsetRef.current.x, panOffsetRef.current.y);
+  }, [zoomScale]);
 
   useEffect(() => {
     // actorId: 로그인한 사용자가 있으면 user.id를 사용하고, 없으면 브라우저 세션 ID를 사용합니다.
@@ -2133,6 +2315,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   ) => {
     const ctx = ctxRef.current ?? ensureContext();
     if (!ctx) return;
+    // save 보다 먼저 걸어야, restore 가 원점 변환을 지우지 않습니다.
+    applyBoardTransform();
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -2157,6 +2341,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   ) => {
     const ctx = ctxRef.current ?? ensureContext();
     if (!ctx) return;
+    applyBoardTransform();
     ctx.save();
     ctx.globalCompositeOperation = strokeTool === 'eraser' ? 'destination-out' : 'source-over';
     ctx.fillStyle = strokePaintColor(strokeColor, opacity, strokeTool);
@@ -2185,6 +2370,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
     const ctx = ctxRef.current ?? ensureContext();
     if (!ctx) return;
+    applyBoardTransform();
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -3262,6 +3448,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
 
     resetHistory();
+    // 여백 캔버스가 잡히기 전에 그리면 획이 화면 밖 모서리에 붙고, 보이는 곳은 비어 있습니다.
+    resizeCanvasIfNeeded();
+    applyBoardTransform();
     for (const ev of events) {
       // 이미지 등은 비동기로 그려지므로, 그리는 도중 보드가 바뀌면 남은 이벤트를 멈춥니다.
       if (isStale()) return;
@@ -3385,6 +3574,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       lastSavedTitleRef.current[boardId] = title;
     }
     if (!initialTimelapseSaveId) {
+      // 다른 보드를 보다가 돌아와도 그 보드의 원래 위치가 보이게 화면 이동만 되돌립니다.
+      panOffsetRef.current = { x: 0, y: 0 };
+      setPanOffset({ x: 0, y: 0 });
       loadAndRenderBoard(boardId);
     }
 
@@ -3474,6 +3666,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (ev.type === 'region.erase') {
       const p = ev.payload as RegionErasePayload;
       if (typeof p?.x === 'number' && typeof p?.y === 'number' && typeof p?.width === 'number' && typeof p?.height === 'number') {
+        applyBoardTransform();
         applyRegionEraseLocal({ x: p.x, y: p.y, width: p.width, height: p.height });
       }
       return;
@@ -3526,6 +3719,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const p = ev.payload as ShapeAddPayload;
       const ctx = ctxRef.current ?? ensureContext();
       if (!ctx) return;
+      applyBoardTransform();
       drawShapeTool(ctx, p.tool, p.from, p.to, {
         strokeStyle: colorWithOpacity(p.color, typeof p.strokeOpacity === 'number' ? p.strokeOpacity : 1),
         lineWidth: p.size,
@@ -3850,9 +4044,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
+    const origin = boardOriginRef.current ?? { x: 0, y: 0 };
     return {
-      x: ((e.clientX - rect.left) / rect.width) * canvas.clientWidth,
-      y: ((e.clientY - rect.top) / rect.height) * canvas.clientHeight,
+      x: ((e.clientX - rect.left) / rect.width) * canvas.clientWidth - origin.x,
+      y: ((e.clientY - rect.top) / rect.height) * canvas.clientHeight - origin.y,
     };
   };
 
@@ -4198,8 +4393,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       setEyedropperActive(false);
       if (canvas && ctx && cb) {
         const dpr = (window.devicePixelRatio || 1) * getAppShellScale();
-        const x = Math.min(canvas.width - 1, Math.max(0, Math.floor(p.x * dpr)));
-        const y = Math.min(canvas.height - 1, Math.max(0, Math.floor(p.y * dpr)));
+        const origin = boardOriginRef.current ?? { x: 0, y: 0 };
+        const x = Math.min(canvas.width - 1, Math.max(0, Math.floor((p.x + origin.x) * dpr)));
+        const y = Math.min(canvas.height - 1, Math.max(0, Math.floor((p.y + origin.y) * dpr)));
         try {
           const [r, g, b] = ctx.getImageData(x, y, 1, 1).data;
           const hex = `#${[r, g, b].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
@@ -4395,7 +4591,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const dx = (e.clientX - panAnchorRef.current.x) / uiScale;
       const dy = (e.clientY - panAnchorRef.current.y) / uiScale;
       panAnchorRef.current = { x: e.clientX, y: e.clientY };
-      setPanOffset((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+      // 끝에서 막지 않고 그 방향으로 보드를 늘립니다. 브라우저가 더 못 담는 크기에서만 화면을 붙입니다.
+      const grown = {
+        x: panOffsetRef.current.x + dx,
+        y: panOffsetRef.current.y + dy,
+      };
+      ensureVisibleBoard(grown.x, grown.y);
+      const next = clampPanToBoard(grown.x, grown.y);
+      panOffsetRef.current = next;
+      setPanOffset(next);
       return;
     }
 
@@ -4492,6 +4696,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (!ctx || !p) return;
       lastPointRef.current = p;
       restoreSnapshot();
+      applyBoardTransform();
       drawShapeTool(ctx, activeTool, shapeStartRef.current, p, getShapeDrawStyle(), true);
       return;
     }
@@ -4608,6 +4813,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       const end = lastPointRef.current ?? from;
       if (ctx) {
         restoreSnapshot();
+        applyBoardTransform();
         drawShapeTool(ctx, activeTool, from, end, getShapeDrawStyle(), false);
       }
       const id = crypto.randomUUID();
@@ -5007,7 +5213,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             onPointerCancel={handlePointerUp}
             style={{
               display: 'block',
-              position: 'relative',
+              position: boardFrame ? 'absolute' : 'relative',
+              left: boardFrame ? -boardFrame.originX : undefined,
+              top: boardFrame ? -boardFrame.originY : undefined,
+              width: boardFrame ? boardFrame.width : undefined,
+              height: boardFrame ? boardFrame.height : undefined,
               zIndex: 2,
               background: 'transparent',
               touchAction: 'none',
