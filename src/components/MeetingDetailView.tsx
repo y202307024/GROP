@@ -4,7 +4,8 @@ import styles from './MeetingDetailView.module.css';
 import a from './MeetingDetailAi.module.css';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
-import { chatLogForSummary } from '../utils/liveMeeting';
+import { appendMeetingChat, chatLogForSummary, collectSameDayChat } from '../utils/liveMeeting';
+import { realChatMessages } from '../utils/meetingChat';
 import {
   deleteMeetingRecord,
   formatStorageBytes,
@@ -447,6 +448,8 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryInput, setSummaryInput] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
+  /** 채팅 기록 카드의 생성 버튼. 요약 생성과는 따로 돕니다. */
+  const [chatSaving, setChatSaving] = useState(false);
   const [aiStep, setAiStep] = useState('');
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState('');
@@ -538,8 +541,10 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
     return () => { mounted = false; };
   }, [meeting?.video_url, meeting?.video_key]);
 
+  const fetchGen = useRef(0);
   const fetchMeeting = async () => {
     // 선택된 회의가 없으면(id가 null) 서버 조회 없이 바로 빈 상태로 둡니다.
+    const gen = ++fetchGen.current;
     if (!meetingId) {
       setMeeting(null);
       setSummaryInput('');
@@ -552,8 +557,22 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       .select('*')
       .eq('id', meetingId)
       .single();
+    if (gen !== fetchGen.current) return;
     if (data) {
-      setMeeting(data);
+      // 목록은 녹화가 있는 행만 보여 줍니다. 채팅은 같은 날의 다른 행에 있을 수 있어 그 기록을 이 회의에 붙입니다.
+      let chatLog = data.chat_log;
+      if (data.group_id && data.date) {
+        const collected = await collectSameDayChat(data.group_id, data.date);
+        if (gen !== fetchGen.current) return;
+        if (collected.length > 0) {
+          const ownIds = new Set(realChatMessages(data.chat_log).map((msg) => msg.id));
+          const missing = collected.filter((msg) => !ownIds.has(msg.id));
+          if (missing.length > 0) await appendMeetingChat(data.id, missing);
+          chatLog = collected;
+        }
+      }
+      if (gen !== fetchGen.current) return;
+      setMeeting({ ...data, chat_log: chatLog });
       setSummaryInput(data.summary || '');
       setChapters(normalizeChapters(data.chapters));
     } else {
@@ -639,6 +658,23 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       // 자동재생이 막혀도 이동 자체는 됐으므로 무시
     });
     video.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  /** 같은 날 회의에 남은 채팅을 이 기록으로 모읍니다. 채팅이 없으면 안내만 합니다. */
+  const buildChatRecord = async () => {
+    if (!meeting?.id || !meeting.group_id || !meeting.date || chatSaving) return;
+    setChatSaving(true);
+    try {
+      const collected = await collectSameDayChat(meeting.group_id, meeting.date);
+      if (collected.length === 0) {
+        alert('이 회의에 저장된 채팅이 없어요.\n회의방에서 나눈 채팅이 있어야 기록이 만들어집니다.');
+        return;
+      }
+      await appendMeetingChat(meeting.id, collected);
+      setMeeting({ ...meeting, chat_log: collected });
+    } finally {
+      setChatSaving(false);
+    }
   };
 
   // AI 요약 생성 (챕터 포함)
@@ -931,7 +967,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
         key: 'chat',
         title: '채팅 기록',
         desc: '회의 중 주고받은 채팅을 저장해요.',
-        // 저장된 채팅이 생기면(chatMessages) 자동으로 "생성 완료"가 되고 다운로드가 켜집니다
+        // 저장된 채팅이 생기면 저장 완료가 되고 다운로드가 켜집니다. 생성은 같은 날 채팅을 이 회의에 모읍니다.
         done: hasChat,
         statusText: hasChat ? '저장 완료' : '저장된 기록이 없어요',
         canRegenerate: false,
@@ -1043,10 +1079,20 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                       <button
                         type="button"
                         className={a.regenButton}
-                        onClick={generateAiSummary}
-                        disabled={!f.canRegenerate || aiLoading || editingSummary || !meeting}
+                        onClick={() => {
+                          // 채팅 기록은 요약을 다시 만들지 않고, 같은 날 채팅을 이 회의에 모읍니다.
+                          if (f.key === 'chat') void buildChatRecord();
+                          else void generateAiSummary();
+                        }}
+                        disabled={
+                          f.key === 'chat'
+                            ? hasChat || chatSaving || !meeting
+                            : !f.canRegenerate || aiLoading || editingSummary || !meeting
+                        }
                       >
-                        {aiLoading && f.canRegenerate ? '만드는 중...' : f.done ? '다시 생성' : '생성'}
+                        {f.key === 'chat'
+                          ? (chatSaving ? '만드는 중...' : hasChat ? '다시 생성' : '생성')
+                          : (aiLoading && f.canRegenerate ? '만드는 중...' : f.done ? '다시 생성' : '생성')}
                       </button>
                       <button type="button" className={a.downloadButton} onClick={f.onDownload} disabled={!f.onDownload}>
                         <Icon name="download" />
@@ -1059,7 +1105,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
                   type="button"
                   className={a.downloadAll}
                   onClick={downloadAll}
-                  disabled={!hasSummary && !hasTranscript}
+                  disabled={!hasSummary && !hasTranscript && !hasChat}
                 >
                   <Icon name="download" />
                   전체 파일 다운로드

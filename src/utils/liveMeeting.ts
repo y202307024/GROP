@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
 import { addGroupMember } from './joinGroup';
-import { realChatMessages, type MeetingChatMessage } from './meetingChat';
+import { mergeChatMessages, realChatMessages, type MeetingChatMessage } from './meetingChat';
+import { localDayKey } from './meetingDocs';
 
 const USER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -343,6 +344,39 @@ export async function loadGroupChatHistory(groupId: string): Promise<GroupChatHi
     meetingId: String(row.id),
     messages: realChatMessages(row.chat_log),
   }));
+}
+
+/**
+ * 같은 그룹·같은 날 회의의 채팅을 한 목록으로 모읍니다.
+ * 녹화본과 채팅이 다른 회의 행에 있어도, 요약 화면의 채팅 기록에서 함께 보이게 합니다.
+ */
+export async function collectSameDayChat(groupId: string, dateIso: string): Promise<MeetingChatMessage[]> {
+  if (!groupId || !dateIso) return [];
+  const day = localDayKey(dateIso);
+  const anchor = new Date(dateIso);
+  if (Number.isNaN(anchor.getTime())) return [];
+  const start = new Date(anchor);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  const { data, error } = await supabase
+    .from('meetings')
+    .select('date, chat_log')
+    .eq('group_id', groupId)
+    .gte('date', start.toISOString())
+    .lt('date', end.toISOString());
+  if (error) {
+    if (!/chat_log/i.test(error.message)) console.warn('채팅 기록 조회 실패:', error.message);
+    return [];
+  }
+
+  const all: MeetingChatMessage[] = [];
+  for (const row of data ?? []) {
+    if (!row.date || localDayKey(row.date) !== day) continue;
+    all.push(...realChatMessages(row.chat_log));
+  }
+  return mergeChatMessages([], all);
 }
 
 /**

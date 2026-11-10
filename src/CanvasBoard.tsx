@@ -218,6 +218,81 @@ type Point = { x: number; y: number };
 
 type Board = { id: string; title: string; created_at: string };
 
+function lastUsedBoardKey(groupId: string) {
+  return `grop-last-group-board:${groupId}`;
+}
+
+/** 이 브라우저에서 이 그룹에 마지막으로 열어 둔 보드입니다. */
+function readRememberedGroupBoard(groupId: string) {
+  try {
+    return localStorage.getItem(lastUsedBoardKey(groupId));
+  } catch {
+    return null;
+  }
+}
+
+function rememberGroupBoard(groupId: string, boardId: string) {
+  try {
+    localStorage.setItem(lastUsedBoardKey(groupId), boardId);
+  } catch {
+    // 저장이 막혀도 이번 화면의 보드는 그대로 둡니다.
+  }
+}
+
+/** 그룹에서 이 보드를 마지막으로 연 시각을 남깁니다. 칸이 없으면 넘깁니다. */
+function touchGroupBoardUsed(boardId: string) {
+  void supabase
+    .from('boards')
+    .update({ last_used_at: new Date().toISOString() })
+    .eq('id', boardId)
+    .then(({ error }) => {
+      if (error && !/last_used_at/i.test(error.message)) {
+        console.warn('보드 사용 시각 저장 실패:', error.message);
+      }
+    });
+}
+
+/**
+ * 기존 보드로 열 한 장을 고릅니다.
+ * 그룹이 마지막으로 연 보드, 이 브라우저가 기억한 보드, 마지막으로 그린 보드 순입니다.
+ */
+async function pickLastUsedGroupBoard(groupId: string, list: Board[]): Promise<Board | null> {
+  if (list.length === 0) return null;
+  const ids = list.map((board) => board.id);
+
+  const stamped = await supabase
+    .from('boards')
+    .select('id, last_used_at')
+    .in('id', ids)
+    .order('last_used_at', { ascending: false, nullsFirst: false })
+    .limit(1);
+  if (!stamped.error) {
+    const row = stamped.data?.[0] as { id?: string; last_used_at?: string | null } | undefined;
+    if (row?.id && row.last_used_at) {
+      const found = list.find((board) => board.id === row.id);
+      if (found) return found;
+    }
+  }
+
+  const remembered = readRememberedGroupBoard(groupId);
+  const fromBrowser = remembered ? list.find((board) => board.id === remembered) : undefined;
+  if (fromBrowser) return fromBrowser;
+
+  const latestEvent = await supabase
+    .from('board_events')
+    .select('board_id')
+    .in('board_id', ids)
+    .order('ts', { ascending: false })
+    .limit(1);
+  if (!latestEvent.error) {
+    const eventBoardId = (latestEvent.data?.[0] as { board_id?: string } | undefined)?.board_id;
+    const drawn = eventBoardId ? list.find((board) => board.id === eventBoardId) : undefined;
+    if (drawn) return drawn;
+  }
+
+  return list[0] ?? null;
+}
+
 type StrokeTool = 'pen' | 'eraser';
 type EventType =
   | 'stroke.begin'
@@ -1177,6 +1252,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
    * (예전엔 입장 직후 선택창에서만 알려서, 회의 중 "새 보드"·목록 변경이 나에게만 반영됐습니다.)
    */
   const announceBoardSelection = (id: string, title: string) => {
+    // 목록이 자동으로 고른 보드가 아니라, 실제로 연 보드만 마지막 사용으로 남깁니다.
+    if (id && isGroupCanvas && groupId) {
+      rememberGroupBoard(groupId, id);
+      touchGroupBoardUsed(id);
+    }
     if (!meetingMode || !localParticipant || !id) return;
     const payload: MeetingBoardMessage = {
       type: 'board:selected',
@@ -1274,6 +1354,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         if (latestBoardSelectionRef.current !== msg) return;
         setBoardId(msg.boardId);
         if (msg.title) setBoardTitle(msg.title);
+        // 방에 이미 열려 있던 보드도 이 그룹의 마지막 사용 보드로 남깁니다.
+        if (groupId && msg.boardId) {
+          rememberGroupBoard(groupId, msg.boardId);
+          touchGroupBoardUsed(msg.boardId);
+        }
         // 다른 사람이 방금 만든 보드는 내 목록에 없어서 선택칸이 비어 보이므로 목록에도 넣습니다.
         setBoards((list) =>
           list.some((b) => b.id === msg.boardId)
@@ -1458,7 +1543,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   };
 
   // 초기 선택창에서 '기존 보드 불러오기'를 눌렀을 때 실행되는 함수입니다.
-  // 이미 저장된 보드 중 가장 최근 보드를 찾아서 현재 캔버스에 연결합니다.
+  // 그룹에서는 만든 순서가 아니라, 마지막으로 사용하던 보드를 다시 엽니다.
   const handleUseExistingBoardChoice = async () => {
     if (!canChangeBoard) {
       alert('보드 변경 권한이 없습니다.');
@@ -1469,10 +1554,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     markMeetingBoardReady();
     await flushBoardWritesRef.current();
     try {
-      // 그룹 회의에서는 다른 그룹 보드가 섞이지 않도록 이 그룹의 최신 보드만 고릅니다.
+      // 그룹 회의에서는 다른 그룹 보드가 섞이지 않게, 이 그룹에서 마지막으로 연 보드를 고릅니다.
       let board: Board | null = null;
       if (isGroupCanvas && groupId) {
-        board = (await fetchGroupBoards(groupId))[0] ?? null;
+        board = await pickLastUsedGroupBoard(groupId, await fetchGroupBoards(groupId));
       } else {
         const { data, error } = await supabase.from('boards').select('*').order('created_at', { ascending: false }).limit(1).maybeSingle();
         if (!error && data && data.id) board = data as Board;
