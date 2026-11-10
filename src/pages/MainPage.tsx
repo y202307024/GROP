@@ -12,7 +12,7 @@ import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
 import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingAttendeeFaces';
 import { liveHeadcount, liveRoomForMeeting, useLiveRooms } from '../utils/liveMeeting';
-import { isListedMeeting } from '../utils/meetingVideo';
+import { isListedMeeting, isRecordedMeeting } from '../utils/meetingVideo';
 import { fetchGroupChatFiles, fetchGroupMeetingDocs, fetchMeetingDocAttachments, isSameLocalDay, localDayKey } from '../utils/meetingDocs';
 import { displayFileName, downloadMeetingFile, formatChatFileSize } from '../utils/meetingChat';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
@@ -51,6 +51,8 @@ type MeetingRow = {
   chat_log?: unknown;
   created_by?: string | null;
   video_status?: string | null;
+  video_url?: string | null;
+  video_key?: string | null;
   /** 회의 중에 올린 파일. 완료된 회의는 이게 있을 때만 문서 목록에 둡니다. */
   attachments?: unknown;
 };
@@ -180,7 +182,7 @@ const MAX_MEETINGS = 40;
  * 한 칸이 없다고 참석자 정보를 통째로 버리지 않습니다.
  */
 async function loadRecentMeetings(groupIds: string[]): Promise<MeetingRow[]> {
-  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status', 'attachments'];
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status', 'video_url', 'video_key', 'attachments'];
   const base = ['id', 'title', 'date', 'summary', 'group_id'];
   for (let attempt = 0; attempt < columns.length; attempt += 1) {
     const result = await supabase
@@ -206,7 +208,7 @@ async function loadRecentMeetings(groupIds: string[]): Promise<MeetingRow[]> {
 /** 진행중 방이 최근 목록 밖에 있으면 그 회의 행을 따로 읽습니다. */
 async function loadMeetingsByIds(ids: string[]): Promise<MeetingRow[]> {
   if (ids.length === 0) return [];
-  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status', 'attachments'];
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status', 'video_url', 'video_key', 'attachments'];
   const base = ['id', 'title', 'date', 'summary', 'group_id'];
   for (let attempt = 0; attempt < columns.length; attempt += 1) {
     const result = await supabase.from('meetings').select(columns.join(', ')).in('id', ids);
@@ -502,34 +504,20 @@ export default function MainPage() {
     ? groups.find((group) => group.id === openDoc.group_id)?.name?.trim() || '그룹'
     : '';
 
-  // 문서 목록: 한 회의(같은 날·같은 그룹 보드)는 한 줄만 보여주고, 파일은 그 줄에 모읍니다.
+  // 문서 목록: 같은 회의방은 한 줄이고, 그 방에서 올린 파일은 첨부 목록에 여러 개로 모읍니다.
   const documentMeetings = useMemo(() => {
     const buckets = new Map<string, MeetingRow[]>();
     for (const meeting of meetings) {
-      const title = (meeting.title ?? '').trim().toLowerCase();
-      // 이름이 있으면 그 그룹 보드로, 없으면 그 날 회의로 묶습니다.
-      const key = title
-        ? `${meeting.group_id}::${title}`
-        : `${meeting.group_id}::${localDayKey(meeting.date)}`;
-      const list = buckets.get(key) ?? [];
+      const list = buckets.get(meeting.group_id) ?? [];
       list.push(meeting);
-      buckets.set(key, list);
+      buckets.set(meeting.group_id, list);
     }
-    const dayBuckets = new Map<string, MeetingRow[]>();
-    for (const list of buckets.values()) {
-      const newest = [...list].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-      const dayKey = `${newest.group_id}::${localDayKey(newest.date)}`;
-      const dayList = dayBuckets.get(dayKey) ?? [];
-      dayList.push(...list);
-      dayBuckets.set(dayKey, dayList);
-    }
-    const collapsed = [...dayBuckets.values()].map((list) => {
+    const collapsed = [...buckets.values()].map((list) => {
       const sorted = [...list].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       const live = liveReady ? sorted.find((row) => liveRoomForMeeting(liveRooms, row, meetings)) : undefined;
       const base = live ?? sorted[0];
       return {
         ...base,
-        title: base.title?.trim() ? base.title : sorted.find((row) => row.title?.trim())?.title ?? base.title,
         summary: sorted.find((row) => row.summary)?.summary ?? base.summary,
         attachments: unionUploadedFiles(...sorted.map((row) => row.attachments)),
       };
@@ -546,6 +534,27 @@ export default function MainPage() {
       })
       .slice(0, MEETING_VISIBLE);
   }, [meetings, liveRooms, liveReady]);
+
+  // 최근 AI 요약: 그룹 보드마다 나누지 않고, 같은 회의방·같은 날의 녹화 하나만 보여 줍니다.
+  const recentSummaries = useMemo(() => {
+    const buckets = new Map<string, MeetingRow[]>();
+    for (const meeting of meetings) {
+      if (!meeting.summary?.trim() && !isRecordedMeeting(meeting)) continue;
+      const key = `${meeting.group_id}::${localDayKey(meeting.date)}`;
+      const list = buckets.get(key) ?? [];
+      list.push(meeting);
+      buckets.set(key, list);
+    }
+    return [...buckets.values()]
+      .map((list) => {
+        const sorted = [...list].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const recorded = sorted.find((row) => isRecordedMeeting(row) && row.summary?.trim());
+        return recorded ?? sorted.find((row) => row.summary?.trim()) ?? null;
+      })
+      .filter((row): row is MeetingRow => !!row?.summary?.trim())
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, SUMMARY_VISIBLE);
+  }, [meetings]);
 
   return (
     <AppShell activePage="main">
@@ -703,8 +712,8 @@ export default function MainPage() {
 
           <section className={styles.panel}>
             <div className={styles.summaryList}>
-              {loaded && !meetings.some((m) => m.summary) && <div className={styles.panelEmpty}>아직 AI 요약이 없어요</div>}
-              {meetings.filter((m) => m.summary).slice(0, SUMMARY_VISIBLE).map((m) => (
+              {loaded && recentSummaries.length === 0 && <div className={styles.panelEmpty}>아직 AI 요약이 없어요</div>}
+              {recentSummaries.map((m) => (
                 // 이 카드의 회의 AI 요약 화면으로 이동합니다. 기본 탭은 요약입니다.
                 <div
                   key={m.id}

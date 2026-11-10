@@ -11,6 +11,23 @@ export function formatStorageBytes(bytes: number) {
   return gb >= 10 ? `${Math.round(gb)}GB` : `${gb.toFixed(1)}GB`;
 }
 
+/**
+ * 녹화가 저장된 회의인지. 보드만 바꾼 행이 아니라, 영상을 남긴 회의를 고를 때 씁니다.
+ * 업로드가 끝나지 않았거나 실패한 녹화도 그 회의의 녹화 행으로 봅니다.
+ */
+export function isRecordedMeeting(source: {
+  video_url?: string | null;
+  video_key?: string | null;
+  video_status?: string | null;
+} | null | undefined): boolean {
+  if (!source) return false;
+  if (meetingHasStoredVideo(source)) return true;
+  return source.video_status === 'uploaded'
+    || source.video_status === 'backed_up'
+    || source.video_status === 'pending_upload'
+    || source.video_status === 'failed';
+}
+
 /** 목록·상세에 재생할 영상이 있는지. R2 키와 예전 디스크 주소를 같이 봅니다. */
 export function meetingHasStoredVideo(source: {
   video_url?: string | null;

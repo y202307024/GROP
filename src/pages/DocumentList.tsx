@@ -23,7 +23,6 @@ import {
   fetchMeetingDocAttachments,
   fetchGroupChatFiles,
   isSameLocalDay,
-  localDayKey,
 } from '../utils/meetingDocs';
 import { isListedMeeting } from '../utils/meetingVideo';
 
@@ -121,58 +120,27 @@ function fileSummary(files: MeetingAttachment[]): string | null {
   return `${kind} · ${formatChatFileSize(total)}`;
 }
 
-/** 문서명에서 회의록 꼬리표를 빼, 같은 그룹 보드인지 비교합니다. */
-function boardTitleKey(title: string | null) {
-  return (title ?? '').trim().replace(/\s*-\s*회의록$/u, '').trim().toLowerCase();
-}
-
 /**
- * 한 회의의 문서는 한 줄만 둡니다.
- * 같은 그룹의 같은 날 회의를 합치고, 이름이 같은 그룹 보드가 또 뜬 것도 한 줄로 모읍니다.
+ * 같은 회의방(그룹)의 문서는 한 줄로 합칩니다.
+ * 그 방에서 올린 파일은 한 첨부 목록에 여러 개로 모입니다.
  */
 function mergeSameDayMeetings(docs: MeetingDoc[]): MeetingDoc[] {
-  const parent = docs.map((_, index) => index);
-  const find = (index: number): number => {
-    if (parent[index] !== index) parent[index] = find(parent[index]);
-    return parent[index];
-  };
-  const unite = (a: number, b: number) => {
-    const rootA = find(a);
-    const rootB = find(b);
-    if (rootA !== rootB) parent[rootB] = rootA;
-  };
-  const seenDay = new Map<string, number>();
-  const seenTitle = new Map<string, number>();
-  docs.forEach((doc, index) => {
-    const dayKey = `${doc.group_id}::${localDayKey(doc.date)}`;
-    const dayPrev = seenDay.get(dayKey);
-    if (dayPrev == null) seenDay.set(dayKey, index);
-    else unite(dayPrev, index);
-    const title = boardTitleKey(doc.title);
-    if (!title) return;
-    const titleKey = `${doc.group_id}::${title}`;
-    const titlePrev = seenTitle.get(titleKey);
-    if (titlePrev == null) seenTitle.set(titleKey, index);
-    else unite(titlePrev, index);
-  });
-
-  const buckets = new Map<number, MeetingDoc>();
-  docs.forEach((doc, index) => {
-    const root = find(index);
-    const prev = buckets.get(root);
+  const buckets = new Map<string, MeetingDoc>();
+  for (const doc of docs) {
+    const prev = buckets.get(doc.group_id);
     if (!prev) {
-      buckets.set(root, {
+      buckets.set(doc.group_id, {
         ...doc,
         attachments: normalizeAttachments(doc.attachments),
         creator_ids: doc.created_by ? [doc.created_by] : [],
       });
-      return;
+      continue;
     }
     const filesByPath = new Map<string, MeetingAttachment>();
     for (const file of normalizeAttachments(prev.attachments)) filesByPath.set(file.path, file);
     for (const file of normalizeAttachments(doc.attachments)) filesByPath.set(file.path, file);
     const newer = new Date(doc.date).getTime() > new Date(prev.date).getTime() ? doc : prev;
-    buckets.set(root, {
+    buckets.set(doc.group_id, {
       ...newer,
       group_name: newer.group_name || prev.group_name,
       summary: newer.summary || prev.summary,
@@ -180,7 +148,7 @@ function mergeSameDayMeetings(docs: MeetingDoc[]): MeetingDoc[] {
       // 합쳐지는 어느 쪽이든 내가 만든 행이면 "내 문서"로 남도록 만든 사람을 모읍니다
       creator_ids: [...new Set([...(prev.creator_ids ?? []), ...(doc.created_by ? [doc.created_by] : [])])],
     });
-  });
+  }
   return [...buckets.values()].sort(
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
   );

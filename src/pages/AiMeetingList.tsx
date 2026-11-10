@@ -6,7 +6,8 @@ import Icon from '../components/Icon';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { getAppShellScale } from '../hooks/useAppShellScale';
-import { isListedMeeting } from '../utils/meetingVideo';
+import { isListedMeeting, isRecordedMeeting } from '../utils/meetingVideo';
+import { localDayKey } from '../utils/meetingDocs';
 // 문서 페이지와 같은 틀(탭 줄/검색/목록/하단 요약)을 그대로 쓰려고 DocumentList의 스타일을 가져옵니다.
 import d from './DocumentList.module.css';
 import s from './AiMeetingList.module.css';
@@ -19,7 +20,29 @@ type MeetingRow = {
   summary: string | null;
   group_id: string;
   video_status?: string | null;
+  video_url?: string | null;
+  video_key?: string | null;
 };
+
+/**
+ * 같은 회의방·같은 날이면 녹화한 회의 하나만 남깁니다.
+ * 보드만 바뀐 행은 녹화가 있는 행이 있으면 목록에 넣지 않습니다.
+ */
+function oneRecordingPerRoom(rows: MeetingRow[]): MeetingRow[] {
+  const buckets = new Map<string, MeetingRow[]>();
+  for (const row of rows) {
+    const key = `${row.group_id}::${localDayKey(row.date)}`;
+    const list = buckets.get(key) ?? [];
+    list.push(row);
+    buckets.set(key, list);
+  }
+  return [...buckets.values()].flatMap((list) => {
+    const sorted = [...list].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const recorded = sorted.find((row) => isRecordedMeeting(row));
+    const kept = recorded ?? sorted.find((row) => row.summary?.trim());
+    return kept ? [kept] : [];
+  }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
 
 /** '2026.09.06 10:00AM' 형식 (AI 요약 상세의 회의 목록과 같은 표기) */
 function formatMeetingDate(dateStr: string) {
@@ -69,10 +92,10 @@ export default function AiMeetingList() {
       const groupQuery = supabase.from('groups').select('id, name').in('id', ids);
       const withStatus = await supabase
         .from('meetings')
-        .select('id, title, date, summary, group_id, video_status')
+        .select('id, title, date, summary, group_id, video_status, video_url, video_key')
         .in('group_id', ids)
         .order('date', { ascending: false });
-      const meetingRows = withStatus.error && /video_status/i.test(withStatus.error.message)
+      const meetingRows = withStatus.error && /video_status|video_url|video_key/i.test(withStatus.error.message)
         ? (await supabase
           .from('meetings')
           .select('id, title, date, summary, group_id')
@@ -84,7 +107,7 @@ export default function AiMeetingList() {
       // 탭 순서는 가입한 순서. 숨긴 회의와 방금 지운 회의는 이 탭에 넣지 않습니다.
       const byId = new Map((groupRows ?? []).map((g) => [g.id, g as GroupRow]));
       setGroups(ids.map((id) => byId.get(id)).filter((g): g is GroupRow => !!g));
-      setMeetings(((meetingRows ?? []) as MeetingRow[]).filter((row) => isListedMeeting(row)));
+      setMeetings(oneRecordingPerRoom(((meetingRows ?? []) as MeetingRow[]).filter((row) => isListedMeeting(row))));
       setLoading(false);
     };
     void load();
