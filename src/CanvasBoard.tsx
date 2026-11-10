@@ -865,6 +865,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const strokeStartPointRef = useRef<Point | null>(null);
   const pendingChunkRef = useRef<Point[]>([]);
   const chunkTimerRef = useRef<number | null>(null);
+  /** 보드를 바꾸기 전에 아직 저장 중인 획을 끝냅니다. flushChunk가 생긴 뒤 채웁니다. */
+  const flushBoardWritesRef = useRef<() => Promise<void>>(async () => {});
   const strokeWriteChainRef = useRef<Promise<void>>(Promise.resolve());
   /** 획별 append 순번 — LiveKit·DB payload에 넣어 Realtime 중복을 막습니다. */
   const strokeLiveSeqByIdRef = useRef<Map<string, number>>(new Map());
@@ -1165,9 +1167,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       setShowInitChoice(true);
     };
 
-    if (room.state !== 'connected') {
-      initChoiceHandledRef.current = false;
-    }
+    // 연결이 잠깐 끊겨도 보드 선택창을 다시 열지 않습니다.
+    // 녹화 저장처럼 연결이 흔들릴 때 새 보드로 바뀌고, 열려 있던 그림이 지워지던 원인입니다.
 
     ensureInitChoice();
 
@@ -1231,15 +1232,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         return;
       }
 
-      setBoardId(msg.boardId);
-      if (msg.title) setBoardTitle(msg.title);
-      // 다른 사람이 방금 만든 보드는 내 목록에 없어서 선택칸이 비어 보이므로 목록에도 넣습니다.
-      setBoards((list) =>
-        list.some((b) => b.id === msg.boardId)
-          ? list
-          : [{ id: msg.boardId, title: msg.title ?? '새 보드', created_at: new Date().toISOString() }, ...list],
-      );
+      // 저장이 끝나기 전에 보드를 바꾸면 이전 보드 내용이 빠지므로, 최신 선택만 나중에 적용합니다.
       latestBoardSelectionRef.current = msg;
+      void (async () => {
+        await flushBoardWritesRef.current();
+        if (latestBoardSelectionRef.current !== msg) return;
+        setBoardId(msg.boardId);
+        if (msg.title) setBoardTitle(msg.title);
+        // 다른 사람이 방금 만든 보드는 내 목록에 없어서 선택칸이 비어 보이므로 목록에도 넣습니다.
+        setBoards((list) =>
+          list.some((b) => b.id === msg.boardId)
+            ? list
+            : [{ id: msg.boardId, title: msg.title ?? '새 보드', created_at: new Date().toISOString() }, ...list],
+        );
+      })();
     };
 
     // 요청한 사람에게만 내가 지금 보고 있는 보드를 알려 줍니다.
@@ -1376,6 +1382,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     setAskNewBoardName(false);
     initChoiceHandledRef.current = true;
     markMeetingBoardReady();
+    await flushBoardWritesRef.current();
     try {
       // 사용자가 적은 이름을 그대로 저장합니다. group_id 가 있으면 그룹 보드 목록에도 나옵니다.
       const title = chosen;
@@ -1419,6 +1426,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     setShowInitChoice(false);
     initChoiceHandledRef.current = true;
     markMeetingBoardReady();
+    await flushBoardWritesRef.current();
     try {
       // 그룹 회의에서는 다른 그룹 보드가 섞이지 않도록 이 그룹의 최신 보드만 고릅니다.
       let board: Board | null = null;
@@ -1521,12 +1529,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       selectPlacedImage(null);
     }
     // 손 도구가 아니면 배치된 텍스트·도형 선택을 해제합니다.
+    // 화면을 내린 위치는 펜·도형으로 돌아가도 유지합니다. 여기서 0으로 되돌리면 다시 그릴 때 원래 화면으로 튀어 올라갑니다.
     if (next !== 'hand') {
       selectPlacedText(null);
       selectPlacedShape(null);
-    }
-    if (next !== 'hand' && tool === 'hand') {
-      setPanOffset({ x: 0, y: 0 });
     }
     // 지우개가 아니면 영역 지우기 드래그를 끕니다.
     if (next !== 'eraser') {
@@ -2046,6 +2052,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       alert('보드 변경 권한이 없습니다.');
       return;
     }
+    // 이전 보드의 획이 DB에 들어가기 전에 보드를 바꾸면, 돌아왔을 때 그 내용이 없습니다.
+    await flushBoardWritesRef.current();
     const { data: userData } = await supabase.auth.getUser();
     if (!userData.user) {
       alert('보드를 만들려면 로그인이 필요합니다.\n메인에서 로그인한 뒤 캔버스로 다시 들어와 주세요.');
@@ -2085,9 +2093,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       alert('보드 변경 권한이 없습니다.');
       return;
     }
-    setBoardId(id);
-    const picked = boards.find((b) => b.id === id);
-    announceBoardSelection(id, picked ? formatBoardTitle(picked.title) : boardTitle);
+    if (!id || id === boardIdRef.current) return;
+    void (async () => {
+      await flushBoardWritesRef.current();
+      setBoardId(id);
+      const picked = boards.find((b) => b.id === id);
+      announceBoardSelection(id, picked ? formatBoardTitle(picked.title) : boardTitle);
+    })();
   };
 
   const saveBoardTitle = async () => {
@@ -2925,6 +2937,17 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }, 40);
   };
 
+  // 지금 보드에 아직 안 들어간 획을 먼저 저장합니다. 보드 id가 바뀐 뒤에 호출하면 새 보드로 들어갑니다.
+  flushBoardWritesRef.current = async () => {
+    if (chunkTimerRef.current != null) {
+      window.clearTimeout(chunkTimerRef.current);
+      chunkTimerRef.current = null;
+    }
+    await flushChunk();
+    await strokeWriteChainRef.current;
+    await Promise.all([...pendingInsertsRef.current]);
+  };
+
   const stopReplay = () => {
     if (replayTimerRef.current != null) {
       window.clearTimeout(replayTimerRef.current);
@@ -3150,6 +3173,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // 이 호출 이후 다른 보드 로딩이 시작되면 이번 결과는 버립니다.
     const loadSeq = ++boardLoadSeqRef.current;
     const isStale = () => loadSeq !== boardLoadSeqRef.current;
+    // 방금 그린 획의 저장이 끝나기 전에 조회하면, 이전 보드로 돌아왔을 때 그 내용이 빠집니다.
+    // 여기서는 새 점으로 나누지 않고, 이미 큐에 들어간 저장만 기다립니다.
+    await strokeWriteChainRef.current;
+    await Promise.all([...pendingInsertsRef.current]);
+    if (isStale()) return;
     clearReplaySession();
     setIsLoadingBoard(true);
     clearAllLocal();

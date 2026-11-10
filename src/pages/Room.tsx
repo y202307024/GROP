@@ -1628,7 +1628,7 @@ export default function Room() {
 
       const result = await persistMeetingRecording();
       if (result.ok) {
-        canvasBoardRef.current?.clearBoard();
+        // 녹화만 저장합니다. 보드를 비우거나 새 보드로 바꾸지 않습니다.
         // 다른 경로가 먼저 저장을 끝낸 경우에는 배너 안내만 남기고 alert는 겹치지 않습니다.
         if (!result.alreadyDone) {
           alert('녹화를 종료하고 회의록에 저장했습니다.\nAI 요약 탭에서 바로 확인할 수 있습니다.');

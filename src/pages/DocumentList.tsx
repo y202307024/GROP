@@ -141,7 +141,7 @@ function mergeSameDayMeetings(docs: MeetingDoc[]): MeetingDoc[] {
 
 /**
  * 문서 탭
- * 내가 속한 그룹의 회의(녹화·요약·첨부)를 문서 목록으로 보여 줍니다.
+ * 내가 속한 그룹에서 파일을 올린 회의만 문서 목록으로 보여 줍니다.
  * 열기 → 그 회의에 첨부된 파일 목록 + 개별 다운로드.
  */
 export default function DocumentList() {
@@ -306,7 +306,10 @@ export default function DocumentList() {
         }),
       );
 
-      const merged = mergeSameDayMeetings([...byId.values()]).filter((doc) => isListedMeeting(doc));
+      // 회의록만 있고 올린 파일이 없는 행은 문서 탭에 두지 않습니다.
+      const merged = mergeSameDayMeetings([...byId.values()])
+        .filter((doc) => isListedMeeting(doc))
+        .filter((doc) => normalizeAttachments(doc.attachments).length > 0);
 
       // 「올린 사람」 열에 쓸 닉네임을 한 번에 조회합니다(문서마다 따로 부르지 않도록 id를 모아서).
       // profiles를 못 읽거나 닉네임이 없으면 이름 없이 "—"로 남습니다.
@@ -347,7 +350,7 @@ export default function DocumentList() {
       navigate('/main');
       return;
     }
-    alert('먼저 그룹을 만든 뒤 회의방에서 파일을 올리거나 녹화를 저장하면, 여기에 문서가 생깁니다.');
+    alert('먼저 그룹을 만든 뒤 회의방에서 파일을 올리면, 여기에 문서가 생깁니다.');
   };
 
   const handleOpen = async (doc: MeetingDoc) => {
@@ -801,7 +804,7 @@ export default function DocumentList() {
                 ? '검색 결과가 없어요.'
                 : '아직 속한 그룹이 없어요.'
               : docs.length === 0
-              ? '아직 문서가 없어요. 회의방에서 파일을 올리거나 녹화를 저장하면 이 목록에 나타납니다.'
+                ? '아직 문서가 없어요. 회의방에서 파일을 올리면 이 목록에 나타납니다.'
               : activeTab === 'mine' && !query.trim()
                 ? '내가 올린 문서가 없어요.'
                 : '검색 결과가 없어요.'}
