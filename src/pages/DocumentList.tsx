@@ -210,6 +210,9 @@ export default function DocumentList() {
   const [activeTab, setActiveTab] = useState<'all' | 'mine' | 'group'>('all');
   /** 「그룹별 문서」 탭에서 펼쳐 둔 그룹 id — 여러 그룹을 동시에 펼칠 수 있고, 새로고침하면 접힌 상태로 돌아갑니다 */
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+  /** 펼친 그룹의 첨부 파일. 팝업 대신 그룹 행 바로 아래에 위에서부터 쌓습니다. */
+  const [groupFileLists, setGroupFileLists] = useState<Record<string, MeetingAttachment[]>>({});
+  const [loadingGroupIds, setLoadingGroupIds] = useState<Set<string>>(new Set());
   /** 로그인한 사용자 id — 「내가 올린 문서」 필터와 「올린 사람」 열의 "나" 표시에 씁니다 */
   const [myUserId, setMyUserId] = useState<string | null>(null);
   /** 만든 사람 id → 닉네임(profiles.nickname). 「올린 사람」 열에 내가 아닌 사람의 이름을 보여줄 때 씁니다 */
@@ -470,7 +473,13 @@ export default function DocumentList() {
     setSavingRename(true);
     try {
       const saved = await renameMeetingFile(file.path, next);
-      setOpenFiles((prev) => prev.map((item) => (item.path === file.path ? { ...item, name: saved } : item)));
+      const renameFile = (item: MeetingAttachment) => (item.path === file.path ? { ...item, name: saved } : item);
+      setOpenFiles((prev) => prev.map(renameFile));
+      setGroupFileLists((prev) => {
+        const next: Record<string, MeetingAttachment[]> = {};
+        for (const [groupId, files] of Object.entries(prev)) next[groupId] = files.map(renameFile);
+        return next;
+      });
       setDocs((prev) => prev.map((doc) => {
         const files = normalizeAttachments(doc.attachments);
         if (!files.some((item) => item.path === file.path)) return doc;
@@ -622,12 +631,49 @@ export default function DocumentList() {
     setEditingDocId(null);
   };
 
-  /** 그룹 행의 화살표 — 펼침 ↔ 접힘 토글 */
-  const toggleGroup = (groupId: string) => {
+  /**
+   * 펼칠 때 첨부 팝업과 같은 파일 목록을 가져옵니다.
+   * listKey는 그룹 id 또는 문서 id. 파일은 그 그룹 저장소에서 읽습니다.
+   * 화면에는 행 바로 아래, 위쪽부터 한 줄씩 붙입니다.
+   */
+  const loadListedFiles = async (listKey: string, groupId: string, groupDocs: MeetingDoc[]) => {
+    setLoadingGroupIds((prev) => new Set(prev).add(listKey));
+    try {
+      const disk = await fetchGroupChatFiles(groupId);
+      const collected: MeetingAttachment[] = [];
+      for (const doc of groupDocs) {
+        const serverFiles = await fetchMeetingDocAttachments(doc.id, doc.group_id);
+        const merged = unionAttachments(serverFiles, doc.attachments);
+        const source = merged.length > 0
+          ? merged
+          : disk.filter((file) => file.ts && isSameLocalDay(file.ts, doc.date));
+        collected.push(...withResolvedFileNames(source, disk));
+      }
+      setGroupFileLists((prev) => ({ ...prev, [listKey]: unionAttachments(collected) }));
+    } catch {
+      setGroupFileLists((prev) => ({
+        ...prev,
+        [listKey]: unionAttachments(groupDocs.map((doc) => doc.attachments)),
+      }));
+    } finally {
+      setLoadingGroupIds((prev) => {
+        const next = new Set(prev);
+        next.delete(listKey);
+        return next;
+      });
+    }
+  };
+
+  /** 행의 화살표 — 펼치면 파일을 아래에 나열하고, 다시 누르면 접습니다. */
+  const toggleListed = (listKey: string, groupId: string, groupDocs: MeetingDoc[]) => {
     setExpandedGroupIds((prev) => {
       const next = new Set(prev);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
+      if (next.has(listKey)) {
+        next.delete(listKey);
+        return next;
+      }
+      next.add(listKey);
+      if (groupId) void loadListedFiles(listKey, groupId, groupDocs);
       return next;
     });
   };
@@ -720,8 +766,8 @@ export default function DocumentList() {
   /** 하단 "문서 N개 · 저장 대기 M개" 요약에 쓰는 저장 대기 문서 수 */
   const pendingCount = pendingDocs.length + filteredDocs.filter((doc) => isPendingLink(doc)).length;
 
-  /** 문서 한 행 — 「전체/내가 올린 문서」 목록과 「그룹별 문서」의 펼친 그룹 안에서 똑같이 씁니다 */
-  const renderDocRow = (doc: MeetingDoc) => {
+  /** 문서 한 행. expand가 있으면 제목은 팝업을 열지 않고, 오른쪽 화살표로 파일을 아래에 펼칩니다. */
+  const renderDocRow = (doc: MeetingDoc, expand?: { expanded: boolean; onToggle: () => void }) => {
           const attachments = normalizeAttachments(doc.attachments);
           const pending = isPendingLink(doc);
           const bookmarked = bookmarkedIds.has(doc.id);
@@ -748,8 +794,8 @@ export default function DocumentList() {
               ) : (
                 <button
                   type="button"
-                  className={styles.titleCell}
-                  onClick={() => { if (!pending) void handleOpen(doc); }}
+                  className={`${styles.titleCell}${expand ? ` ${styles.titleCellStatic}` : ''}`}
+                  onClick={() => { if (!pending && !expand) void handleOpen(doc); }}
                 >
                   <FileTypeIcon fileName={attachments[0]?.name} className={styles.fileIcon} />
                   <span className={styles.titleText}>
@@ -908,12 +954,90 @@ export default function DocumentList() {
                         </>
                       ) : null}
                     </span>
+                    {expand ? (
+                      <button
+                        type="button"
+                        className={`${styles.groupToggle}${expand.expanded ? ` ${styles.groupToggleOpen}` : ''}`}
+                        aria-label={expand.expanded ? '첨부 접기' : '첨부 펼치기'}
+                        aria-expanded={expand.expanded}
+                        onClick={expand.onToggle}
+                      >
+                        <Icon name="chevron-down" />
+                      </button>
+                    ) : null}
                   </>
                 )}
               </span>
             </div>
           );
   };
+
+  /** 펼친 첨부 — 그룹 행이든 내가 올린 문서 행이든 같은 줄 모양으로 위쪽부터 쌓습니다. */
+  const renderInlineFiles = (listedFiles: MeetingAttachment[], loading: boolean, emptyText: string) => (
+    <div className={styles.groupDocs}>
+      {loading ? (
+        <div className={styles.groupFileStatus}>첨부 목록 불러오는 중...</div>
+      ) : listedFiles.length === 0 ? (
+        <div className={styles.groupFileStatus}>{emptyText}</div>
+      ) : listedFiles.map((file) => (
+        <div className={`list-row doc-row ${styles.groupFileRow}`} key={file.path}>
+          <div className={styles.titleCell}>
+            <FileTypeIcon fileName={file.name} className={styles.fileIcon} />
+            <span className={styles.titleText}>
+              {renamingPath === file.path ? (
+                <input
+                  className={styles.renameInput}
+                  value={renameDraft}
+                  autoFocus
+                  disabled={savingRename}
+                  aria-label="첨부 파일 이름"
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void commitRename(file);
+                    if (e.key === 'Escape') setRenamingPath(null);
+                  }}
+                />
+              ) : (
+                <span className={styles.titleName} title={displayFileName(file.name)}>
+                  {displayFileName(file.name)}
+                </span>
+              )}
+              <span className={styles.fileMeta}>{formatChatFileSize(file.size)}</span>
+            </span>
+          </div>
+          {renamingPath === file.path ? (
+            <button
+              type="button"
+              className="doc-attach-download"
+              disabled={savingRename}
+              onClick={() => { void commitRename(file); }}
+            >
+              {savingRename ? '저장 중…' : '저장'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="doc-attach-download"
+              onClick={() => {
+                setRenamingPath(file.path);
+                setRenameDraft(displayFileName(file.name));
+              }}
+            >
+              이름 변경
+            </button>
+          )}
+          <button
+            type="button"
+            className="doc-attach-download"
+            disabled={downloadingPath === file.path || renamingPath === file.path}
+            onClick={() => { void handleDownload(file); }}
+          >
+            {downloadingPath === file.path ? '받는 중…' : '다운로드'}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     <AppShell activePage="document">
@@ -1024,6 +1148,9 @@ export default function DocumentList() {
               {groupSections.map(({ group, docs: groupDocs, latest }) => {
                 const expanded = expandedGroupIds.has(group.id);
                 const empty = groupDocs.length === 0;
+                // 아직 서버 목록이 없으면 문서에 붙어 있는 첨부를 먼저 보여 주고, 펼친 뒤 받은 목록으로 바꿉니다.
+                const listedFiles = groupFileLists[group.id] ?? unionAttachments(groupDocs.map((doc) => doc.attachments));
+                const loadingThisGroup = loadingGroupIds.has(group.id) && !groupFileLists[group.id];
                 return (
                   <div className={styles.groupBlock} key={group.id}>
                     <div className="list-row doc-row">
@@ -1044,21 +1171,39 @@ export default function DocumentList() {
                           aria-label={expanded ? `${group.name} 접기` : `${group.name} 펼치기`}
                           aria-expanded={expanded}
                           disabled={empty}
-                          onClick={() => toggleGroup(group.id)}
+                          onClick={() => toggleListed(group.id, group.id, groupDocs)}
                         >
                           <Icon name="chevron-down" />
                         </button>
                       </span>
                     </div>
-                    {expanded && !empty ? (
-                      <div className={styles.groupDocs}>{groupDocs.map((doc) => renderDocRow(doc))}</div>
-                    ) : null}
+                    {/* 펼치면 첨부 팝업 대신, 이 그룹 행 바로 아래에서 파일을 위쪽부터 한 줄씩 보여 줍니다. */}
+                    {expanded && !empty
+                      ? renderInlineFiles(listedFiles, loadingThisGroup, '이 그룹에 저장된 첨부 파일이 없습니다.')
+                      : null}
                   </div>
                 );
               })}
               </>
             ) : (
-              visibleDocs.map((doc) => renderDocRow(doc))
+              visibleDocs.map((doc) => {
+                // 전체 문서·내가 올린 문서는 오른쪽 화살표로 파일을 아래에 펼칩니다. 저장 대기는 아직 파일이 없습니다.
+                if (isPendingLink(doc)) return renderDocRow(doc);
+                const expanded = expandedGroupIds.has(doc.id);
+                const listedFiles = groupFileLists[doc.id] ?? unionAttachments(doc.attachments);
+                const loadingThisDoc = loadingGroupIds.has(doc.id) && !groupFileLists[doc.id];
+                return (
+                  <div className={styles.groupBlock} key={doc.id}>
+                    {renderDocRow(doc, {
+                      expanded,
+                      onToggle: () => toggleListed(doc.id, doc.group_id, [doc]),
+                    })}
+                    {expanded
+                      ? renderInlineFiles(listedFiles, loadingThisDoc, '이 문서에 저장된 첨부 파일이 없습니다.')
+                      : null}
+                  </div>
+                );
+              })
             )}
             </div>
 

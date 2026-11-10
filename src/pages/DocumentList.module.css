@@ -603,11 +603,37 @@
   cursor: default;
 }
 
-/* 펼쳐진 문서들 — 그룹 행보다 살짝 들여쓰고 옅은 배경으로 그룹 안의 문서임을 구분 */
+/* 펼친 파일은 그룹 행 바로 아래에서 위쪽부터 쌓입니다. 가운데 뜨는 첨부 팝업을 쓰지 않습니다. */
 .groupDocs {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   background: rgba(0, 0, 0, 0.015);
 }
 
 .groupDocs > :global(.doc-row) > :first-child {
   padding-left: var(--space-14);
+}
+
+/* 파일명 | 이름 변경 | 다운로드. 목록 열 가운데 정렬이 버튼을 가운데로 밀지 않게 덮습니다. */
+.docList .groupFileRow {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.docList .groupFileRow > :nth-child(2),
+.docList .groupFileRow > :nth-child(3) {
+  text-align: right;
+}
+
+.groupFileRow .titleCell,
+.titleCellStatic {
+  cursor: default;
+}
+
+.groupFileStatus {
+  padding: 14px 33px 14px 48px;
+  border-bottom: 1px solid #c6c6c6;
+  font-size: var(--text-md);
+  color: var(--color-text-faint);
 }

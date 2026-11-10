@@ -23,6 +23,35 @@ const ORDERED_AVATARS = [...AVATAR_OPTIONS].sort(
   (a, b) => FIGMA_AVATAR_ORDER.indexOf(a.key) - FIGMA_AVATAR_ORDER.indexOf(b.key),
 );
 
+/** 이름·연락처·소속. 칸이 없는 DB에서도 이 브라우저에는 남기기 위한 키. 칸이 있으면 DB 값을 우선합니다. */
+function accountExtraKey(id: string) {
+  return `grop.accountExtra:${id}`;
+}
+
+type AccountExtra = { name: string; phone: string; affiliation: string };
+
+function readAccountExtra(id: string): AccountExtra {
+  try {
+    const raw = localStorage.getItem(accountExtraKey(id));
+    const parsed = raw ? JSON.parse(raw) as Partial<AccountExtra> : {};
+    return {
+      name: typeof parsed.name === 'string' ? parsed.name : '',
+      phone: typeof parsed.phone === 'string' ? parsed.phone : '',
+      affiliation: typeof parsed.affiliation === 'string' ? parsed.affiliation : '',
+    };
+  } catch {
+    return { name: '', phone: '', affiliation: '' };
+  }
+}
+
+function writeAccountExtra(id: string, extra: AccountExtra) {
+  try {
+    localStorage.setItem(accountExtraKey(id), JSON.stringify(extra));
+  } catch {
+    /* 브라우저 저장이 막혀도 DB에 남으면 다음 조회에서 다시 읽습니다. */
+  }
+}
+
 export default function DefaultProfile() {
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -40,11 +69,7 @@ export default function DefaultProfile() {
   const [saving, setSaving] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
-  /**
-   * 이름 / 연락처 / 소속 — 피그마 디자인엔 있지만 profiles 테이블엔 저장할 컬럼이 아직 없어서,
-   * 화면에만 반영하고 입력값은 저장하지 않습니다. (나중에 컬럼이 추가되면 fetchProfile/handleSave에
-   * 실제 값을 채우고 저장하도록 연결하면 됩니다.)
-   */
+  /** 이름 / 연락처 / 소속. profiles 에 저장하고, 그 칸이 없으면 이 브라우저에만 남깁니다. */
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [affiliation, setAffiliation] = useState('');
@@ -60,16 +85,44 @@ export default function DefaultProfile() {
       setUserId(userData.user.id);
       setEmail(userData.user.email ?? '');
 
-      const { data } = await supabase
+      // 이름·연락처·소속 칸이 있으면 같이 읽고, 없는 DB면 닉네임만 다시 읽습니다.
+      const full = await supabase
         .from('profiles')
-        .select('nickname, avatar, avatar_url')
+        .select('nickname, avatar, avatar_url, full_name, phone, affiliation')
         .eq('id', userData.user.id)
         .maybeSingle();
+      const missingExtra = Boolean(full.error && /full_name|phone|affiliation|column/i.test(full.error.message));
+      const data = missingExtra
+        ? (await supabase
+          .from('profiles')
+          .select('nickname, avatar, avatar_url')
+          .eq('id', userData.user.id)
+          .maybeSingle()).data
+        : full.data;
 
       if (data) {
-        setNickname(data.nickname ?? '');
-        setSelectedAvatar(data.avatar ?? DEFAULT_AVATAR_KEY);
-        setAvatarUrl(data.avatar_url ?? null);
+        const row = data as {
+          nickname?: string | null;
+          avatar?: string | null;
+          avatar_url?: string | null;
+          full_name?: string | null;
+          phone?: string | null;
+          affiliation?: string | null;
+        };
+        setNickname(row.nickname ?? '');
+        setSelectedAvatar(row.avatar ?? DEFAULT_AVATAR_KEY);
+        setAvatarUrl(row.avatar_url ?? null);
+        // 칸이 있는 DB는 그 값을 쓰고, 없으면 이 브라우저에 남겨 둔 값을 씁니다.
+        if (!missingExtra) {
+          setName(row.full_name ?? '');
+          setPhone(row.phone ?? '');
+          setAffiliation(row.affiliation ?? '');
+        } else {
+          const extra = readAccountExtra(userData.user.id);
+          setName(extra.name);
+          setPhone(extra.phone);
+          setAffiliation(extra.affiliation);
+        }
       }
       setLoading(false);
     };
@@ -127,12 +180,25 @@ export default function DefaultProfile() {
     }
 
     setSaving(true);
-    const { error } = await supabase.from('profiles').upsert({
+    const extra = { name: name.trim(), phone: phone.trim(), affiliation: affiliation.trim() };
+    const base = {
       id: userId,
-      nickname,
+      nickname: nickname.trim(),
       avatar: selectedAvatar,
       avatar_url: avatarUrl,
+    };
+    // 이름·연락처·소속을 같이 넣습니다. 그 칸이 없는 DB면 닉네임과 아바타만 다시 저장합니다.
+    let { error } = await supabase.from('profiles').upsert({
+      ...base,
+      full_name: extra.name,
+      phone: extra.phone,
+      affiliation: extra.affiliation,
     });
+    if (error && /full_name|phone|affiliation|column/i.test(error.message)) {
+      const retry = await supabase.from('profiles').upsert(base);
+      error = retry.error;
+    }
+    if (!error) writeAccountExtra(userId, extra);
 
     if (error) {
       setSaving(false);
