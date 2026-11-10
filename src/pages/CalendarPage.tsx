@@ -398,11 +398,11 @@ export default function CalendarPage() {
       </button>
     );
   };
-  // 패널 항목 클릭: 저장된 회의는 회의방으로 이동, 직접 등록한 일정은 달력 칸과 같은 상세 팝업(이동할 곳이 없음).
-  // 오른쪽 패널에서는 누른 일정 하나만 팝업에 넘깁니다(슬라이드로 다른 일정을 넘겨보는 건 달력 칸에서 여는 팝업만 가능)
+  // 패널 항목 클릭: 저장된 회의는 그 회의의 AI 요약 화면으로 이동하고,
+  // 직접 등록한 일정은 회의 기록이 없어서 달력 칸과 같은 상세 팝업을 엽니다.
   const openScheduleItem = (it: DetailItem) => {
     if (it.isLocal) openDetail([it], 0);
-    else navigate(`/group/${it.groupId}/meeting/${it.id}`);
+    else navigate(`/ai/${it.id}`);
   };
 
   // 그룹 id → 스택 색 (groups 순서 기준, 목록에 없으면 첫 색)
@@ -882,7 +882,7 @@ export default function CalendarPage() {
                 {todayItems.length === 0 ? (
                   <div className={styles.sideEmpty}>오늘 예정된 회의가 없어요</div>
                 ) : (
-                  // 4개까지만 보이고, 카드를 누르면 그 일정 하나만 상세 팝업으로 엽니다
+                  // 4개까지만 보입니다. 저장된 회의 카드는 그 회의의 AI 요약으로 이동합니다.
                   todayItems.slice(0, SIDE_LIST_MAX).map((it) => renderScheduleCard(it, formatMeetingTime(it.date)))
                 )}
               </div>
