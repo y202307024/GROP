@@ -6,7 +6,8 @@
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
 import { addGroupMember } from './joinGroup';
-import { readSessionMeetingId } from './liveMeeting';
+import { appendMeetingChat, readSessionMeetingId } from './liveMeeting';
+import type { MeetingChatMessage } from './meetingChat';
 import { notifyGroupMembers } from './notifications';
 import { rememberLastMeeting } from './lastMeeting';
 import {
@@ -238,14 +239,17 @@ export async function uploadBlobAndInsert(input: SaveInput): Promise<
   if (existingId) {
     // 첨부가 비어 있으면 이미 올려 둔 파일을 지우지 않습니다. 끝난 회의의 문서가 문서 탭에서 사라집니다.
     const keepFiles = Array.isArray(input.attachments) && input.attachments.length > 0;
+    // chat_log는 통째로 덮지 않습니다. 이미 남겨 둔 이전 채팅이 녹화 저장 때 지워지지 않게 합칩니다.
     const placed = await placeVideoOnMeeting(existingId, {
       ...videoFields,
       title: input.title,
       ...(keepFiles ? { attachments: input.attachments } : {}),
-      chat_log: input.chatLog,
     }, input.replaceExistingVideo === true);
     if (placed.status === 'error') return { ok: false, error: explainVideoSaveError(placed.message) };
     if (placed.status === 'updated') {
+      if (Array.isArray(input.chatLog)) {
+        await appendMeetingChat(existingId, input.chatLog as MeetingChatMessage[]);
+      }
       rememberLastMeeting(existingId);
       await rememberStartedAt(existingId, input.startedAt);
       await notifySaved(existingId);

@@ -145,3 +145,68 @@ export function formatChatTime(ts: number) {
   const d = new Date(ts);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
+
+/** 채팅창에 한 번에 남겨 두는 메시지 수. 이번 회의와 이전 회의를 함께 보여 줍니다. */
+export const DISPLAY_CHAT_LIMIT = 1000;
+
+/** 받은 기록을 기존 목록에 합칩니다. 같은 id는 한 번만 넣고 시간순으로 정렬합니다. */
+export function mergeChatMessages(
+  prev: MeetingChatMessage[],
+  incoming: unknown[],
+  limit = DISPLAY_CHAT_LIMIT,
+) {
+  const seen = new Set(prev.map((m) => m.id));
+  const added = incoming.filter((m): m is MeetingChatMessage => {
+    if (!m || typeof m !== 'object') return false;
+    const msg = m as Partial<MeetingChatMessage>;
+    return typeof msg.id === 'string'
+      && typeof msg.text === 'string'
+      && msg.text.trim() !== ''
+      && typeof msg.ts === 'number'
+      && !seen.has(msg.id);
+  });
+  if (added.length === 0) return prev;
+  return [...prev, ...added].sort((a, b) => a.ts - b.ts).slice(-limit);
+}
+
+/**
+ * meetings.chat_log에서 화면에 보여줄 메시지만 고릅니다.
+ * 참석자 자리표시(본문이 빈 기록)는 채팅창에 올리지 않습니다.
+ */
+export function realChatMessages(raw: unknown): MeetingChatMessage[] {
+  if (!Array.isArray(raw)) return [];
+  const out: MeetingChatMessage[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const msg = item as Partial<MeetingChatMessage>;
+    if (typeof msg.id !== 'string') continue;
+    if (typeof msg.text !== 'string' || msg.text.trim() === '') continue;
+    if (typeof msg.ts !== 'number') continue;
+    out.push({
+      id: msg.id,
+      from: typeof msg.from === 'string' ? msg.from : '',
+      name: typeof msg.name === 'string' ? msg.name : '',
+      text: msg.text,
+      ts: msg.ts,
+    });
+  }
+  return out.sort((a, b) => a.ts - b.ts);
+}
+
+/** 날짜가 바뀌는 지점을 나누는 키. 같은 날 메시지는 한 묶음입니다. */
+export function chatDayKey(ts: number) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+/** 이전 채팅 위에 붙이는 날짜. 올해가 아니면 연도도 적습니다. */
+export function formatChatDay(ts: number) {
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear()
+    && d.getMonth() === now.getMonth()
+    && d.getDate() === now.getDate();
+  if (sameDay) return '오늘';
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}월 ${d.getDate()}일`;
+  return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일`;
+}

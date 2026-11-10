@@ -235,6 +235,15 @@
   font-weight: var(--weight-bold);
 }
 
+/* 이전 회의 채팅과 오늘 채팅 사이에 붙이는 날짜 */
+.chatDay {
+  align-self: center;
+  margin: 2px 0;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: rgba(255, 255, 255, 0.8);
+}
+
 .chatMessages {
   flex: 1;
   min-height: 0;

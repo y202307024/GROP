@@ -1,15 +1,20 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { RoomEvent, type RemoteParticipant } from 'livekit-client';
 import { useLocalParticipant, useParticipants, useRoomContext } from '@livekit/components-react';
 import styles from './MeetingChatPanel.module.css';
 import { supabase } from '../services/supabaseClient';
 import {
+  DISPLAY_CHAT_LIMIT,
   MEETING_CHAT_TOPIC,
+  chatDayKey,
   decodeMeetingChatMessage,
   encodeMeetingChatMessage,
+  formatChatDay,
   formatChatTime,
+  mergeChatMessages,
   type MeetingChatMessage,
 } from '../utils/meetingChat';
+import { appendMeetingChat, loadGroupChatHistory } from '../utils/liveMeeting';
 import { getAvatarSrc } from '../utils/avatarOptions';
 
 type Props = {
@@ -23,6 +28,10 @@ type Props = {
   onSpeakerMutedChange?: (muted: boolean) => void;
   /** 부모(Room)가 채팅 기록을 녹화 저장에 쓸 수 있게 최신 메시지를 미러링합니다. */
   chatLogRef?: RefObject<MeetingChatMessage[]>;
+  /** 이번 접속의 회의 행. 채팅은 이 행에만 저장하고, 예전 회의 글은 화면 기록으로만 둡니다. */
+  sessionMeetingIdRef?: RefObject<string | null>;
+  /** 나가기 직전에 아직 안 올라간 채팅을 회의 행에 남기라고 부모가 호출합니다. */
+  chatFlushRef?: RefObject<(() => Promise<void>) | null>;
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -30,29 +39,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const MEETING_HEADSET_TOPIC = 'meeting-headset';
 /** 늦게 들어온 참가자가 이전 채팅을 요청·수신하는 데이터 채널 topic */
 const MEETING_CHAT_HISTORY_TOPIC = 'meeting-chat-history';
-const MAX_CHAT_MESSAGES = 300;
 /** LiveKit reliable 메시지 한 개 크기 제한(약 15KB)보다 작게 나눠 보냅니다. */
 const HISTORY_CHUNK_BYTES = 12_000;
 
 type ChatHistoryPacket =
   | { type: 'request' }
   | { type: 'history'; messages: MeetingChatMessage[] };
-
-/** 받은 기록을 기존 목록에 합칩니다. 같은 id는 한 번만 넣고 시간순으로 정렬합니다. */
-function mergeChatMessages(prev: MeetingChatMessage[], incoming: unknown[]) {
-  const seen = new Set(prev.map((m) => m.id));
-  const added = incoming.filter((m): m is MeetingChatMessage => {
-    if (!m || typeof m !== 'object') return false;
-    const msg = m as Partial<MeetingChatMessage>;
-    return typeof msg.id === 'string'
-      && typeof msg.text === 'string'
-      && msg.text.trim() !== ''
-      && typeof msg.ts === 'number'
-      && !seen.has(msg.id);
-  });
-  if (added.length === 0) return prev;
-  return [...prev, ...added].sort((a, b) => a.ts - b.ts).slice(-MAX_CHAT_MESSAGES);
-}
 
 /** 채팅 기록을 크기 제한에 맞는 묶음들로 나눕니다. */
 function chunkChatHistory(messages: MeetingChatMessage[]) {
@@ -134,6 +126,7 @@ function MicIcon({ muted }: { muted: boolean }) {
  * 회의방 오른쪽 사이드바
  * 상단: 그룹명(편집) + 참가자(아바타·헤드셋·마이크)
  * 하단: 고정 높이 채팅(스크롤) + 텍스트 입력
+ * 채팅은 이 그룹의 이전 회의 기록과 함께 보여 주고, 이번 회의 메시지는 meetings.chat_log에 남깁니다.
  * 파일 첨부는 하단 툴바 파일 도구로 통일했습니다.
  */
 export default function MeetingChatPanel({
@@ -143,11 +136,24 @@ export default function MeetingChatPanel({
   speakerMuted = false,
   onSpeakerMutedChange,
   chatLogRef,
+  sessionMeetingIdRef,
+  chatFlushRef,
 }: Props) {
   const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
   const participants = useParticipants();
-  const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
+  /** 이미 회의 행에 저장된 채팅. 이번 회의와 예전 회의가 함께 들어 있습니다. */
+  const [archive, setArchive] = useState<MeetingChatMessage[]>([]);
+  /** 이번 접속에서 주고받은 채팅. 저장 전에도 화면에 바로 붙입니다. */
+  const [live, setLive] = useState<MeetingChatMessage[]>([]);
+  /** 저장된 메시지 id → 그 메시지가 속한 회의 행. 요약에는 이번 회의만 넘기기 위해 구분합니다. */
+  const meetingOf = useRef(new Map<string, string>());
+  /** 이번 회의 행 id. LiveMeetingPresence가 ref에 넣은 값을 따라갑니다. */
+  const [meetingId, setMeetingId] = useState<string | null>(sessionMeetingIdRef?.current ?? null);
+  /** 녹화·요약·늦게 들어온 사람에게 넘길 이번 회의 채팅만 담습니다. */
+  const sessionMessagesRef = useRef<MeetingChatMessage[]>([]);
+  /** 채팅 저장이 겹치면 앞선 저장이 끝난 뒤에 이어서 씁니다. */
+  const persistChainRef = useRef(Promise.resolve());
   const [draft, setDraft] = useState('');
   /** identity → 그 참가자가 헤드셋을 껐는지 (데이터 채널로 받은 값) */
   const [remoteHeadsetOff, setRemoteHeadsetOff] = useState<Record<string, boolean>>({});
@@ -266,22 +272,70 @@ export default function MeetingChatPanel({
     };
   }, [participantIdsKey, _groupId]);
 
+  // 저장된 이전 채팅 + 이번 접속 채팅. 같은 글은 id로 한 번만 보여 줍니다.
+  const shown = useMemo(
+    () => mergeChatMessages(archive, live, DISPLAY_CHAT_LIMIT),
+    [archive, live],
+  );
+  // 예전 회의 글은 화면 기록입니다. 이번 회의 행에 속한 글과 방금 주고받은 글만 저장·요약에 넘깁니다.
+  const sessionLog = useMemo(() => {
+    if (!meetingId) return live;
+    const mine = archive.filter((m) => meetingOf.current.get(m.id) === meetingId);
+    return mergeChatMessages(mine, live, DISPLAY_CHAT_LIMIT);
+  }, [archive, live, meetingId]);
+  sessionMessagesRef.current = sessionLog;
+  if (chatLogRef) chatLogRef.current = sessionLog;
+
+  useEffect(() => {
+    const read = () => {
+      const next = sessionMeetingIdRef?.current ?? null;
+      setMeetingId((prev) => (prev === next ? prev : next));
+    };
+    read();
+    const timer = window.setInterval(read, 500);
+    return () => window.clearInterval(timer);
+  }, [sessionMeetingIdRef]);
+
+  // 그룹에 남아 있는 채팅을 불러옵니다. 회의 행이 정해진 뒤 한 번 더 읽어, 방금 저장된 글도 붙입니다.
+  useEffect(() => {
+    if (!_groupId) return;
+    let cancelled = false;
+    void loadGroupChatHistory(_groupId).then((rows) => {
+      if (cancelled) return;
+      const map = new Map<string, string>();
+      const all: MeetingChatMessage[] = [];
+      for (const row of rows) {
+        for (const msg of row.messages) {
+          map.set(msg.id, row.meetingId);
+          all.push(msg);
+        }
+      }
+      meetingOf.current = map;
+      const next = mergeChatMessages([], all, DISPLAY_CHAT_LIMIT);
+      // 같은 목록이면 참조를 유지해, 회의 id가 잡힐 때마다 채팅이 맨 아래로 다시 스크롤되지 않게 합니다.
+      setArchive((prev) => (
+        prev.length === next.length && prev.every((m, i) => m.id === next[i]?.id) ? prev : next
+      ));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [_groupId, meetingId]);
+
   useEffect(() => {
     const handler = (payload: Uint8Array, _participant?: unknown, _kind?: unknown, topic?: string) => {
       if (topic && topic !== MEETING_CHAT_TOPIC) return;
       const msg = decodeMeetingChatMessage(payload);
       // 파일만 있는 옛 메시지는 채팅에 표시하지 않습니다.
       if (!msg || (!msg.text.trim() && msg.file)) return;
-      setMessages((prev) => mergeChatMessages(prev, [msg]));
+      setLive((prev) => mergeChatMessages(prev, [msg]));
     };
     room.on(RoomEvent.DataReceived, handler);
     return () => { room.off(RoomEvent.DataReceived, handler); };
   }, [room]);
 
-  // 채팅은 서버에 저장되지 않아서, 늦게 들어온 사람은 이전 메시지를 받지 못합니다.
-  // 그래서 입장(재연결) 때 기록을 요청하고, 방에 가장 오래 있던 참가자 한 명이 그 사람에게만 보내 줍니다.
-  const messagesRef = useRef<MeetingChatMessage[]>([]);
-  messagesRef.current = messages;
+  // 아직 저장 전에 들어온 사람은 방 안의 이번 회의 채팅을 데이터 채널로 받습니다.
+  // 방을 비웠다 다시 들어오는 기록은 위의 회의 행(chat_log)에서 불러옵니다.
 
   useEffect(() => {
     const send = (packet: ChatHistoryPacket, to?: string) => {
@@ -323,11 +377,11 @@ export default function MeetingChatPanel({
       }
       if (packet.type === 'request') {
         if (!isResponder(participant.identity)) return;
-        for (const chunk of chunkChatHistory(messagesRef.current)) {
+        for (const chunk of chunkChatHistory(sessionMessagesRef.current)) {
           await send({ type: 'history', messages: chunk }, participant.identity);
         }
       } else if (packet.type === 'history' && Array.isArray(packet.messages)) {
-        setMessages((prev) => mergeChatMessages(prev, packet.messages));
+        setLive((prev) => mergeChatMessages(prev, packet.messages));
       }
     };
 
@@ -344,19 +398,48 @@ export default function MeetingChatPanel({
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
+  }, [shown]);
 
-  // 녹화 저장(Room)이 채팅 내용을 함께 남길 수 있게, 최신 메시지를 부모의 ref에 미러링합니다.
+  // 이번 회의 채팅을 회의 행에 남깁니다. 회의 id가 생기기 전에 보낸 글도 id가 잡히면 이어서 저장합니다.
+  const flushChat = useCallback(async () => {
+    const job = persistChainRef.current.catch(() => {}).then(() => {
+      // 실행 시점의 회의 행에 남깁니다. 저장이 밀리면 그 사이에 정해진 id를 씁니다.
+      const id = sessionMeetingIdRef?.current;
+      const batch = sessionMessagesRef.current.filter((m) => m.text.trim());
+      if (!id || batch.length === 0) return;
+      return appendMeetingChat(id, batch);
+    });
+    persistChainRef.current = job.then(() => {});
+    await job;
+  }, [sessionMeetingIdRef]);
+
   useEffect(() => {
-    if (chatLogRef) chatLogRef.current = messages;
-  }, [messages, chatLogRef]);
+    if (!meetingId || live.length === 0) return;
+    const timer = window.setTimeout(() => { void flushChat(); }, 400);
+    return () => window.clearTimeout(timer);
+  }, [live, meetingId, flushChat]);
+
+  useEffect(() => {
+    if (!chatFlushRef) return;
+    chatFlushRef.current = flushChat;
+    return () => {
+      chatFlushRef.current = null;
+    };
+  }, [chatFlushRef, flushChat]);
+
+  // 새로고침·탭 종료로 나가기 버튼을 못 눌러도, 마지막 채팅이 회의 행에 남게 합니다.
+  useEffect(() => {
+    const onHide = () => { void flushChat(); };
+    window.addEventListener('pagehide', onHide);
+    return () => window.removeEventListener('pagehide', onHide);
+  }, [flushChat]);
 
   const publishChat = (msg: MeetingChatMessage) => {
-    setMessages((prev) => mergeChatMessages(prev, [msg]));
+    setLive((prev) => mergeChatMessages(prev, [msg]));
     void localParticipant.publishData(encodeMeetingChatMessage(msg), {
       reliable: true,
       topic: MEETING_CHAT_TOPIC,
-    });
+    }).catch((err) => console.warn('채팅 전송 실패:', err));
   };
 
   const sendMessage = () => {
@@ -406,6 +489,10 @@ export default function MeetingChatPanel({
   const toggleLocalHeadset = () => {
     onSpeakerMutedChange?.(!speakerMuted);
   };
+
+  const todayKey = chatDayKey(Date.now());
+  // 오늘 채팅만 있으면 날짜 줄은 생략합니다. 예전 날짜가 섞여 있을 때만 구분합니다.
+  const hasOlderChat = shown.some((item) => chatDayKey(item.ts) !== todayKey);
 
   return (
     <aside className={styles.chatPanel}>
@@ -499,19 +586,25 @@ export default function MeetingChatPanel({
           <h2 className={styles.chatSectionTitle}>채팅</h2>
 
           <div className={styles.chatMessages} ref={listRef}>
-            {messages.length === 0 ? (
+            {shown.length === 0 ? (
               <div className={styles.chatMessage}>아직 채팅이 없어요.</div>
             ) : (
-              messages.map((m) => {
+              shown.map((m, index) => {
                 const own = m.from === localParticipant.identity;
                 const sender = senderLabel(m, localParticipant.identity, participants);
+                const day = chatDayKey(m.ts);
+                const prev = index > 0 ? shown[index - 1] : null;
+                const showDay = hasOlderChat && (!prev || chatDayKey(prev.ts) !== day);
                 return (
-                  <div key={m.id} className={`${styles.chatRow}${own ? ` ${styles.isOwn}` : ''}`}>
-                    <span className={styles.chatSender}>{sender} · {formatChatTime(m.ts)}</span>
-                    <div className={`${styles.chatMessage}${own ? ` ${styles.ownMessage}` : ''}`}>
-                      {m.text}
+                  <Fragment key={m.id}>
+                    {showDay ? <div className={styles.chatDay}>{formatChatDay(m.ts)}</div> : null}
+                    <div className={`${styles.chatRow}${own ? ` ${styles.isOwn}` : ''}`}>
+                      <span className={styles.chatSender}>{sender} · {formatChatTime(m.ts)}</span>
+                      <div className={`${styles.chatMessage}${own ? ` ${styles.ownMessage}` : ''}`}>
+                        {m.text}
+                      </div>
                     </div>
-                  </div>
+                  </Fragment>
                 );
               })
             )}

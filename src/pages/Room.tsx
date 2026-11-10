@@ -578,6 +578,7 @@ function RoomContent({
   sharedFilesRef,
   sessionMeetingIdRef,
   chatLogRef,
+  chatFlushRef,
   onLeave,
   onToggleRecord,
   onRemoteStartRecording,
@@ -600,6 +601,8 @@ function RoomContent({
   sessionMeetingIdRef: RefObject<string | null>;
   /** 부모(녹화 저장)와 공유하는 채팅 기록 ref */
   chatLogRef: RefObject<MeetingChatMessage[]>;
+  /** 나가기 직전에 채팅을 회의 행에 남기는 함수 */
+  chatFlushRef: RefObject<(() => Promise<void>) | null>;
   onLeave: () => void;
   onToggleRecord: () => void;
   onRemoteStartRecording: () => void;
@@ -849,6 +852,8 @@ function RoomContent({
           speakerMuted={speakerMuted}
           onSpeakerMutedChange={setSpeakerMuted}
           chatLogRef={chatLogRef}
+          sessionMeetingIdRef={sessionMeetingIdRef}
+          chatFlushRef={chatFlushRef}
         />
       </main>
       <footer className={`${shell.bottomBar} ${styles.roomBottomBar}`}>
@@ -989,13 +994,15 @@ export default function Room() {
   const startingRecordingRef = useRef(false);
   /** 회의 중 첨부 — RoomContent 와 공유 (파일만 올려도 문서 탭에 반영) */
   const sharedFilesRef = useRef<MeetingSharedFile[]>([]);
-  const sessionMeetingIdRef = useRef<string | null>(null);
+  const sessionMeetingIdRef = useRef<string | null>(id ? readSessionMeetingId(id) : null);
   /** LiveKit 연결 시각. 생성 시간의 시작점입니다. */
   const roomOpenedAtRef = useRef<number | null>(null);
   /** 회의 중 들어왔던 user id. 저장할 때 닉네임으로 바꿉니다. */
   const attendeeIdsRef = useRef<string[]>([]);
-  /** MeetingChatPanel의 최신 채팅 메시지 미러 — 녹화 저장 시 회의록에 chat_log로 함께 남깁니다. */
+  /** 이번 회의 채팅만. 예전 회의 채팅은 채팅창에는 보이지만 이 회의 요약에는 넣지 않습니다. */
   const chatLogRef = useRef<MeetingChatMessage[]>([]);
+  /** 나가기 전에 MeetingChatPanel이 아직 안 저장한 채팅을 회의 행에 남깁니다. */
+  const chatFlushRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     groupIdRef.current = id;
@@ -1672,6 +1679,13 @@ export default function Room() {
     // 1명만 남았을 때만 녹화를 끝내고 나갑니다. 다른 사람이 있으면 그 사람들 녹화는 이어집니다.
     const isLastParticipant = participantCountRef.current <= 1;
 
+    // 채팅 패널이 아직 떠 있을 때 저장합니다. 저장 화면으로 바꾸면 패널이 사라져 flush를 못 합니다.
+    try {
+      await chatFlushRef.current?.();
+    } catch (err) {
+      console.warn('나가기 전 채팅 저장 실패:', err);
+    }
+
     setSaving(true);
     // 녹화를 하지 않아도 방금 그린 보드가 그룹 목록에 남도록, 나가기 전에 저장을 끝냅니다.
     try {
@@ -1793,6 +1807,7 @@ export default function Room() {
             sharedFilesRef={sharedFilesRef}
             sessionMeetingIdRef={sessionMeetingIdRef}
             chatLogRef={chatLogRef}
+            chatFlushRef={chatFlushRef}
             onLeave={handleLeave}
             onToggleRecord={toggleRecording}
             onRemoteStartRecording={() => {

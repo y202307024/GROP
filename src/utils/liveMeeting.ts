@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
 import { addGroupMember } from './joinGroup';
-import type { MeetingChatMessage } from './meetingChat';
+import { realChatMessages, type MeetingChatMessage } from './meetingChat';
 
 const USER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -310,5 +310,109 @@ export async function mergeMeetingAttendees(meetingId: string, ids: string[]) {
   const { error } = await supabase.from('meetings').update({ chat_log: withPresence }).eq('id', meetingId);
   if (error && !/chat_log/i.test(error.message)) {
     console.warn('참석자 채팅 기록 저장 실패:', error.message);
+  }
+}
+
+/** 회의 한 건의 chat_log에 남겨 두는 메시지 상한. 화면에는 여러 회의를 모아 보여 줍니다. */
+const MAX_STORED_CHAT_MESSAGES = 500;
+/** 채팅창에 불러올 최근 회의 수. 이보다 오래된 행은 회의 상세의 채팅 기록에서 봅니다. */
+const CHAT_HISTORY_MEETINGS = 40;
+
+export type GroupChatHistoryRow = {
+  meetingId: string;
+  messages: MeetingChatMessage[];
+};
+
+/**
+ * 이 그룹에서 이미 저장된 채팅을 최근 회의부터 가져옵니다.
+ * 방을 나갔다가 다시 들어와도 이전 대화가 채팅창에 남게 하려는 목록입니다.
+ */
+export async function loadGroupChatHistory(groupId: string): Promise<GroupChatHistoryRow[]> {
+  if (!groupId) return [];
+  const { data, error } = await supabase
+    .from('meetings')
+    .select('id, chat_log')
+    .eq('group_id', groupId)
+    .order('date', { ascending: false })
+    .limit(CHAT_HISTORY_MEETINGS);
+  if (error) {
+    if (!/chat_log/i.test(error.message)) console.warn('이전 채팅 조회 실패:', error.message);
+    return [];
+  }
+  return (data ?? []).map((row) => ({
+    meetingId: String(row.id),
+    messages: realChatMessages(row.chat_log),
+  }));
+}
+
+/**
+ * 이번 회의 메시지를 chat_log에 합칩니다.
+ * 이미 있는 참석자 자리표시나 다른 사람이 쓴 메시지는 지우지 않습니다.
+ * 컬럼이 아직 없으면 조용히 넘어갑니다. (supabase/15_채팅기록.sql)
+ */
+export async function appendMeetingChat(meetingId: string, incoming: MeetingChatMessage[]) {
+  const fresh = incoming.filter((m): m is MeetingChatMessage => (
+    !!m
+    && typeof m.id === 'string'
+    && typeof m.text === 'string'
+    && m.text.trim() !== ''
+    && typeof m.ts === 'number'
+  ));
+  if (!meetingId || fresh.length === 0) return;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const read = await supabase.from('meetings').select('chat_log').eq('id', meetingId).maybeSingle();
+    if (read.error) {
+      if (/chat_log/i.test(read.error.message)) return;
+      console.warn('채팅 기록 조회 실패:', read.error.message);
+      return;
+    }
+
+    const prev = Array.isArray(read.data?.chat_log) ? read.data.chat_log : [];
+    const byId = new Map<string, unknown>();
+    for (const item of prev) {
+      if (!item || typeof item !== 'object') continue;
+      const id = (item as { id?: unknown }).id;
+      if (typeof id === 'string') byId.set(id, item);
+    }
+
+    let changed = false;
+    for (const msg of fresh) {
+      if (!byId.has(msg.id)) changed = true;
+      // 화면·요약이 읽는 필드만 저장합니다. 파일 첨부는 문서 목록이 따로 맡습니다.
+      byId.set(msg.id, {
+        id: msg.id,
+        from: msg.from,
+        name: msg.name,
+        text: msg.text,
+        ts: msg.ts,
+      });
+    }
+    if (!changed) return;
+
+    const merged = [...byId.values()]
+      .sort((a, b) => {
+        const ta = typeof (a as { ts?: unknown }).ts === 'number' ? (a as { ts: number }).ts : 0;
+        const tb = typeof (b as { ts?: unknown }).ts === 'number' ? (b as { ts: number }).ts : 0;
+        return ta - tb;
+      })
+      .slice(-MAX_STORED_CHAT_MESSAGES);
+
+    const wrote = await supabase.from('meetings').update({ chat_log: merged }).eq('id', meetingId);
+    if (wrote.error) {
+      if (/chat_log/i.test(wrote.error.message)) return;
+      console.warn('채팅 기록 저장 실패:', wrote.error.message);
+      return;
+    }
+
+    // 다른 참가자가 같은 칸을 덮어썼으면, 빠진 메시지만 다시 합칩니다.
+    const check = await supabase.from('meetings').select('chat_log').eq('id', meetingId).maybeSingle();
+    if (check.error || !Array.isArray(check.data?.chat_log)) return;
+    const saved = new Set(
+      check.data.chat_log
+        .map((item) => (item && typeof item === 'object' ? (item as { id?: unknown }).id : null))
+        .filter((id): id is string => typeof id === 'string'),
+    );
+    if (fresh.every((m) => saved.has(m.id))) return;
   }
 }
