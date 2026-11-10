@@ -15,10 +15,16 @@
     0 1px 0 rgba(255, 255, 255, 0.7) inset;
   overflow: visible;
   font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+  /* 캔버스(z-index 2)보다 아래. 붙인 뒤의 펜 획이 메모 위에 보입니다. */
+  z-index: 0;
+}
+
+.noteFloating {
+  position: relative;
 }
 
 .noteSelected {
-  z-index: 22;
+  z-index: 1;
   box-shadow:
     0 12px 28px rgba(40, 32, 18, 0.18),
     0 0 0 2px rgba(102, 124, 85, 0.45);
@@ -47,7 +53,6 @@
   letter-spacing: 0.02em;
 }
 
-.modeBtn,
 .removeBtn {
   display: inline-flex;
   align-items: center;
@@ -62,14 +67,24 @@
   cursor: pointer;
 }
 
-.modeBtn:hover,
 .removeBtn:hover {
   background: rgba(255, 255, 255, 0.16);
 }
 
-.modeBtnActive {
-  background: rgba(255, 255, 255, 0.24);
-  color: #fff;
+.addBtn {
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  background: #fff;
+  color: #3d5230;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.addBtn:hover {
+  background: #f3f6ef;
 }
 
 .spacer {
@@ -140,48 +155,8 @@
   caret-color: #222;
 }
 
-.editorIdle {
-  pointer-events: none;
-}
-
 .editor::placeholder {
   color: #b0b0b0;
-}
-
-/* 펜 그림은 줄 위에, 글자는 그 위에 올려 메모처럼 보이게 합니다. */
-.drawLayer {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  touch-action: none;
-}
-
-.drawLayerIdle {
-  pointer-events: none;
-}
-
-.drawLayerActive {
-  cursor: crosshair;
-}
-
-.penColors {
-  display: flex;
-  gap: 4px;
-  padding: 0 8px 8px 30px;
-}
-
-.swatch {
-  width: 14px;
-  height: 14px;
-  padding: 0;
-  border: 2px solid transparent;
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-.swatchActive {
-  border-color: #667c55;
 }
 
 .handle {

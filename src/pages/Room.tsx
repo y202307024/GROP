@@ -736,7 +736,7 @@ function RoomContent({
     setEraserActive(false);
     setAreaEraseActive(false);
     if (next === 'stamp') {
-      // 메모장: 도구만 고르고, 화면을 한 번 더 클릭해야 붙습니다.
+      // 메모장: 작성 창만 띄우고, 추가를 눌러야 보드에 붙습니다.
       canvasBoardRef.current?.setStickyPaperColor(stickyColor);
       canvasBoardRef.current?.addStickyNote();
       return;

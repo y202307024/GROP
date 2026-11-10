@@ -15,7 +15,7 @@ import { expandedFileSize, getFilePreviewKind } from './filePreviewUtils';
 import { rasterizeBoardFile } from './rasterizeBoardFile';
 import { chatFileUrl, displayFileName, formatChatFileSize, MAX_CHAT_FILE_BYTES } from './utils/meetingChat';
 import { getAppShellScale } from './hooks/useAppShellScale';
-import StickyNoteOverlay, { type PlacedSticky, type StickyEditMode } from './components/StickyNoteOverlay';
+import StickyNoteOverlay, { type PlacedSticky } from './components/StickyNoteOverlay';
 
 const MEETING_BOARD_TOPIC = 'meeting-board';
 /** 회의방 펜/지우개 획 실시간 동기화 (Supabase Realtime 병목 회피) */
@@ -177,9 +177,9 @@ export type CanvasBoardHandle = {
   getCanvasElement: () => HTMLCanvasElement | null;
   pickTool: (tool: ExcalidrawTool) => void;
   toggleLibrary: () => void;
-  /** 보이는 화면을 한 번 더 클릭하면 그 위치에 메모장을 붙입니다. */
+  /** 메모 작성 창을 띄웁니다. 추가를 눌러야 보드에 붙습니다. */
   addStickyNote: () => void;
-  /** 메모장 클릭 배치 모드를 끕니다. */
+  /** 메모 작성 창을 닫습니다. */
   cancelStickyPlace: () => void;
   /** 펜/도형 획 색·굵기·불투명도·점선 (하단 서브메뉴와 연동) */
   setStrokeStyle: (style: {
@@ -770,6 +770,8 @@ type StickyAddPayload = {
   color: string;
   text: string;
   drawing: string;
+  /** 메모를 연 사람. 그 사람만 글을 고칩니다. */
+  authorId?: string;
 };
 
 type StickyUpdatePayload = {
@@ -896,6 +898,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const remotePendingEndsRef = useRef<Set<string>>(new Set());
   const replayTimerRef = useRef<number | null>(null);
   const isReplayingRef = useRef(false);
+  /** 보드를 다시 그리는 동안 메모·도형을 한 장씩 지웠다 붙이지 않습니다. */
+  const deferOverlayPaintRef = useRef(false);
+  const overlayPaintGenRef = useRef(0);
   const strokeStyleByIdRef = useRef<Map<string, {
     tool: StrokeTool;
     color: string;
@@ -1036,8 +1041,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
   const [placedStickies, setPlacedStickies] = useState<PlacedSticky[]>([]);
   const [selectedStickyId, setSelectedStickyId] = useState<string | null>(null);
-  const [stickyEditMode, setStickyEditMode] = useState<StickyEditMode>('text');
-  const [stickyPenColor, setStickyPenColor] = useState('#222222');
   const [color, setColor] = useState('#111827');
   const [size, setSize] = useState(6);
   // 펜 전용: 불투명도 · 실선/점선
@@ -1068,6 +1071,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   /** 메모장 도구: 다음 캔버스 클릭 위치에 붙입니다. */
   const [stickyPlaceMode, setStickyPlaceModeState] = useState(false);
   const stickyPlaceModeRef = useRef(false);
+  /** 아직 보드에 붙지 않은 메모 초안. 추가를 눌러야 다른 사람에게도 보입니다. */
+  const [stickyDraft, setStickyDraft] = useState<{ text: string; color: string } | null>(null);
 
   const [actorId, setActorId] = useState<string>('unknown');
 
@@ -1562,9 +1567,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (next !== 'eraser') {
       setAreaEraseMode(false);
     }
-    // 다른 보드 도구를 고르면 메모 클릭 배치를 끕니다.
+    // 다른 보드 도구를 고르면 아직 붙이지 않은 메모 초안을 닫습니다.
     stickyPlaceModeRef.current = false;
     setStickyPlaceModeState(false);
+    setStickyDraft(null);
     setTool(next);
     if (next === 'text') {
       startTextInViewRef.current();
@@ -2649,7 +2655,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const replacePlacedImages = (next: PlacedImage[]) => {
     placedImagesRef.current = next;
-    setPlacedImages(next);
+    if (!deferOverlayPaintRef.current) setPlacedImages(next);
   };
 
   const upsertPlacedImage = (img: PlacedImage) => {
@@ -2726,7 +2732,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const replacePlacedFiles = (next: PlacedFile[]) => {
     placedFilesRef.current = next;
-    setPlacedFiles(next);
+    if (!deferOverlayPaintRef.current) setPlacedFiles(next);
   };
 
   const upsertPlacedFile = (item: PlacedFile) => {
@@ -2818,7 +2824,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const replacePlacedShapes = (next: PlacedShape[]) => {
     placedShapesRef.current = next;
-    setPlacedShapes(next);
+    if (!deferOverlayPaintRef.current) setPlacedShapes(next);
   };
 
   const upsertPlacedShape = (item: PlacedShape) => {
@@ -2868,7 +2874,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const replacePlacedTexts = (next: PlacedText[]) => {
     placedTextsRef.current = next;
-    setPlacedTexts(next);
+    if (!deferOverlayPaintRef.current) setPlacedTexts(next);
   };
 
   const upsertPlacedText = (item: PlacedText) => {
@@ -2917,7 +2923,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   const replacePlacedStickies = (next: PlacedSticky[]) => {
     placedStickiesRef.current = next;
-    setPlacedStickies(next);
+    if (!deferOverlayPaintRef.current) setPlacedStickies(next);
   };
 
   const upsertPlacedSticky = (item: PlacedSticky) => {
@@ -2968,10 +2974,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     setEyedropperActive(true);
   };
 
-  /** 메모장 종이색 — 선택 중이면 즉시 바꾸고, 이후 addStickyNote에도 씁니다. */
+  /** 메모장 종이색 — 작성 중이거나 선택 중이면 즉시 바꾸고, 이후 추가에도 씁니다. */
   const setStickyPaperColor = (nextColor: string) => {
     const colorValue = nextColor.trim() || STICKY_PAPER;
     stickyPaperColorRef.current = colorValue;
+    setStickyDraft((prev) => (prev ? { ...prev, color: colorValue } : prev));
     const selectedId = selectedStickyIdRef.current;
     if (!selectedId) return;
     const prev = placedStickiesRef.current.find((x) => x.id === selectedId);
@@ -2999,51 +3006,61 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   };
   removePlacedStickyRef.current = removePlacedSticky;
 
-  /** 메모장 클릭 배치 모드를 끕니다. */
+  /** 메모 작성 창을 닫습니다. 보드에는 아무것도 붙이지 않습니다. */
   const cancelStickyPlace = () => {
     stickyPlaceModeRef.current = false;
     setStickyPlaceModeState(false);
+    setStickyDraft(null);
   };
 
   /**
-   * 메모장 도구: 바로 붙이지 않고, 화면을 한 번 더 클릭하면 그 위치에 붙입니다.
+   * 메모장 도구: 보드에 바로 붙이지 않고 작성 창만 띄웁니다.
    * 이미지/파일 도구가 남아 있으면 다음 클릭에 파일창이 뜨므로 hand로 되돌립니다.
    * (하단 UI의 stamp 선택은 부모가 유지 — onToolChange 알림은 건너뜁니다.)
    */
   const addStickyNote = () => {
-    if (tool === 'image' || tool === 'file') {
+    if (tool !== 'hand') {
       skipToolChangeNotifyRef.current = true;
       setTool('hand');
     }
-    stickyPlaceModeRef.current = true;
-    setStickyPlaceModeState(true);
+    stickyPlaceModeRef.current = false;
+    setStickyPlaceModeState(false);
+    setStickyDraft((prev) => prev ?? { text: '', color: stickyPaperColorRef.current || STICKY_PAPER });
   };
 
-  /** 클릭한 보드 좌표에 메모장을 붙입니다. 도구가 바뀌기 전까지 연속 배치를 위해 모드는 유지합니다. */
-  const placeStickyAt = (p: Point) => {
+  /** 작성 창의 글을 지금 보이는 화면 가운데에 붙입니다. 연 사람만 나중에 고칠 수 있습니다. */
+  const placeStickyFromDraft = () => {
+    const draft = stickyDraft;
+    if (!draft) return;
     setShowLibrary(false);
     setPendingStampKind(null);
     pendingStampRef.current = null;
     selectPlacedImage(null);
     selectPlacedText(null);
     selectPlacedFile(null);
+    const area = canvasAreaRef.current;
+    const zoom = zoomScaleRef.current || 1;
+    const pan = panOffsetRef.current;
+    let x = 48;
+    let y = 48;
+    if (area) {
+      x = Math.max(0, (area.clientWidth / 2 - pan.x) / zoom - DEFAULT_STICKY_W / 2);
+      y = Math.max(0, (area.clientHeight / 2 - pan.y) / zoom - DEFAULT_STICKY_H / 2);
+    }
     const note: PlacedSticky = {
       id: crypto.randomUUID(),
-      x: Math.max(0, p.x - DEFAULT_STICKY_W / 2),
-      y: Math.max(0, p.y - DEFAULT_STICKY_H / 2),
+      x,
+      y,
       width: DEFAULT_STICKY_W,
       height: DEFAULT_STICKY_H,
-      color: stickyPaperColorRef.current || STICKY_PAPER,
-      text: '',
+      color: draft.color || stickyPaperColorRef.current || STICKY_PAPER,
+      text: draft.text,
       drawing: '',
+      authorId: actorIdRef.current,
     };
     upsertPlacedSticky(note);
     selectPlacedSticky(note.id);
-    setStickyEditMode('text');
-    // 메모 도구가 선택된 동안은 배치 모드를 유지해, 색을 바꾼 뒤에도 빈 화면 클릭으로 계속 붙입니다.
-    // (다른 도구를 고르면 cancelStickyPlace / pickTool 에서 꺼집니다.)
-    stickyPlaceModeRef.current = true;
-    setStickyPlaceModeState(true);
+    setStickyDraft(null);
     void insertEvent('sticky.add', {
       id: note.id,
       x: note.x,
@@ -3053,6 +3070,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       color: note.color,
       text: note.text,
       drawing: note.drawing,
+      authorId: note.authorId,
     } satisfies StickyAddPayload);
     commitHistory();
   };
@@ -3366,13 +3384,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (isStale()) return;
     clearReplaySession();
     setIsLoadingBoard(true);
-    clearAllLocal();
-    remoteLastPointByStrokeRef.current = new Map();
-    remotePendingAppendsRef.current = new Map();
-    remotePendingEndsRef.current = new Set();
-    strokeStyleByIdRef.current = new Map();
-    translucentStrokePointsRef.current = new Map();
-    liveStrokePointsRef.current = null;
 
     const { data, error } = await supabase
       .from('board_events')
@@ -3451,6 +3462,34 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // 여백 캔버스가 잡히기 전에 그리면 획이 화면 밖 모서리에 붙고, 보이는 곳은 비어 있습니다.
     resizeCanvasIfNeeded();
     applyBoardTransform();
+
+    // 보이는 캔버스를 비우지 않고 옆 버퍼에 다시 그린 뒤 한 번에 붙입니다.
+    // 실행취소마다 화면 전체가 비었다가 돌아오지 않게 합니다.
+    const liveCanvas = canvasRef.current;
+    let buffer: HTMLCanvasElement | null = null;
+    if (liveCanvas && liveCanvas.width > 0 && liveCanvas.height > 0) {
+      const next = document.createElement('canvas');
+      next.width = liveCanvas.width;
+      next.height = liveCanvas.height;
+      const nextCtx = next.getContext('2d', { alpha: true });
+      if (nextCtx) {
+        buffer = next;
+        canvasRef.current = buffer;
+        ctxRef.current = nextCtx;
+        applyBoardTransform();
+      }
+    }
+    const paintGen = ++overlayPaintGenRef.current;
+    deferOverlayPaintRef.current = true;
+
+    try {
+    remoteLastPointByStrokeRef.current = new Map();
+    remotePendingAppendsRef.current = new Map();
+    remotePendingEndsRef.current = new Set();
+    strokeStyleByIdRef.current = new Map();
+    translucentStrokePointsRef.current = new Map();
+    liveStrokePointsRef.current = null;
+    clearAllLocal();
     for (const ev of events) {
       // 이미지 등은 비동기로 그려지므로, 그리는 도중 보드가 바뀌면 남은 이벤트를 멈춥니다.
       if (isStale()) return;
@@ -3544,6 +3583,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
           height: t?.height ?? p.height,
           text: u?.text ?? p.text,
           drawing: u?.drawing ?? p.drawing,
+          authorId: p.authorId,
         };
         await applyEvent({ ...ev, payload: folded });
         if (isHistoryCommitEvent(ev.type)) commitHistory();
@@ -3552,9 +3592,43 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       await applyEvent(ev);
       if (isHistoryCommitEvent(ev.type)) commitHistory();
     }
-    if (isStale()) return;
-    revealExpandedFilesOnCanvas();
-    if (historyRef.current.length === 0) initHistory();
+    if (!isStale()) {
+      revealExpandedFilesOnCanvas();
+      if (historyRef.current.length === 0) initHistory();
+    }
+    } finally {
+      // 다시 그리던 버퍼가 아직 이 호출 것이면 보이는 캔버스로 되돌립니다.
+      const stillMine = paintGen === overlayPaintGenRef.current;
+      if (buffer && liveCanvas && canvasRef.current === buffer) {
+        canvasRef.current = liveCanvas;
+        const liveCtx = liveCanvas.getContext('2d', { alpha: true });
+        if (liveCtx && stillMine && !isStale()) {
+          liveCtx.setTransform(1, 0, 0, 1, 0, 0);
+          liveCtx.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+          liveCtx.drawImage(buffer, 0, 0);
+          ctxRef.current = liveCtx;
+          applyBoardTransform();
+        } else if (liveCtx) {
+          ctxRef.current = liveCtx;
+          applyBoardTransform();
+        }
+      }
+      if (stillMine) {
+        deferOverlayPaintRef.current = false;
+        if (!isStale()) {
+          setPlacedImages(placedImagesRef.current);
+          setPlacedFiles(placedFilesRef.current);
+          setPlacedTexts(placedTextsRef.current);
+          setPlacedShapes(placedShapesRef.current);
+          setPlacedStickies(placedStickiesRef.current);
+          setSelectedImageId(selectedImageIdRef.current);
+          setSelectedFileId(selectedFileIdRef.current);
+          setSelectedTextId(selectedTextIdRef.current);
+          setSelectedShapeId(selectedShapeIdRef.current);
+          setSelectedStickyId(selectedStickyIdRef.current);
+        }
+      }
+    }
   };
 
   useEffect(() => {
@@ -3950,6 +4024,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         color: p.color || STICKY_PAPER,
         text: p.text ?? '',
         drawing: p.drawing ?? '',
+        authorId: p.authorId,
       });
       return;
     }
@@ -4365,12 +4440,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       panningRef.current = true;
       panAnchorRef.current = { x: e.clientX, y: e.clientY };
       e.currentTarget.setPointerCapture(e.pointerId);
-      return;
-    }
-
-    // 메모장 배치: 도구 선택 후 화면을 한 번 더 클릭한 위치에 붙입니다.
-    if (stickyPlaceModeRef.current) {
-      placeStickyAt(p);
       return;
     }
 
@@ -5181,6 +5250,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`,
             transformOrigin: '0 0',
           }}
+          onPointerDown={(e) => {
+            // 손 도구에서 캔버스는 메모에 클릭을 넘기므로, 빈 곳 화면 이동은 여기서 받습니다.
+            if (e.target !== e.currentTarget) return;
+            if (activeTool !== 'hand' && !spacePressed) return;
+            if (selectedTextIdRef.current) selectPlacedText(null);
+            if (selectedShapeIdRef.current) selectPlacedShape(null);
+            if (selectedImageIdRef.current) selectPlacedImage(null);
+            if (selectedFileIdRef.current) selectPlacedFile(null);
+            if (selectedStickyIdRef.current) selectPlacedSticky(null);
+            panningRef.current = true;
+            panAnchorRef.current = { x: e.clientX, y: e.clientY };
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
         >
           {placedFiles.filter((item) => item.expanded).map((item) => (
             <div
@@ -5223,14 +5308,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               maxWidth: 'none',
               maxHeight: 'none',
               zIndex: 2,
+              // 손 도구일 때만 메모를 고르게 통과시킵니다. 펜 획은 이 캔버스에 남아 메모 위에 보입니다.
+              pointerEvents: activeTool === 'hand' ? 'none' : 'auto',
               background: 'transparent',
               touchAction: 'none',
               outline: 'none',
               cursor: eyedropperActive
                 ? 'crosshair'
-                : stickyPlaceMode
-                  ? 'copy'
-                  : areaEraseMode
+                : areaEraseMode
                     ? 'crosshair'
                     : activeTool === 'hand'
                       ? 'grab'
@@ -5651,8 +5736,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               key={item.id}
               note={item}
               selected={item.id === selectedStickyId}
-              editMode={item.id === selectedStickyId ? stickyEditMode : 'text'}
-              penColor={stickyPenColor}
+              // 연 사람이 기록된 메모는 그 사람만 글을 고칩니다. 예전 메모는 그대로 둡니다.
+              canEdit={!item.authorId || item.authorId === actorId}
               // 지우개·영역 지우기일 때 메모 위를 통과해 네모 드래그
               passThrough={drawThroughMedia}
               onSelect={() => {
@@ -5661,17 +5746,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 selectPlacedFile(null);
                 selectPlacedSticky(item.id);
               }}
-              onEditMode={setStickyEditMode}
-              onPenColor={setStickyPenColor}
               onTextChange={(text) => {
+                if (item.authorId && item.authorId !== actorIdRef.current) return;
                 const next = { ...item, text };
                 upsertPlacedSticky(next);
                 scheduleStickyTextPersist(next);
-              }}
-              onDrawingChange={(drawing) => {
-                const next = { ...item, drawing };
-                upsertPlacedSticky(next);
-                void persistStickyUpdate(next);
               }}
               onRemove={() => removePlacedSticky(item.id)}
               onMovePointerDown={(e) => {
@@ -5696,6 +5775,46 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             />
           ))}
         </div>
+
+        {stickyDraft ? (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 40,
+              pointerEvents: 'none',
+            }}
+          >
+            {/* 작성 중에는 이 사람 화면에만 있습니다. 추가를 눌러야 보드에 붙습니다. */}
+            <StickyNoteOverlay
+              note={{
+                id: 'sticky-draft',
+                x: 0,
+                y: 0,
+                width: DEFAULT_STICKY_W,
+                height: DEFAULT_STICKY_H,
+                color: stickyDraft.color,
+                text: stickyDraft.text,
+                drawing: '',
+              }}
+              selected
+              canEdit
+              draft
+              floating
+              onSelect={() => {}}
+              onTextChange={(text) => setStickyDraft((prev) => (prev ? { ...prev, text } : prev))}
+              onAdd={placeStickyFromDraft}
+              onRemove={() => setStickyDraft(null)}
+              onMovePointerDown={(e) => e.stopPropagation()}
+              onResizePointerDown={(e) => e.stopPropagation()}
+              onPointerMove={() => {}}
+              onPointerUp={() => {}}
+            />
+          </div>
+        ) : null}
 
         <input
           ref={boardFileInputRef}
