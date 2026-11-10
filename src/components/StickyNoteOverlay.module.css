@@ -71,6 +71,16 @@
   background: rgba(255, 255, 255, 0.16);
 }
 
+/* 고정이 켜진 상태. 다시 누르면 보드에서 떼어 작성 창으로 돌아갑니다. */
+.pinOn {
+  background: #fff;
+  color: #3f5a32;
+}
+
+.pinOn:hover {
+  background: #f3f6ef;
+}
+
 .spacer {
   flex: 1;
 }

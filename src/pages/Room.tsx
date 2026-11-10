@@ -736,7 +736,7 @@ function RoomContent({
     setEraserActive(false);
     setAreaEraseActive(false);
     if (next === 'stamp') {
-      // 메모장: 작성 창만 띄우고, 추가를 눌러야 보드에 붙습니다.
+      // 메모장: 작성 창만 띄우고, 고정을 켜야 보드에 붙습니다.
       canvasBoardRef.current?.setStickyPaperColor(stickyColor);
       canvasBoardRef.current?.addStickyNote();
       return;
@@ -1673,6 +1673,12 @@ export default function Room() {
     const isLastParticipant = participantCountRef.current <= 1;
 
     setSaving(true);
+    // 녹화를 하지 않아도 방금 그린 보드가 그룹 목록에 남도록, 나가기 전에 저장을 끝냅니다.
+    try {
+      await canvasBoardRef.current?.flushBoardWrites();
+    } catch (err) {
+      console.warn('나가기 전 보드 저장 실패:', err);
+    }
     // 이 브라우저가 방을 떠나면 다음 회의 타이머·회의 행이 이전 접속을 쓰지 않게 지웁니다.
     forgetRoomOpened(id);
     forgetSessionMeetingId(id);

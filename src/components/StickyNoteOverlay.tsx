@@ -26,15 +26,17 @@ type Props = {
   selected: boolean;
   /** 연 사람만 true. 다른 사람은 글은 보이지만 고치지 못합니다. */
   canEdit?: boolean;
-  /** 아직 보드에 붙기 전 작성 창. 고정을 눌러야 붙습니다. */
+  /** 아직 보드에 붙기 전 작성 창. */
   draft?: boolean;
+  /** 고정이 켜져 보드에 붙어 있는지. 끄면 작성 창으로 돌아옵니다. */
+  pinned?: boolean;
   /** 화면 가운데에 띄울 때 보드 좌표를 쓰지 않습니다. */
   floating?: boolean;
   /** 지우개 등에서 클릭을 캔버스로 통과시킵니다 */
   passThrough?: boolean;
   onSelect: () => void;
   onTextChange: (text: string) => void;
-  /** 작성 창의 고정. 지금 글을 화이트보드에 붙입니다. */
+  /** 고정 버튼. 꺼져 있으면 붙이고, 켜져 있으면 보드에서 뗍니다. */
   onPin?: () => void;
   onRemove: () => void;
   /** 제목줄을 잡아 옮길 때. 캡처는 호출 쪽에서 합니다. */
@@ -46,13 +48,14 @@ type Props = {
 
 /**
  * 회의 보드 위 메모장.
- * 글은 메모를 연 사람만 고치고, 작성 창은 고정을 눌러야 보드에 붙습니다.
+ * 글은 메모를 연 사람만 고칩니다. 고정은 켜면 보드에 붙고, 끄면 작성 창으로 돌아옵니다.
  */
 export default function StickyNoteOverlay({
   note,
   selected,
   canEdit = true,
   draft = false,
+  pinned = false,
   floating = false,
   passThrough = false,
   onSelect,
@@ -99,18 +102,19 @@ export default function StickyNoteOverlay({
       >
         <span className={styles.title}>메모장</span>
         <span className={styles.spacer} />
-        {draft ? (
+        {onPin ? (
           <button
             type="button"
-            className={styles.removeBtn}
-            title="고정"
-            aria-label="고정"
+            className={`${styles.removeBtn}${pinned ? ` ${styles.pinOn}` : ''}`}
+            title={pinned ? '고정 해제' : '고정'}
+            aria-label={pinned ? '고정 해제' : '고정'}
+            aria-pressed={pinned}
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => onPin?.()}
+            onClick={() => onPin()}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill={pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M9 4h6l-1 6 3 3H7l3-3-1-6Z" />
-              <path d="M12 13v7" />
+              <path d="M12 13v7" stroke="currentColor" fill="none" />
             </svg>
           </button>
         ) : null}

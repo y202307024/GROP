@@ -175,6 +175,8 @@ type Props = {
 export type CanvasBoardHandle = {
   clearBoard: () => void;
   getCanvasElement: () => HTMLCanvasElement | null;
+  /** 아직 저장 중인 획을 끝까지 넣습니다. 녹화 없이 나가도 보드가 남게 할 때 씁니다. */
+  flushBoardWrites: () => Promise<void>;
   /** 지금 보고 있는 화이트보드 이름. 녹화 종료 때 회의 제목으로 씁니다. */
   getBoardTitle: () => string;
   pickTool: (tool: ExcalidrawTool) => void;
@@ -1419,8 +1421,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (isGroupCanvas && groupId) insertPayload.group_id = groupId;
       let { data, error } = await supabase.from('boards').insert([insertPayload]).select().limit(1).single();
       // group_id 컬럼이 없는 DB(마이그레이션 전)에서는 제목 접두어만으로 저장합니다.
-      if (error?.message?.includes('group_id') && insertPayload.group_id) {
-        ({ data, error } = await supabase.from('boards').insert([{ title }]).select().limit(1).single());
+      if (error?.message?.includes('group_id') && insertPayload.group_id && groupId) {
+        // 그룹 칸이 없으면 제목 접두어로 남겨, 녹화 없이도 그룹 보드 목록에서 찾습니다.
+        ({ data, error } = await supabase
+          .from('boards')
+          .insert([{ title: `${GROUP_BOARD_TITLE_PREFIX}${groupId}::${title}` }])
+          .select()
+          .limit(1)
+          .single());
       }
       if (error) throw error;
       if (data && data.id) {
@@ -2108,10 +2116,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   }, []);
 
   const formatBoardTitle = (title: string) => {
-    if (title.startsWith(GROUP_BOARD_TITLE_PREFIX)) {
-      return `${groupName || '그룹'} 캔버스`;
-    }
-    return title;
+    if (!title.startsWith(GROUP_BOARD_TITLE_PREFIX)) return title;
+    // 접두어 뒤에 ::이름이 있으면 그 이름을, 없으면 그룹 캔버스라고 보여 줍니다.
+    const named = title.slice(GROUP_BOARD_TITLE_PREFIX.length).split('::').slice(1).join('::').trim();
+    return named || `${groupName || '그룹'} 캔버스`;
   };
 
   const fetchGroupBoards = async (targetGroupId: string): Promise<Board[]> => {
@@ -2121,17 +2129,26 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       .eq('group_id', targetGroupId)
       .order('created_at', { ascending: false });
 
-    if (!groupColError && byGroupId?.length) {
-      return byGroupId as Board[];
+    // 그룹에 안 묶인 예전 보드(제목 접두어)도 녹화가 없어도 목록에 남깁니다.
+    const prefix = `${GROUP_BOARD_TITLE_PREFIX}${targetGroupId}`;
+    const [{ data: exactTitle }, { data: timedTitle }, { data: namedTitle }] = await Promise.all([
+      supabase.from('boards').select('id,title,created_at').eq('title', prefix).order('created_at', { ascending: false }),
+      supabase.from('boards').select('id,title,created_at').like('title', `${prefix}-%`).order('created_at', { ascending: false }),
+      supabase.from('boards').select('id,title,created_at').like('title', `${prefix}::%`).order('created_at', { ascending: false }),
+    ]);
+    const titled = [
+      ...((exactTitle as Board[] | null) ?? []),
+      ...((timedTitle as Board[] | null) ?? []),
+      ...((namedTitle as Board[] | null) ?? []),
+    ];
+
+    if (groupColError && /group_id/i.test(groupColError.message)) {
+      return dedupeBoardsById(titled);
     }
-
-    const { data: byTitle } = await supabase
-      .from('boards')
-      .select('id,title,created_at')
-      .eq('title', `${GROUP_BOARD_TITLE_PREFIX}${targetGroupId}`)
-      .order('created_at', { ascending: false });
-
-    return (byTitle as Board[] | null) ?? [];
+    return dedupeBoardsById([
+      ...((byGroupId as Board[] | null) ?? []),
+      ...titled,
+    ]);
   };
 
   const loadGroupBoards = async () => {
@@ -2237,6 +2254,31 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, groupName]);
 
+  // 회의에서 쓴 보드는 녹화가 없어도 그룹 보드 목록에 남도록 소속을 채웁니다.
+  useEffect(() => {
+    if (!groupId || !boardId) return;
+    let stop = false;
+    void (async () => {
+      const { data, error } = await supabase
+        .from('boards')
+        .update({ group_id: groupId })
+        .eq('id', boardId)
+        .is('group_id', null)
+        .select('id');
+      if (stop || error || !data?.length) return;
+      void loadGroupBoards();
+    })();
+    return () => { stop = true; };
+    // loadGroupBoards 는 목록만 다시 읽고, 이 효과는 보드가 바뀔 때만 돕니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupId, boardId]);
+
+  useEffect(() => {
+    return () => {
+      void flushBoardWritesRef.current();
+    };
+  }, []);
+
   const createBoard = async () => {
     if (!canChangeBoard) {
       alert('보드 변경 권한이 없습니다.');
@@ -2259,7 +2301,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (error?.message?.includes('group_id') && isGroupCanvas && groupId) {
       ({ data, error } = await supabase
         .from('boards')
-        .insert({ title: `${GROUP_BOARD_TITLE_PREFIX}${groupId}-${Date.now()}` })
+        .insert({ title: `${GROUP_BOARD_TITLE_PREFIX}${groupId}::${title}` })
         .select('id,title,created_at')
         .single());
     }
@@ -3028,6 +3070,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     stickyPlaceModeRef.current = false;
     setStickyPlaceModeState(false);
     setStickyDraft((prev) => prev ?? { text: '', color: stickyPaperColorRef.current || STICKY_PAPER });
+  };
+
+  /**
+   * 고정을 끕니다. 보드에서 떼고, 같은 글을 작성 창으로 되돌립니다.
+   * 연 사람만 끌 수 있습니다.
+   */
+  const unpinSticky = (item: PlacedSticky) => {
+    if (item.authorId && item.authorId !== actorIdRef.current) return;
+    removePlacedSticky(item.id);
+    setStickyDraft({ text: item.text, color: item.color || STICKY_PAPER });
   };
 
   /** 작성 창의 글을 지금 보이는 화면 가운데에 붙입니다. 연 사람만 나중에 고칠 수 있습니다. */
@@ -4993,6 +5045,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   useImperativeHandle(ref, () => ({
     clearBoard: () => clearAllRef.current(),
     getCanvasElement: () => canvasRef.current,
+    flushBoardWrites: () => flushBoardWritesRef.current(),
     getBoardTitle: () => boardTitleRef.current.trim(),
     pickTool,
     toggleLibrary: () => setShowLibrary((v) => !v),
@@ -5755,6 +5808,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 upsertPlacedSticky(next);
                 scheduleStickyTextPersist(next);
               }}
+              pinned
+              onPin={!item.authorId || item.authorId === actorId ? () => unpinSticky(item) : undefined}
               onRemove={() => removePlacedSticky(item.id)}
               onMovePointerDown={(e) => {
                 e.stopPropagation();
@@ -5791,7 +5846,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               pointerEvents: 'none',
             }}
           >
-            {/* 작성 중에는 이 사람 화면에만 있습니다. 추가를 눌러야 보드에 붙습니다. */}
+            {/* 작성 중에는 이 사람 화면에만 있습니다. 고정을 켜야 보드에 붙습니다. */}
             <StickyNoteOverlay
               note={{
                 id: 'sticky-draft',
@@ -5809,6 +5864,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               floating
               onSelect={() => {}}
               onTextChange={(text) => setStickyDraft((prev) => (prev ? { ...prev, text } : prev))}
+              pinned={false}
               onPin={placeStickyFromDraft}
               onRemove={() => setStickyDraft(null)}
               onMovePointerDown={(e) => e.stopPropagation()}
