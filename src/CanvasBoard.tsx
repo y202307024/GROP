@@ -1075,8 +1075,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   /** 메모장 도구: 다음 캔버스 클릭 위치에 붙입니다. */
   const [stickyPlaceMode, setStickyPlaceModeState] = useState(false);
   const stickyPlaceModeRef = useRef(false);
-  /** 아직 보드에 붙지 않은 메모 초안. 추가를 눌러야 다른 사람에게도 보입니다. */
-  const [stickyDraft, setStickyDraft] = useState<{ text: string; color: string } | null>(null);
+  /** 아직 보드에 붙지 않은 메모. x,y는 보드 좌표라 고정을 눌러도 끌어 둔 자리에 남습니다. */
+  const [stickyDraft, setStickyDraft] = useState<{ text: string; color: string; x: number; y: number; width: number; height: number } | null>(null);
+  const stickyDraftDragRef = useRef<{ startPoint: Point; x: number; y: number } | null>(null);
 
   const [actorId, setActorId] = useState<string>('unknown');
 
@@ -3069,20 +3070,45 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     }
     stickyPlaceModeRef.current = false;
     setStickyPlaceModeState(false);
-    setStickyDraft((prev) => prev ?? { text: '', color: stickyPaperColorRef.current || STICKY_PAPER });
+    setStickyDraft((prev) => prev ?? {
+      text: '',
+      color: stickyPaperColorRef.current || STICKY_PAPER,
+      ...stickyViewCenter(),
+      width: DEFAULT_STICKY_W,
+      height: DEFAULT_STICKY_H,
+    });
+  };
+
+  /** 메모를 처음 열 때만 화면 가운데에 둡니다. 이후 위치는 사용자가 옮긴 값을 씁니다. */
+  const stickyViewCenter = () => {
+    const area = canvasAreaRef.current;
+    const zoom = zoomScaleRef.current || 1;
+    const pan = panOffsetRef.current;
+    if (!area) return { x: 48, y: 48 };
+    return {
+      x: (area.clientWidth / 2 - pan.x) / zoom - DEFAULT_STICKY_W / 2,
+      y: (area.clientHeight / 2 - pan.y) / zoom - DEFAULT_STICKY_H / 2,
+    };
   };
 
   /**
-   * 고정을 끕니다. 보드에서 떼고, 같은 글을 작성 창으로 되돌립니다.
+   * 고정을 끕니다. 보드는 떼지만 글과 자리는 그대로 작성 창에 남깁니다.
    * 연 사람만 끌 수 있습니다.
    */
   const unpinSticky = (item: PlacedSticky) => {
     if (item.authorId && item.authorId !== actorIdRef.current) return;
     removePlacedSticky(item.id);
-    setStickyDraft({ text: item.text, color: item.color || STICKY_PAPER });
+    setStickyDraft({
+      text: item.text,
+      color: item.color || STICKY_PAPER,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+    });
   };
 
-  /** 작성 창의 글을 지금 보이는 화면 가운데에 붙입니다. 연 사람만 나중에 고칠 수 있습니다. */
+  /** 작성 창을 지금 놓인 자리 그대로 보드에 붙입니다. 연 사람만 나중에 고칠 수 있습니다. */
   const placeStickyFromDraft = () => {
     const draft = stickyDraft;
     if (!draft) return;
@@ -3092,21 +3118,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     selectPlacedImage(null);
     selectPlacedText(null);
     selectPlacedFile(null);
-    const area = canvasAreaRef.current;
-    const zoom = zoomScaleRef.current || 1;
-    const pan = panOffsetRef.current;
-    let x = 48;
-    let y = 48;
-    if (area) {
-      x = Math.max(0, (area.clientWidth / 2 - pan.x) / zoom - DEFAULT_STICKY_W / 2);
-      y = Math.max(0, (area.clientHeight / 2 - pan.y) / zoom - DEFAULT_STICKY_H / 2);
-    }
     const note: PlacedSticky = {
       id: crypto.randomUUID(),
-      x,
-      y,
-      width: DEFAULT_STICKY_W,
-      height: DEFAULT_STICKY_H,
+      x: draft.x,
+      y: draft.y,
+      width: draft.width || DEFAULT_STICKY_W,
+      height: draft.height || DEFAULT_STICKY_H,
       color: draft.color || stickyPaperColorRef.current || STICKY_PAPER,
       text: draft.text,
       drawing: '',
@@ -5832,28 +5849,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               onPointerUp={handlePointerUp}
             />
           ))}
-        </div>
-
-        {stickyDraft ? (
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              zIndex: 40,
-              pointerEvents: 'none',
-            }}
-          >
-            {/* 작성 중에는 이 사람 화면에만 있습니다. 고정을 켜야 보드에 붙습니다. */}
+          {stickyDraft ? (
             <StickyNoteOverlay
               note={{
                 id: 'sticky-draft',
-                x: 0,
-                y: 0,
-                width: DEFAULT_STICKY_W,
-                height: DEFAULT_STICKY_H,
+                x: stickyDraft.x,
+                y: stickyDraft.y,
+                width: stickyDraft.width,
+                height: stickyDraft.height,
                 color: stickyDraft.color,
                 text: stickyDraft.text,
                 drawing: '',
@@ -5861,19 +5864,36 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               selected
               canEdit
               draft
-              floating
               onSelect={() => {}}
               onTextChange={(text) => setStickyDraft((prev) => (prev ? { ...prev, text } : prev))}
               pinned={false}
               onPin={placeStickyFromDraft}
               onRemove={() => setStickyDraft(null)}
-              onMovePointerDown={(e) => e.stopPropagation()}
+              onMovePointerDown={(e) => {
+                e.stopPropagation();
+                const p = getPoint(e.nativeEvent);
+                if (!p) return;
+                stickyDraftDragRef.current = { startPoint: p, x: stickyDraft.x, y: stickyDraft.y };
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
               onResizePointerDown={(e) => e.stopPropagation()}
-              onPointerMove={() => {}}
-              onPointerUp={() => {}}
+              onPointerMove={(e) => {
+                const drag = stickyDraftDragRef.current;
+                if (!drag) return;
+                const p = getPoint(e.nativeEvent);
+                if (!p) return;
+                setStickyDraft((prev) => (prev ? {
+                  ...prev,
+                  x: drag.x + (p.x - drag.startPoint.x),
+                  y: drag.y + (p.y - drag.startPoint.y),
+                } : prev));
+              }}
+              onPointerUp={() => {
+                stickyDraftDragRef.current = null;
+              }}
             />
-          </div>
-        ) : null}
+          ) : null}
+        </div>
 
         <input
           ref={boardFileInputRef}

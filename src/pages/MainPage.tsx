@@ -13,7 +13,7 @@ import Icon from '../components/Icon';
 import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingAttendeeFaces';
 import { liveHeadcount, liveRoomForMeeting, useLiveRooms } from '../utils/liveMeeting';
 import { isListedMeeting } from '../utils/meetingVideo';
-import { fetchGroupChatFiles, fetchGroupMeetingDocs, fetchMeetingDocAttachments, isSameLocalDay } from '../utils/meetingDocs';
+import { fetchGroupChatFiles, fetchGroupMeetingDocs, fetchMeetingDocAttachments, isSameLocalDay, localDayKey } from '../utils/meetingDocs';
 import { displayFileName, downloadMeetingFile, formatChatFileSize } from '../utils/meetingChat';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
@@ -464,13 +464,20 @@ export default function MainPage() {
     setLoadingFiles(true);
     try {
       const serverFiles = await fetchMeetingDocAttachments(meeting.id, meeting.group_id);
-      if (serverFiles.length > 0) {
-        setOpenFiles(serverFiles);
-        return;
-      }
       const saved = filesFrom(meeting.attachments);
-      if (saved.length > 0) {
-        setOpenFiles(saved);
+      // 한 줄로 합친 회의의 파일이 서버 목록에만 있거나, 반대로 모아 둔 첨부에만 있어도 같이 엽니다.
+      const byPath = new Map<string, { id: string; name: string; path: string; size: number }>();
+      for (const file of [...serverFiles, ...saved]) {
+        if (!file.path) continue;
+        byPath.set(file.path, {
+          id: file.id || file.path,
+          name: file.name,
+          path: file.path,
+          size: file.size || 0,
+        });
+      }
+      if (byPath.size > 0) {
+        setOpenFiles([...byPath.values()]);
         return;
       }
       const groupFiles = await fetchGroupChatFiles(meeting.group_id);
@@ -492,15 +499,42 @@ export default function MainPage() {
   };
 
   const openDocLabel = openDoc
-    ? [
-        groups.find((group) => group.id === openDoc.group_id)?.name,
-        openDoc.title?.trim() || '회의',
-      ].filter(Boolean).join(' · ')
+    ? groups.find((group) => group.id === openDoc.group_id)?.name?.trim() || '그룹'
     : '';
 
-  // 문서 목록: 지금 회의 중인 방은 파일이 없어도 올리고, 끝난 회의는 올린 파일이 있는 것만 둡니다.
+  // 문서 목록: 한 회의(같은 날·같은 그룹 보드)는 한 줄만 보여주고, 파일은 그 줄에 모읍니다.
   const documentMeetings = useMemo(() => {
-    return [...meetings]
+    const buckets = new Map<string, MeetingRow[]>();
+    for (const meeting of meetings) {
+      const title = (meeting.title ?? '').trim().toLowerCase();
+      // 이름이 있으면 그 그룹 보드로, 없으면 그 날 회의로 묶습니다.
+      const key = title
+        ? `${meeting.group_id}::${title}`
+        : `${meeting.group_id}::${localDayKey(meeting.date)}`;
+      const list = buckets.get(key) ?? [];
+      list.push(meeting);
+      buckets.set(key, list);
+    }
+    const dayBuckets = new Map<string, MeetingRow[]>();
+    for (const list of buckets.values()) {
+      const newest = [...list].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+      const dayKey = `${newest.group_id}::${localDayKey(newest.date)}`;
+      const dayList = dayBuckets.get(dayKey) ?? [];
+      dayList.push(...list);
+      dayBuckets.set(dayKey, dayList);
+    }
+    const collapsed = [...dayBuckets.values()].map((list) => {
+      const sorted = [...list].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      const live = liveReady ? sorted.find((row) => liveRoomForMeeting(liveRooms, row, meetings)) : undefined;
+      const base = live ?? sorted[0];
+      return {
+        ...base,
+        title: base.title?.trim() ? base.title : sorted.find((row) => row.title?.trim())?.title ?? base.title,
+        summary: sorted.find((row) => row.summary)?.summary ?? base.summary,
+        attachments: unionUploadedFiles(...sorted.map((row) => row.attachments)),
+      };
+    });
+    return collapsed
       .filter((m) => {
         const inRoom = liveReady && liveRoomForMeeting(liveRooms, m, meetings) != null;
         return inRoom || hasUploadedFiles(m.attachments);
@@ -625,7 +659,7 @@ export default function MainPage() {
           <div className={styles.dashboardRow}>
           <section className={`${styles.panel} ${styles.meetingPanel}`}>
             <div className={styles.meetingCols}>
-              <span>회의 제목</span><span>진행 상태</span><span>날짜</span><span>참석자</span><span>AI 요약</span>
+              <span>그룹</span><span>진행 상태</span><span>날짜</span><span>참석자</span><span>AI 요약</span>
             </div>
             {/* zip의 rectangleGroup(행 하나 = 독립된 흰 카드) 스타일로 — 예전엔 표 한 줄씩
                 구분선(hr)만 있었는데, 지금은 각 회의가 자기 카드를 갖습니다. */}
@@ -649,7 +683,10 @@ export default function MainPage() {
                     else void openDocumentFiles(m);
                   }}
                 >
-                  <span className={styles.title}>{m.title || '회의'}</span>
+                  {/* 보드 이름 대신 이 회의가 속한 그룹 이름을 보여 줍니다. */}
+                  <span className={styles.title}>
+                    {groups.find((group) => group.id === m.group_id)?.name?.trim() || '그룹'}
+                  </span>
                   <span className={`${styles.statusPill} ${!liveReady ? '' : inRoom ? styles.statusPillProgress : styles.statusPillDone}`}>
                     {!liveReady ? '' : inRoom ? '진행중' : '완료'}
                   </span>
@@ -668,7 +705,20 @@ export default function MainPage() {
             <div className={styles.summaryList}>
               {loaded && !meetings.some((m) => m.summary) && <div className={styles.panelEmpty}>아직 AI 요약이 없어요</div>}
               {meetings.filter((m) => m.summary).slice(0, SUMMARY_VISIBLE).map((m) => (
-                <div key={m.id} className={styles.summaryCard}>
+                // 이 카드의 회의 AI 요약 화면으로 이동합니다. 기본 탭은 요약입니다.
+                <div
+                  key={m.id}
+                  className={styles.summaryCard}
+                  role="link"
+                  tabIndex={0}
+                  onClick={() => navigate(`/ai/${m.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      navigate(`/ai/${m.id}`);
+                    }
+                  }}
+                >
                   {/* 시안의 문서 아이콘(icon-description.svg, 초록 고정색) — 임시 선형 아이콘(file-text)을 교체 */}
                   <img src={docIcon} alt="" className={styles.docIcon} />
                   <div className={styles.content}>

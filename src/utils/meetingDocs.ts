@@ -143,16 +143,26 @@ export async function fetchGroupChatFiles(groupId: string): Promise<ReturnType<t
   }
 }
 
+/** 날짜만 있는 문자열은 UTC 자정이 아니라 그 달력 날짜로 읽습니다. */
+function calendarDate(value: string | number): Date | null {
+  if (typeof value === 'string') {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+    if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** 같은 날 회의를 한 줄로 묶을 때 쓰는 로컬 날짜 키. */
+export function localDayKey(value: string | number) {
+  const date = calendarDate(value);
+  if (!date) return String(value);
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+}
+
 /** 같은 날짜(로컬)인지 — 회의일과 업로드일을 맞출 때 씁니다. */
 export function isSameLocalDay(aIso: string | number, bIso: string | number) {
-  const a = new Date(aIso);
-  const b = new Date(bIso);
-  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return false;
-  return (
-    a.getFullYear() === b.getFullYear()
-    && a.getMonth() === b.getMonth()
-    && a.getDate() === b.getDate()
-  );
+  return localDayKey(aIso) === localDayKey(bIso);
 }
 
 /** path 기준으로 첨부 목록을 합칩니다. */

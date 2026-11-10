@@ -83,6 +83,8 @@ export default function StickyNoteOverlay({
         top: floating ? undefined : note.y,
         width: note.width,
         height: note.height,
+        // 작성 중에는 캔버스보다 위에 두어, 끌어 둔 자리에서 고정을 누를 수 있게 합니다.
+        zIndex: draft ? 30 : undefined,
         // 툴바에서 고른 종이색을 카드 전체에 반영합니다.
         backgroundColor: note.color || '#fffef8',
         pointerEvents: passThrough ? 'none' : 'auto',
