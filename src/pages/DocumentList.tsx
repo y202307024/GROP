@@ -6,6 +6,8 @@ import AppShell from '../components/AppShell';
 import Icon from '../components/Icon';
 import FileTypeIcon from '../components/FileTypeIcon';
 import moreVerticalIcon from '../assets/action-icons/more-vertical.svg';
+import bookmarkIcon from '../assets/action-icons/bookmark.svg';
+import bookmarkFillIcon from '../assets/action-icons/bookmark-fill.svg';
 import checkIcon from '../assets/action-icons/check.svg';
 import closeIcon from '../assets/action-icons/close.svg';
 import saveFloppyIcon from '../assets/action-icons/save-floppy-disk.svg';
@@ -17,6 +19,7 @@ import {
   downloadMeetingFile,
   formatChatFileSize,
   isStoredChatFileName,
+  renameMeetingFile,
   uploadMeetingAttachment,
   type MeetingSharedFile,
 } from '../utils/meetingChat';
@@ -195,6 +198,10 @@ export default function DocumentList() {
   const [openFiles, setOpenFiles] = useState<MeetingAttachment[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
+  /** 첨부 모달에서 이름을 고치는 중인 파일 경로와 입력값 */
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [savingRename, setSavingRename] = useState(false);
   /**
    * 상단 탭("전체 문서" / "내가 올린 문서"). 파일마다 올린 사람을 저장하진 않아서, "내가 올린 문서"는
    * 그 문서(회의록 행)를 만든 사람(meetings.created_by)이 나인 문서로 판단합니다.
@@ -448,6 +455,46 @@ export default function DocumentList() {
       alert(err instanceof Error ? err.message : '파일을 내려받지 못했습니다.');
     } finally {
       setDownloadingPath(null);
+    }
+  };
+
+  /** 첨부 모달의 이름을 서버에 저장하고, 열린 목록과 문서 행에도 바로 반영합니다. */
+  const commitRename = async (file: MeetingAttachment) => {
+    if (savingRename) return;
+    const next = renameDraft.trim();
+    const current = displayFileName(file.name);
+    if (!next || next === current) {
+      setRenamingPath(null);
+      return;
+    }
+    setSavingRename(true);
+    try {
+      const saved = await renameMeetingFile(file.path, next);
+      setOpenFiles((prev) => prev.map((item) => (item.path === file.path ? { ...item, name: saved } : item)));
+      setDocs((prev) => prev.map((doc) => {
+        const files = normalizeAttachments(doc.attachments);
+        if (!files.some((item) => item.path === file.path)) return doc;
+        return {
+          ...doc,
+          attachments: files.map((item) => (item.path === file.path ? { ...item, name: saved } : item)),
+        };
+      }));
+      // DB에 저장용 이름이 남아 있으면 다음 조회가 그 이름으로 돌아가지 않게 같이 고칩니다.
+      const targets = docs.filter((doc) => normalizeAttachments(doc.attachments).some((item) => item.path === file.path));
+      await Promise.all(targets.map(async (doc) => {
+        const files = normalizeAttachments(doc.attachments).map((item) => (
+          item.path === file.path ? { ...item, name: saved } : item
+        ));
+        const { error } = await supabase.from('meetings').update({ attachments: files }).eq('id', doc.id);
+        if (error && !/attachments/i.test(error.message)) {
+          console.warn('첨부 이름 DB 반영 실패:', error.message);
+        }
+      }));
+      setRenamingPath(null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '파일 이름을 바꾸지 못했습니다.');
+    } finally {
+      setSavingRename(false);
     }
   };
 
@@ -787,14 +834,8 @@ export default function DocumentList() {
                       aria-pressed={bookmarked}
                       onClick={() => toggleBookmark(doc.id)}
                     >
-                      {/* 그룹 목록의 즐겨찾기와 같은 별 모양: 꺼짐 = 윤곽선, 켜짐 = 채움 */}
-                    <svg
-                      className={`${styles.starIcon}${bookmarked ? ` ${styles.starIconOn}` : ''}`}
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                    >
-                      <path d="M12 3.2l2.67 5.66 6.2.74-4.58 4.24 1.2 6.13L12 17.1l-5.49 2.87 1.2-6.13L3.13 9.6l6.2-.74L12 3.2z" />
-                    </svg>
+                      {/* 시안과 같은 북마크: 꺼짐 = 윤곽선, 켜짐 = 채움 */}
+                      <img src={bookmarked ? bookmarkFillIcon : bookmarkIcon} alt="" />
                     </button>
 
                     <span className={styles.moreMenuWrapper}>
@@ -1036,7 +1077,7 @@ export default function DocumentList() {
         <div
           className="doc-attach-backdrop"
           role="presentation"
-          onClick={() => setOpenDoc(null)}
+          onClick={() => { setOpenDoc(null); setRenamingPath(null); }}
         >
           <div
             className="doc-attach-modal"
@@ -1054,7 +1095,7 @@ export default function DocumentList() {
                 type="button"
                 className="doc-attach-close"
                 aria-label="닫기"
-                onClick={() => setOpenDoc(null)}
+                onClick={() => { setOpenDoc(null); setRenamingPath(null); }}
               >
                 ×
               </button>
@@ -1073,15 +1114,51 @@ export default function DocumentList() {
                 {openFiles.map((file) => (
                   <li key={file.id || file.path} className="doc-attach-item">
                     <div className="doc-attach-meta">
-                      <span className="doc-attach-name" title={displayFileName(file.name)}>
-                        {displayFileName(file.name)}
-                      </span>
+                      {renamingPath === file.path ? (
+                        <input
+                          className={styles.renameInput}
+                          value={renameDraft}
+                          autoFocus
+                          disabled={savingRename}
+                          aria-label="첨부 파일 이름"
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') void commitRename(file);
+                            if (e.key === 'Escape') setRenamingPath(null);
+                          }}
+                        />
+                      ) : (
+                        <span className="doc-attach-name" title={displayFileName(file.name)}>
+                          {displayFileName(file.name)}
+                        </span>
+                      )}
                       <span className="doc-attach-size">{formatChatFileSize(file.size)}</span>
                     </div>
+                    {renamingPath === file.path ? (
+                      <button
+                        type="button"
+                        className="doc-attach-download"
+                        disabled={savingRename}
+                        onClick={() => { void commitRename(file); }}
+                      >
+                        {savingRename ? '저장 중…' : '저장'}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="doc-attach-download"
+                        onClick={() => {
+                          setRenamingPath(file.path);
+                          setRenameDraft(displayFileName(file.name));
+                        }}
+                      >
+                        이름 변경
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="doc-attach-download"
-                      disabled={downloadingPath === file.path}
+                      disabled={downloadingPath === file.path || renamingPath === file.path}
                       onClick={() => { void handleDownload(file); }}
                     >
                       {downloadingPath === file.path ? '받는 중…' : '다운로드'}

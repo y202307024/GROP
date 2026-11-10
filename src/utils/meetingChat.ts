@@ -128,6 +128,25 @@ export async function downloadMeetingFile(file: Pick<MeetingChatFile, 'name' | '
   URL.revokeObjectURL(objectUrl);
 }
 
+/** 화면에 보이는 첨부 이름만 바꿉니다. 서버의 저장 파일명은 그대로입니다. */
+export async function renameMeetingFile(path: string, name: string): Promise<string> {
+  const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
+  const res = await fetch(`${getApiBase()}/api/chat-files/name`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(uploadToken ? { 'x-upload-token': uploadToken } : {}),
+    },
+    body: JSON.stringify({ path, name }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((body as { error?: string }).error || `이름 변경 실패 (${res.status})`);
+  }
+  const next = (body as { name?: string }).name;
+  return typeof next === 'string' && next.trim() ? next : name.trim();
+}
+
 /** 디스크에 저장한 `시각-임의문자.확장자` 이름인지. 이 이름이면 원래 파일명을 찾아 보여 줍니다. */
 export function isStoredChatFileName(name: string) {
   return /^\d{13}-[a-z0-9]{6,}\.[a-z0-9]{1,8}$/i.test(name);

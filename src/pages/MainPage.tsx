@@ -170,7 +170,7 @@ async function latestMeetingTimeByGroup(ids: string[]) {
   return latest;
 }
 
-/** 하단 패널에 보여줄 카드 수 — 문서 목록 5장, 최근 AI 요약 4장. 문서 카드는 패널을 나눠 늘리지 않고 위에서부터 쌓습니다 */
+/** 하단 패널에 보여줄 카드 수 — 문서 목록 5장, 최근 AI 요약 4장. 두 목록 모두 패널을 나눠 늘리지 않고 위에서부터 쌓습니다 */
 const MEETING_VISIBLE = 5;
 const SUMMARY_VISIBLE = 4;
 /** 회의를 넉넉히 가져와서, 그중 요약이 있는 것만 골라 AI 요약 4장을 채웁니다.

@@ -528,8 +528,11 @@
 .summaryList {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  /* 회의 목록과 같은 방식 — 패널 남은 높이를 카드들이 나눠 갖습니다 */
+  /* 문서 목록과 같이, 카드가 칸 한가운데로 퍼지지 않고 위부터 아래로 쌓입니다 */
+  justify-content: flex-start;
+  /* 문서 목록 행 사이와 같은 14px */
+  gap: 14px;
+  /* 패널의 남은 높이를 차지합니다. 카드는 이 높이를 나눠 늘리지 않고, 남는 공간은 목록 아래에 둡니다 */
   flex: 1;
   min-height: 0;
 }
@@ -540,9 +543,11 @@
   align-items: center;
   gap: 14px;
   min-width: 0;
-  /* 카드 4장이 패널 남은 높이를 똑같이 나눠 가집니다(장수는 MainPage.tsx의 SUMMARY_VISIBLE) */
-  flex: 1 1 0;
-  min-height: 0;
+  /* 문서 목록 카드처럼 높이를 고정하고 위에서부터 쌓습니다. 패널이 낮을 때만 줄어듭니다. */
+  flex: 0 1 auto;
+  height: 53px;
+  min-height: 44px;
+  max-height: 53px;
   /* 피그마: 카드 왼쪽 → 아이콘 20px ≈ 14px, 오른쪽 pill까지 약 19px ≈ 13px. 위·아래는 글자 묶음(34px)이
      카드 높이(53px) 안에서 가운데 정렬되어 각각 약 9.5px */
   padding: 0 13px 0 14px;
