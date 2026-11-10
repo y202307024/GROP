@@ -308,6 +308,32 @@ function originalNamesFromMeetingDocs(groupId) {
   return byPath
 }
 
+/** 같은 경로의 첨부를 그룹 회의 문서 목록에서 뺍니다. */
+function removeFromMeetingDocs(groupId, relPath) {
+  const dir = path.join(MEETING_DOCS_DIR, groupId)
+  if (!fs.existsSync(dir)) return
+  let entries = []
+  try {
+    entries = fs.readdirSync(dir)
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) continue
+    const filePath = path.join(dir, entry)
+    try {
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+      const files = Array.isArray(raw.files) ? raw.files : []
+      const next = files.filter((file) => !(file && file.path === relPath))
+      if (next.length === files.length) continue
+      raw.files = next
+      fs.writeFileSync(filePath, JSON.stringify(raw, null, 2), 'utf8')
+    } catch {
+      /* 깨진 json 은 건너뜁니다. */
+    }
+  }
+}
+
 /** 같은 경로의 첨부 이름을 그룹 회의 문서마다 바꿉니다. 디스크 파일명은 그대로 둡니다. */
 function renameInMeetingDocs(groupId, relPath, nextName) {
   const dir = path.join(MEETING_DOCS_DIR, groupId)
@@ -906,6 +932,34 @@ app.patch('/api/chat-files/name', checkUploadToken, (req, res) => {
   })
   renameInMeetingDocs(groupId, `${groupId}/${filename}`, nextName)
   res.json({ path: `${groupId}/${filename}`, name: nextName })
+})
+
+/** 첨부 파일 자체와 회의 문서 목록의 그 항목을 지웁니다. */
+app.delete('/api/chat-files', checkUploadToken, (req, res) => {
+  const relPath = typeof req.body?.path === 'string' ? req.body.path.trim() : ''
+  const parts = relPath.split('/').filter(Boolean)
+  if (parts.length !== 2 || !parts.every(isSafePathSegment)) {
+    return res.status(400).json({ error: '잘못된 파일 경로입니다' })
+  }
+
+  const [groupId, filename] = parts
+  const full = path.resolve(CHAT_FILES_DIR, groupId, filename)
+  const groupDir = path.resolve(CHAT_FILES_DIR, groupId)
+  if (!full.startsWith(groupDir)) {
+    return res.status(400).json({ error: '잘못된 파일 경로입니다' })
+  }
+
+  try {
+    if (fs.existsSync(full)) fs.unlinkSync(full)
+    const meta = chatFileMetaPath(full)
+    if (fs.existsSync(meta)) fs.unlinkSync(meta)
+  } catch (err) {
+    console.error('첨부 파일 삭제 실패:', err)
+    return res.status(500).json({ error: '파일을 지우지 못했습니다' })
+  }
+
+  removeFromMeetingDocs(groupId, `${groupId}/${filename}`)
+  res.json({ ok: true, path: `${groupId}/${filename}` })
 })
 
 /** 회의 문서 첨부 목록을 디스크에 저장합니다. (문서 탭 「열기」용) */

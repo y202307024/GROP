@@ -11,10 +11,10 @@ import bookmarkFillIcon from '../assets/action-icons/bookmark-fill.svg';
 import checkIcon from '../assets/action-icons/check.svg';
 import closeIcon from '../assets/action-icons/close.svg';
 import saveFloppyIcon from '../assets/action-icons/save-floppy-disk.svg';
-import shareExportIcon from '../assets/action-icons/share-export.svg';
 import trashIcon from '../assets/action-icons/trash.svg';
 import styles from './DocumentList.module.css';
 import {
+  deleteMeetingFile,
   displayFileName,
   downloadMeetingFile,
   formatChatFileSize,
@@ -28,6 +28,7 @@ import {
   fetchMeetingDocAttachments,
   fetchGroupChatFiles,
   isSameLocalDay,
+  saveMeetingDocToServer,
   syncMeetingAttachmentsDoc,
 } from '../utils/meetingDocs';
 import { isListedMeeting } from '../utils/meetingVideo';
@@ -69,7 +70,25 @@ type MeetingDoc = {
   created_by?: string | null;
   /** 같은 날 회의를 한 줄로 합칠 때 합쳐진 행들의 created_by 모음(내가 만든 행이 하나라도 있으면 "내 문서") */
   creator_ids?: string[];
+  /** 전체 문서에서 파일 한 개로 나눈 행. sourceId가 실제 회의 행 id입니다. */
+  sourceId?: string;
+  fileRow?: boolean;
 };
+
+/** 묶인 첨부를 파일마다 한 줄로 나눕니다. 전체 문서에서 파일을 따로 고치기 위해 씁니다. */
+function splitIntoFileRows(doc: MeetingDoc): MeetingDoc[] {
+  const files = normalizeAttachments(doc.attachments);
+  if (files.length === 0) return [];
+  return files.map((file) => ({
+    ...doc,
+    id: `${doc.id}::${file.path}`,
+    sourceId: doc.id,
+    fileRow: true,
+    title: displayFileName(file.name),
+    attachments: [file],
+    date: file.ts ? new Date(file.ts).toISOString() : doc.date,
+  }));
+}
 
 /** 회의 날짜를 목업처럼 '9월 3일' 형식으로 보여줍니다. */
 function formatDocDate(dateStr: string) {
@@ -140,6 +159,14 @@ function unionAttachments(...lists: unknown[]): MeetingAttachment[] {
  * 형식은 첫 파일의 확장자(대문자), 크기는 전체 합계이고, 파일이 여럿이면 "PDF 외 2개 · 3.4MB"로 줄여 씁니다.
  * 첨부가 없는 문서(회의록만 있는 경우)는 null을 돌려 그 줄을 숨깁니다.
  */
+/** 정렬에 쓰는 업로드 시각. 파일에 찍힌 시각이 있으면 그 시각, 없으면 회의 날짜를 씁니다. */
+function uploadTime(doc: MeetingDoc) {
+  const files = normalizeAttachments(doc.attachments);
+  const latestFile = files.reduce((max, file) => Math.max(max, file.ts || 0), 0);
+  const meeting = new Date(doc.date).getTime();
+  return Math.max(latestFile, Number.isNaN(meeting) ? 0 : meeting);
+}
+
 function fileSummary(files: MeetingAttachment[]): string | null {
   if (files.length === 0) return null;
   const dot = files[0].name.lastIndexOf('.');
@@ -462,12 +489,13 @@ export default function DocumentList() {
   };
 
   /** 첨부 모달의 이름을 서버에 저장하고, 열린 목록과 문서 행에도 바로 반영합니다. */
-  const commitRename = async (file: MeetingAttachment) => {
+  const commitRename = async (file: MeetingAttachment, nextName?: string) => {
     if (savingRename) return;
-    const next = renameDraft.trim();
+    const next = (nextName ?? renameDraft).trim();
     const current = displayFileName(file.name);
     if (!next || next === current) {
       setRenamingPath(null);
+      setEditingDocId(null);
       return;
     }
     setSavingRename(true);
@@ -500,11 +528,53 @@ export default function DocumentList() {
         }
       }));
       setRenamingPath(null);
+      setEditingDocId(null);
     } catch (err) {
       alert(err instanceof Error ? err.message : '파일 이름을 바꾸지 못했습니다.');
     } finally {
       setSavingRename(false);
     }
+  };
+
+  /** 파일 한 개를 디스크와 문서 목록에서 지웁니다. 같은 경로가 들어 있는 회의 행도 함께 갱신합니다. */
+  const deleteAttachment = async (file: MeetingAttachment) => {
+    const label = displayFileName(file.name);
+    if (!confirm(`"${label}" 파일을 삭제할까요?`)) return;
+    setOpenMenuDocId(null);
+    try {
+      await deleteMeetingFile(file.path);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '파일을 지우지 못했습니다.');
+      return;
+    }
+    const strip = (files: MeetingAttachment[]) => files.filter((item) => item.path !== file.path);
+    const targets = docs.filter((doc) => normalizeAttachments(doc.attachments).some((item) => item.path === file.path));
+    setDocs((prev) => prev
+      .map((doc) => {
+        const files = normalizeAttachments(doc.attachments);
+        if (!files.some((item) => item.path === file.path)) return doc;
+        return { ...doc, attachments: strip(files) };
+      })
+      .filter((doc) => normalizeAttachments(doc.attachments).length > 0));
+    setGroupFileLists((prev) => {
+      const next: Record<string, MeetingAttachment[]> = {};
+      for (const [key, files] of Object.entries(prev)) next[key] = strip(files);
+      return next;
+    });
+    await Promise.all(targets.map(async (doc) => {
+      const files = strip(normalizeAttachments(doc.attachments));
+      const { error } = await supabase.from('meetings').update({ attachments: files }).eq('id', doc.id);
+      if (error && !/attachments/i.test(error.message)) {
+        console.warn('첨부 삭제 DB 반영 실패:', error.message);
+      }
+      await saveMeetingDocToServer({
+        meetingId: doc.id,
+        groupId: doc.group_id,
+        title: doc.title || '',
+        date: doc.date,
+        files,
+      });
+    }));
   };
 
   /** 연결된 회의: 화면에서 확정한 값 → 그룹명 → 기존 회의 제목 순으로 표시 */
@@ -697,11 +767,11 @@ export default function DocumentList() {
           const linked = linkedMeetingLabel(doc).toLowerCase();
           return title.includes(q) || linked.includes(q);
         });
-    // 별표한 문서는 맨 위로 — 정렬은 안정적이라 같은 쪽끼리는 기존(최신 날짜순)이 그대로 유지됩니다.
-    // 그룹별 탭의 각 그룹 안에서도 이 순서가 그대로 쓰입니다.
-    return [...matched].sort(
-      (a, b) => Number(bookmarkedIds.has(b.id)) - Number(bookmarkedIds.has(a.id)),
-    );
+    // 전체 문서는 업로드가 최근인 것부터. 다른 탭은 별표한 문서를 맨 위에 둡니다.
+    return [...matched].sort((a, b) => {
+      if (activeTab === 'all') return uploadTime(b) - uploadTime(a);
+      return Number(bookmarkedIds.has(b.id)) - Number(bookmarkedIds.has(a.id));
+    });
   }, [docs, query, linkedMeetingLabel, activeTab, myUserId, bookmarkedIds]);
 
   /**
@@ -757,10 +827,24 @@ export default function DocumentList() {
       .filter((doc) => !q || (doc.title || '').toLowerCase().includes(q));
   }, [pendingUploads, query, myUserId]);
 
-  /** 저장 대기 행을 저장된 문서보다 위에 둡니다. */
+  /** 전체 문서는 묶인 파일을 한 줄씩 나눠, 파일마다 수정·삭제가 되게 합니다. */
+  const allFileDocs = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const rows = docs.flatMap(splitIntoFileRows);
+    const matched = !q
+      ? rows
+      : rows.filter((doc) => {
+          const name = (doc.title || '').toLowerCase();
+          const linked = (doc.group_name || '').toLowerCase();
+          return name.includes(q) || linked.includes(q);
+        });
+    return matched.sort((a, b) => uploadTime(b) - uploadTime(a));
+  }, [docs, query]);
+
+  /** 저장 대기 행을 저장된 문서보다 위에 둡니다. 전체 문서는 파일 한 줄씩입니다. */
   const visibleDocs = useMemo(
-    () => [...pendingDocs, ...filteredDocs],
-    [pendingDocs, filteredDocs],
+    () => [...pendingDocs, ...(activeTab === 'all' ? allFileDocs : filteredDocs)],
+    [pendingDocs, filteredDocs, allFileDocs, activeTab],
   );
 
   /** 하단 "문서 N개 · 저장 대기 M개" 요약에 쓰는 저장 대기 문서 수 */
@@ -777,17 +861,25 @@ export default function DocumentList() {
             <div className="list-row doc-row" key={doc.id}>
               {/* "열기" 버튼 대신 문서명 자체를 눌러서 열도록 합니다(피그마 디자인엔 별도 열기 버튼이 없음) */}
               {editingDocId === doc.id ? (
-                // 수정 중: 문서명 자리에 입력창 (Enter = 저장, Esc = 취소)
+                // 수정 중: 파일 행은 그 파일 이름, 묶인 문서는 회의 제목을 고칩니다.
                 <input
                   className={styles.titleInput}
                   value={editTitle}
                   autoFocus
-                  disabled={savingTitle}
+                  disabled={savingTitle || savingRename}
                   placeholder="문서명"
                   onChange={(e) => setEditTitle(e.target.value)}
-                  onBlur={() => { void commitEditTitle(doc); }}
+                  onBlur={() => {
+                    const file = normalizeAttachments(doc.attachments)[0];
+                    if (doc.fileRow && file) void commitRename(file, editTitle);
+                    else void commitEditTitle(doc);
+                  }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') void commitEditTitle(doc);
+                    if (e.key === 'Enter') {
+                      const file = normalizeAttachments(doc.attachments)[0];
+                      if (doc.fileRow && file) void commitRename(file, editTitle);
+                      else void commitEditTitle(doc);
+                    }
                     if (e.key === 'Escape') setEditingDocId(null);
                   }}
                 />
@@ -801,9 +893,11 @@ export default function DocumentList() {
                   <span className={styles.titleText}>
                     {/* 저장 대기는 올린 파일 이름, 저장된 문서는 그룹 이름을 보여 줍니다. */}
                     <span className={styles.titleName}>
-                      {pending
-                        ? (doc.title?.trim() || attachments[0]?.name || '문서')
-                        : (doc.group_name?.trim() || `${formatDocDate(doc.date)} 회의`)}
+                      {doc.fileRow
+                        ? (doc.title?.trim() || displayFileName(attachments[0]?.name || '') || '문서')
+                        : pending
+                          ? (doc.title?.trim() || attachments[0]?.name || '문서')
+                          : (doc.group_name?.trim() || `${formatDocDate(doc.date)} 회의`)}
                     </span>
                     {/* 문서명 아래 "형식 · 크기". 아직 회의에 넣기 전이면 저장 대기를 붙입니다. */}
                     {fileSummary(attachments) ? (
@@ -838,7 +932,8 @@ export default function DocumentList() {
                 <span>{linkedMeetingLabel(doc)}</span>
               )}
 
-              <span>{formatDocDate(doc.date)}</span>
+              {/* 업로드 날짜 열은 회의 날짜가 아니라, 파일이 올라온 시각을 보여 줍니다. */}
+              <span>{formatDocDate(new Date(uploadTime(doc) || doc.date).toISOString())}</span>
 
               {/* 올린 사람 — 피그마 기준 저장 대기 행도 이 칸엔 업로더가 그대로 보입니다
                   (체크/닫기는 오른쪽 액션 칸으로). 내가 아니면 만든 사람(created_by)의 닉네임을, 모르면 "—"를 보여줍니다.
@@ -915,13 +1010,17 @@ export default function DocumentList() {
                               type="button"
                               className={styles.moreMenuItem}
                               role="menuitem"
-                              onClick={() => setOpenMenuDocId(null)}
+                              disabled={!attachments[0] || downloadingPath === attachments[0].path}
+                              onClick={() => {
+                                setOpenMenuDocId(null);
+                                if (attachments[0]) void handleDownload(attachments[0]);
+                              }}
                             >
                               <img src={saveFloppyIcon} alt="" />
                               저장
                             </button>
-                            {/* 수정은 문서 주인(만든 사람)에게만 보입니다 */}
-                            {isDocOwner(doc) ? (
+                            {/* 파일 행은 그 파일 이름을, 묶인 문서는 주인이 회의 제목을 고칩니다. */}
+                            {(doc.fileRow || isDocOwner(doc)) ? (
                               <button
                                 type="button"
                                 className={styles.moreMenuItem}
@@ -932,24 +1031,17 @@ export default function DocumentList() {
                                 수정
                               </button>
                             ) : null}
-                            <button
-                              type="button"
-                              className={styles.moreMenuItem}
-                              role="menuitem"
-                              onClick={() => setOpenMenuDocId(null)}
-                            >
-                              <img src={shareExportIcon} alt="" />
-                              내보내기
-                            </button>
-                            <button
-                              type="button"
-                              className={`${styles.moreMenuItem} ${styles.moreMenuItemDanger}`}
-                              role="menuitem"
-                              onClick={() => setOpenMenuDocId(null)}
-                            >
-                              <img src={trashIcon} alt="" />
-                              삭제
-                            </button>
+                            {doc.fileRow && attachments[0] ? (
+                              <button
+                                type="button"
+                                className={`${styles.moreMenuItem} ${styles.moreMenuItemDanger}`}
+                                role="menuitem"
+                                onClick={() => { void deleteAttachment(attachments[0]); }}
+                              >
+                                <img src={trashIcon} alt="" />
+                                삭제
+                              </button>
+                            ) : null}
                           </div>
                         </>
                       ) : null}
@@ -1005,35 +1097,59 @@ export default function DocumentList() {
               <span className={styles.fileMeta}>{formatChatFileSize(file.size)}</span>
             </span>
           </div>
-          {renamingPath === file.path ? (
-            <button
-              type="button"
-              className="doc-attach-download"
-              disabled={savingRename}
-              onClick={() => { void commitRename(file); }}
-            >
-              {savingRename ? '저장 중…' : '저장'}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="doc-attach-download"
-              onClick={() => {
-                setRenamingPath(file.path);
-                setRenameDraft(displayFileName(file.name));
-              }}
-            >
-              이름 변경
-            </button>
-          )}
-          <button
-            type="button"
-            className="doc-attach-download"
-            disabled={downloadingPath === file.path || renamingPath === file.path}
-            onClick={() => { void handleDownload(file); }}
-          >
-            {downloadingPath === file.path ? '받는 중…' : '다운로드'}
-          </button>
+          <span />
+          <span className={styles.rowActions}>
+            <span className={styles.moreMenuWrapper}>
+              <button
+                type="button"
+                className={styles.iconButton}
+                aria-label="더보기"
+                aria-expanded={openMenuDocId === `file:${file.path}`}
+                onClick={() => setOpenMenuDocId(openMenuDocId === `file:${file.path}` ? null : `file:${file.path}`)}
+              >
+                <img src={moreVerticalIcon} alt="" />
+              </button>
+              {openMenuDocId === `file:${file.path}` ? (
+                <>
+                  <div className={styles.menuBackdrop} role="presentation" onClick={() => setOpenMenuDocId(null)} />
+                  <div className={styles.moreMenu} role="menu">
+                    <button
+                      type="button"
+                      className={styles.moreMenuItem}
+                      role="menuitem"
+                      disabled={downloadingPath === file.path}
+                      onClick={() => { setOpenMenuDocId(null); void handleDownload(file); }}
+                    >
+                      <img src={saveFloppyIcon} alt="" />
+                      저장
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.moreMenuItem}
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenuDocId(null);
+                        setRenamingPath(file.path);
+                        setRenameDraft(displayFileName(file.name));
+                      }}
+                    >
+                      <Icon name="pencil" />
+                      수정
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.moreMenuItem} ${styles.moreMenuItemDanger}`}
+                      role="menuitem"
+                      onClick={() => { void deleteAttachment(file); }}
+                    >
+                      <img src={trashIcon} alt="" />
+                      삭제
+                    </button>
+                  </div>
+                </>
+              ) : null}
+            </span>
+          </span>
         </div>
       ))}
     </div>
@@ -1147,9 +1263,10 @@ export default function DocumentList() {
               {pendingDocs.map((doc) => renderDocRow(doc))}
               {groupSections.map(({ group, docs: groupDocs, latest }) => {
                 const expanded = expandedGroupIds.has(group.id);
-                const empty = groupDocs.length === 0;
-                // 아직 서버 목록이 없으면 문서에 붙어 있는 첨부를 먼저 보여 주고, 펼친 뒤 받은 목록으로 바꿉니다.
+                // 그룹 문서는 한 줄로 합쳐져 있어서, 행 수가 아니라 첨부 파일 수를 문서 수로 셉니다.
                 const listedFiles = groupFileLists[group.id] ?? unionAttachments(groupDocs.map((doc) => doc.attachments));
+                const fileCount = listedFiles.length;
+                const empty = fileCount === 0;
                 const loadingThisGroup = loadingGroupIds.has(group.id) && !groupFileLists[group.id];
                 return (
                   <div className={styles.groupBlock} key={group.id}>
@@ -1159,7 +1276,7 @@ export default function DocumentList() {
                         {group.name}
                       </span>
                       <span className={empty ? styles.groupCountEmpty : styles.groupCount}>
-                        {empty ? '문서 없음' : `문서 ${groupDocs.length}개`}
+                        {empty ? '문서 없음' : `문서 ${fileCount}개`}
                       </span>
                       <span className={styles.uploaderCell}>{latest ? formatDocDate(latest) : '—'}</span>
                       <span />
@@ -1187,8 +1304,8 @@ export default function DocumentList() {
               </>
             ) : (
               visibleDocs.map((doc) => {
-                // 전체 문서·내가 올린 문서는 오른쪽 화살표로 파일을 아래에 펼칩니다. 저장 대기는 아직 파일이 없습니다.
-                if (isPendingLink(doc)) return renderDocRow(doc);
+                // 전체 문서는 파일을 이미 한 줄씩 나눠 두었습니다. 내가 올린 문서만 묶음을 펼칩니다.
+                if (activeTab === 'all' || isPendingLink(doc)) return renderDocRow(doc);
                 const expanded = expandedGroupIds.has(doc.id);
                 const listedFiles = groupFileLists[doc.id] ?? unionAttachments(doc.attachments);
                 const loadingThisDoc = loadingGroupIds.has(doc.id) && !groupFileLists[doc.id];
