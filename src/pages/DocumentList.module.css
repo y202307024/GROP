@@ -221,12 +221,8 @@
   font-size: var(--text-md);
 }
 
-/* 머리글은 한 줄이라 그대로 두고, 데이터 행만 위쪽에 붙입니다.
-   전역 .list-row의 align-items:center면 문서명 두 줄 높이의 한가운데에
-   날짜·올린 사람·버튼이 내려앉습니다. */
-.docList :global(.list-row):not(:global(.list-head)) {
-  align-items: start;
-}
+/* 데이터 행은 아이콘(.fileIcon)의 세로 중앙에 날짜·올린 사람 등 다른 칸이 맞게,
+   전역 .list-row와 같은 align-items:center를 그대로 씁니다(시안 기준). */
 
 /* 문서 목록 전용 패널 — 공용 .list-card(흰 배경/테두리/그림자)를 안 쓰고,
    페이지 배경 위에 .list-row의 구분선만 보이게 둡니다(피그마 기준).
@@ -298,8 +294,8 @@
    열리도록 button으로 바꿔서, 기본 button 스타일을 지우고 기존 span 모양 그대로 유지합니다 */
 .titleCell {
   display: flex;
-  /* 아이콘과 제목 스택의 위쪽을 맞춥니다. center면 형식·크기 줄 때문에 제목이 아이콘 세로 중앙으로 내려갑니다. */
-  align-items: flex-start;
+  /* 아이콘을 문서명 + "형식·크기" 두 줄의 세로 중앙에 맞춥니다(시안 기준) */
+  align-items: center;
   /* 시안: 아이콘(50px) → 문서명 간격 49px ≈ 34px */
   gap: 32px;
 
