@@ -236,10 +236,12 @@ export async function uploadBlobAndInsert(input: SaveInput): Promise<
 
   const existingId = input.meetingId || null;
   if (existingId) {
+    // 첨부가 비어 있으면 이미 올려 둔 파일을 지우지 않습니다. 끝난 회의의 문서가 문서 탭에서 사라집니다.
+    const keepFiles = Array.isArray(input.attachments) && input.attachments.length > 0;
     const placed = await placeVideoOnMeeting(existingId, {
       ...videoFields,
       title: input.title,
-      attachments: input.attachments,
+      ...(keepFiles ? { attachments: input.attachments } : {}),
       chat_log: input.chatLog,
     }, input.replaceExistingVideo === true);
     if (placed.status === 'error') return { ok: false, error: explainVideoSaveError(placed.message) };

@@ -5218,6 +5218,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               top: boardFrame ? -boardFrame.originY : undefined,
               width: boardFrame ? boardFrame.width : undefined,
               height: boardFrame ? boardFrame.height : undefined,
+              // 전역 reset이 canvas { max-width:100% }라, 화면보다 넓은 보드는 다시 줄어든 뒤
+              // 왼쪽 여백만큼 밀려 화면 밖으로 나가 펜이 안 보입니다.
+              maxWidth: 'none',
+              maxHeight: 'none',
               zIndex: 2,
               background: 'transparent',
               touchAction: 'none',

@@ -7,11 +7,14 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { addGroupMember, joinGroupByInviteCode } from '../utils/joinGroup';
 import AppShell from '../components/AppShell';
+import { createScaledPortal } from '../components/AppScaleLayer';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
 import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingAttendeeFaces';
 import { liveHeadcount, liveRoomForMeeting, useLiveRooms } from '../utils/liveMeeting';
 import { isListedMeeting } from '../utils/meetingVideo';
+import { fetchGroupChatFiles, fetchGroupMeetingDocs, fetchMeetingDocAttachments, isSameLocalDay } from '../utils/meetingDocs';
+import { displayFileName, downloadMeetingFile, formatChatFileSize } from '../utils/meetingChat';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
@@ -48,7 +51,95 @@ type MeetingRow = {
   chat_log?: unknown;
   created_by?: string | null;
   video_status?: string | null;
+  /** 회의 중에 올린 파일. 완료된 회의는 이게 있을 때만 문서 목록에 둡니다. */
+  attachments?: unknown;
 };
+
+/** 경로가 같은 파일은 한 번만 두고, 회의 행과 문서 탭이 보는 파일을 합칩니다. */
+function unionUploadedFiles(...lists: unknown[]): { path: string; name: string }[] {
+  const byPath = new Map<string, { path: string; name: string }>();
+  for (const raw of lists) {
+    const value = typeof raw === 'string'
+      ? (() => { try { return JSON.parse(raw) as unknown; } catch { return null; } })()
+      : raw;
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      if (!item || typeof item !== 'object') continue;
+      const file = item as { path?: unknown; name?: unknown };
+      if (typeof file.path !== 'string' || !file.path || typeof file.name !== 'string' || !file.name) continue;
+      byPath.set(file.path, { path: file.path, name: file.name });
+    }
+  }
+  return [...byPath.values()];
+}
+
+/**
+ * 문서 탭에 뜨는 파일(회의 행, 서버 문서, 같은 날 디스크 파일)을 메인 목록에도 붙입니다.
+ * 최근 회의만 보면, 예전에 올리고 문서 탭에만 있는 회의가 빠집니다.
+ */
+async function mergeDocumentTabFiles(rows: MeetingRow[], groupIds: string[]): Promise<MeetingRow[]> {
+  const byId = new Map(rows.map((row) => [row.id, { ...row }]));
+  await Promise.all(groupIds.map(async (gid) => {
+    const serverDocs = await fetchGroupMeetingDocs(gid);
+    const missingIds = serverDocs
+      .filter((doc) => doc.files.length > 0 && !byId.has(doc.id))
+      .map((doc) => doc.id);
+    if (missingIds.length > 0) {
+      const extra = await loadMeetingsByIds(missingIds);
+      for (const row of extra) {
+        if (!isListedMeeting(row) || byId.has(row.id)) continue;
+        byId.set(row.id, row);
+      }
+    }
+    for (const doc of serverDocs) {
+      if (doc.files.length === 0) continue;
+      const prev = byId.get(doc.id);
+      if (prev) {
+        byId.set(doc.id, { ...prev, attachments: unionUploadedFiles(prev.attachments, doc.files) });
+        continue;
+      }
+      // DB에 행이 없어도 문서 탭에 파일이 있으면 그 회의를 목록에 남깁니다.
+      byId.set(doc.id, {
+        id: doc.id,
+        title: doc.title || null,
+        date: doc.date,
+        summary: null,
+        group_id: doc.groupId || gid,
+        attachments: doc.files,
+      });
+    }
+    const diskFiles = await fetchGroupChatFiles(gid);
+    if (diskFiles.length === 0) return;
+    for (const [id, row] of byId) {
+      if (row.group_id !== gid) continue;
+      const sameDay = diskFiles.filter((file) => file.ts && isSameLocalDay(file.ts, row.date));
+      if (sameDay.length === 0) continue;
+      byId.set(id, { ...row, attachments: unionUploadedFiles(row.attachments, sameDay) });
+    }
+  }));
+  return [...byId.values()].sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+  );
+}
+
+/** 올린 파일로 셀 수 있는 첨부가 있는지. 이름과 경로가 있는 항목만 봅니다. */
+function hasUploadedFiles(raw: unknown): boolean {
+  let value = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!Array.isArray(value)) return false;
+  return value.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const file = item as { path?: unknown; name?: unknown };
+    return typeof file.path === 'string' && file.path.length > 0
+      && typeof file.name === 'string' && file.name.length > 0;
+  });
+}
 
 /**
  * 그룹마다 마지막 회의 시각. date는 회의가 만들어진 시각이고,
@@ -80,15 +171,16 @@ async function latestMeetingTimeByGroup(ids: string[]) {
 /** 하단 패널에 보여줄 카드 수 — 회의 목록 5장, 최근 AI 요약 4장. 카드 높이는 패널 높이를 이 수로 나눠 가집니다 */
 const MEETING_VISIBLE = 5;
 const SUMMARY_VISIBLE = 4;
-/** 회의를 넉넉히 가져와서, 그중 요약이 있는 것만 골라 AI 요약 4장을 채웁니다 */
-const MAX_MEETINGS = 12;
+/** 회의를 넉넉히 가져와서, 그중 요약이 있는 것만 골라 AI 요약 4장을 채웁니다.
+ *  문서 목록은 완료·파일 없는 회의를 빼므로, 그 뒤를 채울 수 있게 조금 더 읽습니다. */
+const MAX_MEETINGS = 40;
 
 /**
  * 최근 회의. 참석자 칸이 아직 없는 DB에서는 그 칸만 빼고 다시 읽습니다.
  * 한 칸이 없다고 참석자 정보를 통째로 버리지 않습니다.
  */
 async function loadRecentMeetings(groupIds: string[]): Promise<MeetingRow[]> {
-  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status'];
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status', 'attachments'];
   const base = ['id', 'title', 'date', 'summary', 'group_id'];
   for (let attempt = 0; attempt < columns.length; attempt += 1) {
     const result = await supabase
@@ -114,7 +206,7 @@ async function loadRecentMeetings(groupIds: string[]): Promise<MeetingRow[]> {
 /** 진행중 방이 최근 목록 밖에 있으면 그 회의 행을 따로 읽습니다. */
 async function loadMeetingsByIds(ids: string[]): Promise<MeetingRow[]> {
   if (ids.length === 0) return [];
-  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status'];
+  const columns = ['id', 'title', 'date', 'summary', 'group_id', 'attendees', 'chat_log', 'created_by', 'video_status', 'attachments'];
   const base = ['id', 'title', 'date', 'summary', 'group_id'];
   for (let attempt = 0; attempt < columns.length; attempt += 1) {
     const result = await supabase.from('meetings').select(columns.join(', ')).in('id', ids);
@@ -149,6 +241,11 @@ export default function MainPage() {
   const [groupName, setGroupName] = useState('');
   const [groups, setGroups] = useState<Group[]>([]);
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
+  /** 문서 목록에서 연 회의의 첨부 파일 창. 회의 상세 대신 문서 탭과 같은 목록을 보여 줍니다. */
+  const [openDoc, setOpenDoc] = useState<MeetingRow | null>(null);
+  const [openFiles, setOpenFiles] = useState<Array<{ id: string; name: string; path: string; size: number }>>([]);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
   // 그룹 카드/회의 행의 "참석자" 자리에 그릴 실제 그룹원 프로필 이미지(그룹별)
   const memberAvatars = useGroupMemberAvatars([...groups.map((g) => g.id), ...meetings.map((m) => m.group_id)]);
   // "최근 그룹" 카드의 회의/문서/멤버 수 — group_id를 키로 저장합니다.
@@ -232,7 +329,12 @@ export default function MainPage() {
     }
     // 참석자 수는 attendees·채팅·저장한 사람으로 셉니다. 없는 칸만 빼고 다시 읽습니다.
     const loadedMeetings = await loadRecentMeetings(ids);
-    setMeetings(loadedMeetings.filter((row) => isListedMeeting(row)));
+    // 문서 탭에 있는 업로드 파일을 같이 붙여, 완료된 회의라도 그 문서가 목록에 남게 합니다.
+    const withFiles = await mergeDocumentTabFiles(
+      loadedMeetings.filter((row) => isListedMeeting(row)),
+      ids,
+    );
+    setMeetings(withFiles);
     // 카드 4장은 가입 순이 아니라, 그 그룹에서 가장 최근에 회의한 순입니다.
     const latestMeetingAt = await latestMeetingTimeByGroup(ids);
     const ranked = list
@@ -335,6 +437,81 @@ export default function MainPage() {
   const nextMeetingDateLabel = nextSchedule
     ? `${nextSchedule.when.getMonth() + 1}월 ${nextSchedule.when.getDate()}일`
     : '';
+
+  /** 회의 행·서버·같은 날 파일 중 실제로 받을 수 있는 첨부만 고릅니다. */
+  const filesFrom = (raw: unknown) => {
+    const value = typeof raw === 'string'
+      ? (() => { try { return JSON.parse(raw) as unknown; } catch { return null; } })()
+      : raw;
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const file = item as { id?: unknown; name?: unknown; path?: unknown; size?: unknown };
+      if (typeof file.path !== 'string' || !file.path || typeof file.name !== 'string' || !file.name) return [];
+      return [{
+        id: typeof file.id === 'string' ? file.id : file.path,
+        name: file.name,
+        path: file.path,
+        size: typeof file.size === 'number' ? file.size : 0,
+      }];
+    });
+  };
+
+  // 완료된 문서를 누르면 회의 상세 대신, 문서 탭과 같은 첨부 파일 창을 엽니다.
+  const openDocumentFiles = async (meeting: MeetingRow) => {
+    setOpenDoc(meeting);
+    setOpenFiles(filesFrom(meeting.attachments));
+    setLoadingFiles(true);
+    try {
+      const serverFiles = await fetchMeetingDocAttachments(meeting.id, meeting.group_id);
+      if (serverFiles.length > 0) {
+        setOpenFiles(serverFiles);
+        return;
+      }
+      const saved = filesFrom(meeting.attachments);
+      if (saved.length > 0) {
+        setOpenFiles(saved);
+        return;
+      }
+      const groupFiles = await fetchGroupChatFiles(meeting.group_id);
+      setOpenFiles(groupFiles.filter((file) => file.ts && isSameLocalDay(file.ts, meeting.date)));
+    } finally {
+      setLoadingFiles(false);
+    }
+  };
+
+  const downloadOpenFile = async (file: { name: string; path: string }) => {
+    setDownloadingPath(file.path);
+    try {
+      await downloadMeetingFile(file);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '파일을 내려받지 못했습니다.');
+    } finally {
+      setDownloadingPath(null);
+    }
+  };
+
+  const openDocLabel = openDoc
+    ? [
+        groups.find((group) => group.id === openDoc.group_id)?.name,
+        openDoc.title?.trim() || '회의',
+      ].filter(Boolean).join(' · ')
+    : '';
+
+  // 문서 목록: 지금 회의 중인 방은 파일이 없어도 올리고, 끝난 회의는 올린 파일이 있는 것만 둡니다.
+  const documentMeetings = useMemo(() => {
+    return [...meetings]
+      .filter((m) => {
+        const inRoom = liveReady && liveRoomForMeeting(liveRooms, m, meetings) != null;
+        return inRoom || hasUploadedFiles(m.attachments);
+      })
+      .sort((a, b) => {
+        const aLive = liveReady && liveRoomForMeeting(liveRooms, a, meetings) ? 1 : 0;
+        const bLive = liveReady && liveRoomForMeeting(liveRooms, b, meetings) ? 1 : 0;
+        return bLive - aLive;
+      })
+      .slice(0, MEETING_VISIBLE);
+  }, [meetings, liveRooms, liveReady]);
 
   return (
     <AppShell activePage="main">
@@ -453,13 +630,9 @@ export default function MainPage() {
             {/* zip의 rectangleGroup(행 하나 = 독립된 흰 카드) 스타일로 — 예전엔 표 한 줄씩
                 구분선(hr)만 있었는데, 지금은 각 회의가 자기 카드를 갖습니다. */}
             <div className={styles.meetingList}>
-              {/* 데이터가 없을 땐 안내 문구를 보여주고, 회의가 생기면 행이 추가됩니다. */}
-              {loaded && meetings.length === 0 && <div className={styles.panelEmpty}>아직 문서가 없어요</div>}
-              {[...meetings].sort((a, b) => {
-                const aLive = liveReady && liveRoomForMeeting(liveRooms, a, meetings) ? 1 : 0;
-                const bLive = liveReady && liveRoomForMeeting(liveRooms, b, meetings) ? 1 : 0;
-                return bLive - aLive;
-              }).slice(0, MEETING_VISIBLE).map((m) => {
+              {/* 진행중 회의는 파일이 없어도 보여주고, 완료된 회의는 올린 파일이 있을 때만 둡니다. */}
+              {loaded && documentMeetings.length === 0 && <div className={styles.panelEmpty}>아직 문서가 없어요</div>}
+              {documentMeetings.map((m) => {
                 // 방 인원을 알기 전에는 완료로 그리지 않습니다. 아는 순간 진행중이면 처음부터 진행중입니다.
                 const room = liveReady ? liveRoomForMeeting(liveRooms, m, meetings) : null;
                 const inRoom = room != null;
@@ -471,9 +644,9 @@ export default function MainPage() {
                   key={m.id}
                   className={styles.meetingCard}
                   onClick={() => {
-                    // 진행중은 회의록이 아니라, 그 그룹 화면(저장 공간·멤버가 있는 위쪽)으로 갑니다.
+                    // 진행중은 그룹 화면으로, 끝난 문서는 회의 상세 대신 첨부 파일 창으로 엽니다.
                     if (inRoom) navigate(`/group/${m.group_id}`);
-                    else navigate(`/group/${m.group_id}/meeting/${m.id}`);
+                    else void openDocumentFiles(m);
                   }}
                 >
                   <span className={styles.title}>{m.title || '회의'}</span>
@@ -516,6 +689,63 @@ export default function MainPage() {
 
       {/* 액션바(새 회의 생성/AI 요약/문서 작성/멤버 관리)를 뺐고, 이 모달(그룹 생성/참가)은
           그룹이 없을 때 나타나는 점선 "그룹 만들기" 칸(위 groupCardAdd)이 엽니다. */}
+      {openDoc ? createScaledPortal(
+        <div
+          className="doc-attach-backdrop"
+          role="presentation"
+          onClick={() => setOpenDoc(null)}
+        >
+          <div
+            className="doc-attach-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="main-doc-attach-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="doc-attach-header">
+              <div>
+                <h2 id="main-doc-attach-title">첨부 파일</h2>
+                <p className="doc-attach-subtitle">{openDocLabel}</p>
+              </div>
+              <button
+                type="button"
+                className="doc-attach-close"
+                aria-label="닫기"
+                onClick={() => setOpenDoc(null)}
+              >
+                ×
+              </button>
+            </div>
+            {loadingFiles ? (
+              <p className="doc-attach-empty">첨부 목록 불러오는 중...</p>
+            ) : openFiles.length === 0 ? (
+              <p className="doc-attach-empty">이 회의에 저장된 첨부 파일이 없습니다.</p>
+            ) : (
+              <ul className="doc-attach-list">
+                {openFiles.map((file) => (
+                  <li key={file.id || file.path} className="doc-attach-item">
+                    <div className="doc-attach-meta">
+                      <span className="doc-attach-name" title={displayFileName(file.name)}>
+                        {displayFileName(file.name)}
+                      </span>
+                      <span className="doc-attach-size">{formatChatFileSize(file.size)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="doc-attach-download"
+                      disabled={downloadingPath === file.path}
+                      onClick={() => { void downloadOpenFile(file); }}
+                    >
+                      {downloadingPath === file.path ? '받는 중…' : '다운로드'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>,
+      ) : null}
+
       <GroupModal
         open={modalOpen}
         groupName={groupName}

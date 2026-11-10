@@ -70,10 +70,18 @@ function documentTitle(meetingTitle: string | null, dateStr: string) {
   return base.includes('회의록') ? base : `${base} - 회의록`;
 }
 
-/** DB jsonb 첨부를 안전하게 배열로 맞춥니다. */
+/** DB jsonb 첨부를 안전하게 배열로 맞춥니다. 문자열로 저장된 JSON도 읽습니다. */
 function normalizeAttachments(raw: unknown): MeetingAttachment[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
+  let value = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  return value
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     .filter((item) => typeof item.path === 'string' && typeof item.name === 'string')
     .map((item) => ({
@@ -84,6 +92,18 @@ function normalizeAttachments(raw: unknown): MeetingAttachment[] {
       mime: typeof item.mime === 'string' ? item.mime : 'application/octet-stream',
       ts: typeof item.ts === 'number' ? item.ts : 0,
     }));
+}
+
+/** 경로가 같은 파일은 한 번만 남기고, DB·서버·디스크 첨부를 합칩니다. */
+function unionAttachments(...lists: unknown[]): MeetingAttachment[] {
+  const byPath = new Map<string, MeetingAttachment>();
+  for (const list of lists) {
+    for (const file of normalizeAttachments(list)) {
+      if (!file.path) continue;
+      byPath.set(file.path, file);
+    }
+  }
+  return [...byPath.values()];
 }
 
 /**
@@ -142,6 +162,7 @@ function mergeSameDayMeetings(docs: MeetingDoc[]): MeetingDoc[] {
 /**
  * 문서 탭
  * 내가 속한 그룹에서 파일을 올린 회의만 문서 목록으로 보여 줍니다.
+ * 회의가 끝난 뒤에도, 그때 올린 파일이 있으면 이 탭에 남습니다.
  * 열기 → 그 회의에 첨부된 파일 목록 + 개별 다운로드.
  */
 export default function DocumentList() {
@@ -268,8 +289,8 @@ export default function DocumentList() {
             const groupId = sd.groupId || gid;
             const groupName = groupNameById.get(groupId) ?? null;
             if (prev) {
-              const dbFiles = normalizeAttachments(prev.attachments);
-              const merged = sd.files.length ? sd.files : dbFiles;
+              // 서버 목록만 쓰면, 끝난 회의에 DB로 남아 있는 업로드 파일이 문서 탭에서 빠집니다.
+              const merged = unionAttachments(prev.attachments, sd.files);
               byId.set(sd.id, {
                 ...prev,
                 attachments: merged,
@@ -297,16 +318,15 @@ export default function DocumentList() {
           if (diskFiles.length === 0) return;
           for (const [id, doc] of byId) {
             if (doc.group_id !== gid) continue;
-            if (normalizeAttachments(doc.attachments).length > 0) continue;
+            // 회의가 끝난 뒤에도, 그 날 올린 파일은 문서 탭 행에 붙입니다.
             const sameDay = diskFiles.filter((f) => f.ts && isSameLocalDay(f.ts, doc.date));
-            if (sameDay.length > 0) {
-              byId.set(id, { ...doc, attachments: sameDay });
-            }
+            if (sameDay.length === 0) continue;
+            byId.set(id, { ...doc, attachments: unionAttachments(doc.attachments, sameDay) });
           }
         }),
       );
 
-      // 회의록만 있고 올린 파일이 없는 행은 문서 탭에 두지 않습니다.
+      // 올린 파일이 있는 회의만 문서 탭에 둡니다. 끝난 회의도 파일이 있으면 여기 포함됩니다.
       const merged = mergeSameDayMeetings([...byId.values()])
         .filter((doc) => isListedMeeting(doc))
         .filter((doc) => normalizeAttachments(doc.attachments).length > 0);
