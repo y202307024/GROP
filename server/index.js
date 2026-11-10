@@ -243,6 +243,71 @@ function storedChatFileName(originalName) {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`
 }
 
+/** 화면용 이름. 경로 구분자는 빼고, 빈 값이면 file. */
+function sanitizeDisplayFileName(name) {
+  const base = path.basename(String(name || '').replace(/[\\/]/g, '_')).replace(/[\r\n\0]/g, '').trim()
+  return base.slice(0, 180) || 'file'
+}
+
+/** 저장용 이름(시각-임의문자.확장자)인지. 이 이름이면 원래 파일명을 찾아 바꿉니다. */
+function isStoredChatFileName(name) {
+  return /^\d{13}-[a-z0-9]{6,}\.[a-z0-9]{1,8}$/i.test(String(name || ''))
+}
+
+function chatFileMetaPath(filePath) {
+  return `${filePath}.meta.json`
+}
+
+/** 디스크 파일명과 따로, 사용자가 올린 이름을 옆에 남깁니다. */
+function writeChatFileMeta(filePath, meta) {
+  const payload = {
+    name: sanitizeDisplayFileName(meta.name),
+    mime: typeof meta.mime === 'string' && meta.mime ? meta.mime : 'application/octet-stream',
+  }
+  fs.writeFileSync(chatFileMetaPath(filePath), JSON.stringify(payload), 'utf8')
+}
+
+function readChatFileMeta(filePath) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(chatFileMetaPath(filePath), 'utf8'))
+    if (raw && typeof raw.name === 'string' && raw.name.trim()) return raw
+  } catch {
+    /* 메타가 없는 예전 파일은 저장용 이름을 그대로 씁니다. */
+  }
+  return null
+}
+
+/**
+ * 그룹의 meeting-docs 에 적어 둔 원래 파일명.
+ * 목록 API가 디스크 이름만 알고 있을 때, 예전에 저장해 둔 이름을 되돌리기 위함입니다.
+ */
+function originalNamesFromMeetingDocs(groupId) {
+  const byPath = new Map()
+  const dir = path.join(MEETING_DOCS_DIR, groupId)
+  if (!fs.existsSync(dir)) return byPath
+  let entries = []
+  try {
+    entries = fs.readdirSync(dir)
+  } catch {
+    return byPath
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) continue
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(dir, entry), 'utf8'))
+      const files = Array.isArray(raw.files) ? raw.files : []
+      for (const file of files) {
+        if (!file || typeof file.path !== 'string' || typeof file.name !== 'string') continue
+        if (isStoredChatFileName(file.name)) continue
+        byPath.set(file.path, sanitizeDisplayFileName(file.name))
+      }
+    } catch {
+      /* 깨진 json 은 건너뜁니다. */
+    }
+  }
+  return byPath
+}
+
 function guessChatFileMime(originalName, mimetype) {
   if (mimetype && mimetype !== 'application/octet-stream') return mimetype
   return IMAGE_MIME_BY_EXT[fileExtFromName(originalName)] || mimetype || 'application/octet-stream'
@@ -673,13 +738,20 @@ app.post('/api/chat-files/upload', checkUploadToken, uploadChatFile.single('file
   }
 
   const groupId = isSafePathSegment(req.body.groupId) ? req.body.groupId : 'unknown'
-  const originalName = decodeMulterOriginalName(req.file.originalname)
+  // 폼 필드의 originalName 은 UTF-8 그대로입니다. multer 파일명은 한글이 깨질 수 있어 보조로만 씁니다.
+  const fromField = typeof req.body.originalName === 'string' ? req.body.originalName.trim() : ''
+  const originalName = sanitizeDisplayFileName(fromField || decodeMulterOriginalName(req.file.originalname))
   const filename = storedChatFileName(originalName)
   const destDir = path.join(CHAT_FILES_DIR, groupId)
+  const destPath = path.join(destDir, filename)
 
   try {
     fs.mkdirSync(destDir, { recursive: true })
-    fs.renameSync(req.file.path, path.join(destDir, filename))
+    fs.renameSync(req.file.path, destPath)
+    writeChatFileMeta(destPath, {
+      name: originalName,
+      mime: guessChatFileMime(originalName, req.file.mimetype),
+    })
   } catch (err) {
     console.error('채팅 파일 저장 실패:', err)
     try { fs.unlinkSync(req.file.path) } catch { /* 임시 파일 삭제는 실패해도 무시 */ }
@@ -687,7 +759,7 @@ app.post('/api/chat-files/upload', checkUploadToken, uploadChatFile.single('file
   }
 
   const relativePath = `${groupId}/${filename}`
-  console.log('채팅 첨부파일 저장 완료:', relativePath)
+  console.log('채팅 첨부파일 저장 완료:', relativePath, originalName)
   res.json({
     path: relativePath,
     name: originalName,
@@ -716,9 +788,10 @@ app.get('/api/chat-files', (req, res) => {
     return res.status(500).json({ error: '파일 목록을 읽지 못했습니다' })
   }
 
+  const savedNames = originalNamesFromMeetingDocs(groupId)
   const files = []
   for (const name of names) {
-    if (name.startsWith('.')) continue
+    if (name.startsWith('.') || name.endsWith('.meta.json')) continue
     const full = path.join(dir, name)
     let st
     try {
@@ -730,12 +803,17 @@ app.get('/api/chat-files', (req, res) => {
     // 저장 파일명 앞의 타임스탬프(ms)를 업로드 시각으로 씁니다.
     const tsMatch = /^(\d{13})-/.exec(name)
     const ts = tsMatch ? Number(tsMatch[1]) : st.mtimeMs
+    const relPath = `${groupId}/${name}`
+    const meta = readChatFileMeta(full)
+    const savedName = savedNames.get(relPath)
+    // 옆에 적어 둔 이름 → 회의 문서에 남은 이름 → 저장용 이름 순입니다.
+    const displayName = (meta && meta.name) || savedName || name
     files.push({
       id: name,
-      name,
-      path: `${groupId}/${name}`,
+      name: displayName,
+      path: relPath,
       size: st.size,
-      mime: guessChatFileMime(name, ''),
+      mime: (meta && meta.mime) || guessChatFileMime(displayName, ''),
       ts,
     })
   }

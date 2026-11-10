@@ -83,6 +83,8 @@ export async function uploadMeetingAttachment(file: File, groupId?: string): Pro
   }
   const body = new FormData();
   body.append('file', file);
+  // multer가 파일명을 latin1로 읽어 한글이 깨지므로, 원래 이름은 별도 필드로 보냅니다.
+  body.append('originalName', file.name);
   body.append('groupId', groupId || 'unknown');
   const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
   const res = await fetch(`${getApiBase()}/api/chat-files/upload`, {
@@ -124,6 +126,11 @@ export async function downloadMeetingFile(file: Pick<MeetingChatFile, 'name' | '
   a.click();
   a.remove();
   URL.revokeObjectURL(objectUrl);
+}
+
+/** 디스크에 저장한 `시각-임의문자.확장자` 이름인지. 이 이름이면 원래 파일명을 찾아 보여 줍니다. */
+export function isStoredChatFileName(name: string) {
+  return /^\d{13}-[a-z0-9]{6,}\.[a-z0-9]{1,8}$/i.test(name);
 }
 
 /** 예전에 latin1로 저장된 한글 파일명을 화면에서 복원합니다. */

@@ -16,6 +16,7 @@ import {
   displayFileName,
   downloadMeetingFile,
   formatChatFileSize,
+  isStoredChatFileName,
   type MeetingSharedFile,
 } from '../utils/meetingChat';
 import {
@@ -68,6 +69,22 @@ function formatDocDate(dateStr: string) {
 function documentTitle(meetingTitle: string | null, dateStr: string) {
   const base = meetingTitle?.trim() || formatDocDate(dateStr) + ' 회의';
   return base.includes('회의록') ? base : `${base} - 회의록`;
+}
+
+/**
+ * 저장용 이름만 있는 항목은, 서버가 찾아 준 원래 이름으로 바꿉니다.
+ * 디스크 폴백이 회의 문서보다 먼저 잡혀도 화면에는 올린 파일명이 남게 합니다.
+ */
+function withResolvedFileNames(
+  files: MeetingAttachment[],
+  resolved: MeetingAttachment[],
+): MeetingAttachment[] {
+  const byPath = new Map(resolved.map((file) => [file.path, file.name]));
+  return files.map((file) => {
+    const better = byPath.get(file.path);
+    if (!better || !isStoredChatFileName(file.name) || isStoredChatFileName(better)) return file;
+    return { ...file, name: better };
+  });
 }
 
 /** DB jsonb 첨부를 안전하게 배열로 맞춥니다. 문자열로 저장된 JSON도 읽습니다. */
@@ -306,7 +323,7 @@ export default function DocumentList() {
         }),
       );
 
-      // meeting-docs/DB 첨부가 비어 있으면, 같은 날 업로드된 실제 파일로 보강합니다.
+      // 첨부가 없으면 같은 날 파일을 채우고, 있으면 저장용 이름을 원래 이름으로 바꿉니다.
       await Promise.all(
         ids.map(async (gid) => {
           const diskFiles = await fetchGroupChatFiles(gid);
@@ -315,8 +332,10 @@ export default function DocumentList() {
             if (doc.group_id !== gid) continue;
             // 회의가 끝난 뒤에도, 그 날 올린 파일은 문서 탭 행에 붙입니다.
             const sameDay = diskFiles.filter((f) => f.ts && isSameLocalDay(f.ts, doc.date));
-            if (sameDay.length === 0) continue;
-            byId.set(id, { ...doc, attachments: unionAttachments(doc.attachments, sameDay) });
+            const current = normalizeAttachments(doc.attachments);
+            if (sameDay.length === 0 && current.length === 0) continue;
+            const mergedFiles = sameDay.length > 0 ? unionAttachments(current, sameDay) : current;
+            byId.set(id, { ...doc, attachments: withResolvedFileNames(mergedFiles, diskFiles) });
           }
         }),
       );
@@ -373,18 +392,19 @@ export default function DocumentList() {
     setOpenFiles(normalizeAttachments(doc.attachments));
     setLoadingFiles(true);
     try {
-      // 1) 서버 meeting-docs 우선
+      // 디스크에만 남은 파일은 저장용 이름이라, 서버가 원래 이름을 찾으면 그걸로 바꿉니다.
+      const groupFiles = await fetchGroupChatFiles(doc.group_id);
+      const applyNames = (files: MeetingAttachment[]) => withResolvedFileNames(files, groupFiles);
+
+      // 1) 서버 meeting-docs와 모아 둔 첨부를 함께 엽니다.
       const serverFiles = await fetchMeetingDocAttachments(doc.id, doc.group_id);
-      // 같은 회의로 합친 행의 파일도 빠지지 않게, 서버 목록과 모아 둔 첨부를 함께 엽니다.
       const mergedFiles = unionAttachments(serverFiles, doc.attachments);
       if (mergedFiles.length > 0) {
-        setOpenFiles(mergedFiles);
+        setOpenFiles(applyNames(mergedFiles));
         return;
       }
 
       // 첨부가 없으면, 같은 그룹·같은 날짜에 올라간 실제 파일로 엽니다.
-
-      const groupFiles = await fetchGroupChatFiles(doc.group_id);
       const sameDay = groupFiles.filter((f) => f.ts && isSameLocalDay(f.ts, doc.date));
       setOpenFiles(sameDay);
     } finally {
