@@ -18,7 +18,7 @@ type Props = {
   open: boolean;
   groupId: string;
   groupName: string;
-  /** 그룹 상세 페이지의 메모 배너와 세션 동안 공유하는 값 (DB에 저장되진 않습니다). */
+  /** 그룹 상세 배너와 같은 메모. 저장하면 groups.memo 에 남습니다. */
   groupMemo: string;
   /** 그룹 대표 이미지 — groups.avatar_url (GroupSettings 페이지와 같은 컬럼) */
   groupAvatarUrl: string | null;
@@ -59,11 +59,8 @@ export default function GroupEditModal({
 }: Props) {
   const [name, setName] = useState(groupName);
   /**
-   * 그룹 메모 / 멤버 권한 변경은 아직 화면에서만 동작합니다.
-   * groups 테이블에 memo 컬럼이 없고 group_members에도 role 컬럼이 없어서,
-   * 지금은 저장을 눌러도 그룹 "이름"만 실제로 저장되고 나머지는 모달을 다시 열면 초기화됩니다.
-   * 실제로 저장하려면 DB 스키마 추가가 먼저 필요합니다.
-   * (대표 이미지는 groups.avatar_url에 바로 저장됩니다 — GroupSettings 페이지와 같은 방식)
+   * 멤버 권한은 아직 화면에서만 바뀝니다. group_members에 role 칸이 없습니다.
+   * 그룹 메모는 groups.memo 에 이름과 함께 저장합니다.
    */
   const [memo, setMemo] = useState('');
   const [avatarUrl, setAvatarUrl] = useState<string | null>(groupAvatarUrl);
@@ -143,7 +140,13 @@ export default function GroupEditModal({
     }
 
     setSaving(true);
-    const { error } = await supabase.from('groups').update({ name: trimmed }).eq('id', groupId);
+    const nextMemo = memo.trim();
+    // 이름과 메모를 같이 넣습니다. memo 칸이 없는 DB면 이름만 다시 저장합니다.
+    let { error } = await supabase.from('groups').update({ name: trimmed, memo: nextMemo }).eq('id', groupId);
+    if (error && /memo/i.test(error.message)) {
+      const retry = await supabase.from('groups').update({ name: trimmed }).eq('id', groupId);
+      error = retry.error;
+    }
     setSaving(false);
 
     if (error) {
@@ -151,7 +154,7 @@ export default function GroupEditModal({
       return;
     }
 
-    onSaved(trimmed, memo.trim());
+    onSaved(trimmed, nextMemo);
     onClose();
   };
 

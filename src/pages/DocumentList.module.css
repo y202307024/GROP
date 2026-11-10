@@ -69,7 +69,8 @@
   padding: 0 10px 12px;
   margin-bottom: -1px;
 
-  font-size: var(--text-2xl);
+  /* 문서 탭·AI 요약 그룹 탭(같은 .tab) 글자 크기. AI 요약 목록도 이 클래스를 그대로 씁니다. */
+  font-size: 20px;
   /* 피그마 탭 제목은 500(medium) — 예전 600은 시안보다 굵었습니다 */
   font-weight: var(--weight-medium);
   color: var(--color-text-faint);

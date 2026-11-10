@@ -11,7 +11,19 @@ import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedul
 import styles from './GroupPage.module.css';
 
 // created_at 은 groups 테이블에 있을 때만 채워집니다(select('*')라 컬럼이 없으면 undefined → 날짜를 그리지 않음).
-type Group = { id: string; name: string; invite_code: string; created_at?: string | null; avatar_url?: string | null };
+type Group = {
+  id: string;
+  name: string;
+  invite_code: string;
+  created_at?: string | null;
+  avatar_url?: string | null;
+  memo?: string | null;
+};
+
+/** 메모 칸이 없는 DB에서도 이 브라우저에는 남기기 위한 키. 칸이 있으면 DB 값을 우선합니다. */
+function groupMemoKey(groupId: string) {
+  return `grop.groupMemo:${groupId}`;
+}
 type MyProfile = { nickname: string | null; avatar: string | null; avatar_url: string | null };
 // user_id는 "나" 표시와 그룹 편집 모달의 멤버 권한 목록에 필요해서 함께 들고 있습니다.
 type MemberPreview = { user_id: string; nickname: string; avatar: string };
@@ -72,10 +84,7 @@ export default function GroupPage() {
   const [profileReload, setProfileReload] = useState(0);
   /** "그룹 편집" 버튼 → 설정 페이지 대신 그룹 편집 모달을 띄웁니다. */
   const [editOpen, setEditOpen] = useState(false);
-  /**
-   * 그룹 메모 — groups 테이블에 memo 컬럼이 없어서 아직 저장은 안 되고,
-   * 편집 모달에서 저장을 누르면 이 세션 동안만 기억해서 아래 배너에 보여줍니다.
-   */
+  /** 그룹 메모. groups.memo 에 저장하고, 그 칸이 없으면 이 브라우저에만 남깁니다. */
   const [memo, setMemo] = useState('');
   /** 이 그룹 회의 영상 + 첨부 파일 용량. 아직 못 읽으면 null */
   const [storageBytes, setStorageBytes] = useState<number | null>(null);
@@ -99,7 +108,20 @@ export default function GroupPage() {
 
   useEffect(() => {
     supabase.from('groups').select('*').eq('id', id).single()
-      .then(({ data }) => { if (data) setGroup(data); });
+      .then(({ data }) => {
+        if (!data) return;
+        setGroup(data);
+        // memo 칸이 있으면 그 값을 쓰고, 없으면 이 브라우저에 남겨 둔 메모를 씁니다.
+        if (typeof data.memo === 'string') {
+          setMemo(data.memo);
+          return;
+        }
+        try {
+          setMemo(localStorage.getItem(groupMemoKey(id)) ?? '');
+        } catch {
+          setMemo('');
+        }
+      });
 
     // "완료된 요약" — 회의 전체 개수가 아니라, 요약 텍스트가 실제로 들어 있는 회의만 셉니다
     // (녹화 전 문서만 만든 회의처럼 summary가 null/빈 문자열인 행 제외).
@@ -417,8 +439,15 @@ export default function GroupPage() {
           setGroup((prev) => (prev ? { ...prev, avatar_url: avatarUrl } : prev));
         }}
         onSaved={(name, nextMemo) => {
-          setGroup((prev) => (prev ? { ...prev, name } : prev));
+          setGroup((prev) => (prev ? { ...prev, name, memo: nextMemo } : prev));
           setMemo(nextMemo);
+          if (id) {
+            try {
+              localStorage.setItem(groupMemoKey(id), nextMemo);
+            } catch {
+              /* 브라우저 저장이 막혀도 DB에 남으면 다음 조회에서 다시 읽습니다. */
+            }
+          }
         }}
       />
     </AppShell>
