@@ -59,6 +59,23 @@ export default function NoticeList() {
       .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false });
     if (error) {
+      // 고정 칸이 없는 예전 테이블이면, 그 칸 없이 다시 읽어 기존 "새 공지 추가" 줄을 그대로 띄웁니다.
+      if (/is_pinned|updated_at/i.test(error.message)) {
+        const basic = await supabase
+          .from('notices')
+          .select('id, title, content, author_id, created_at')
+          .eq('group_id', groupId)
+          .order('created_at', { ascending: false });
+        if (!basic.error) {
+          setLoadError('');
+          setNotices(((basic.data ?? []) as Omit<Notice, 'updated_at' | 'is_pinned'>[]).map((row) => ({
+            ...row,
+            updated_at: row.created_at,
+            is_pinned: false,
+          })));
+          return;
+        }
+      }
       console.error('공지 조회 실패:', error);
       setLoadError('공지를 불러오지 못했어요.');
       return;
@@ -91,16 +108,25 @@ export default function NoticeList() {
     // 그룹 편집 모달의 readOnly 와 같은 규칙: 리더가 아니면 등록/수정 요청 자체를 보내지 않습니다(화면 방어, 서버는 RLS)
     if (!isLeader) return '공지는 리더만 등록할 수 있어요.';
     if (modal?.mode === 'edit') {
-      const { error } = await supabase
+      let { error } = await supabase
         .from('notices')
         .update({ title, content, is_pinned: isPinned, updated_at: new Date().toISOString() })
         .eq('id', modal.notice.id);
+      // 고정·수정 시각 칸이 없어도 기존 수정 창으로 제목과 내용은 저장합니다.
+      if (error && /is_pinned|updated_at/i.test(error.message)) {
+        ({ error } = await supabase.from('notices').update({ title, content }).eq('id', modal.notice.id));
+      }
       if (error) return error.message;
     } else {
       // author_id 는 DB 기본값(auth.uid())으로 들어가지만, 정책 검사를 위해 명시해 둡니다
-      const { error } = await supabase
+      let { error } = await supabase
         .from('notices')
         .insert({ group_id: groupId, title, content, author_id: currentUserId, is_pinned: isPinned });
+      if (error && /is_pinned/i.test(error.message)) {
+        ({ error } = await supabase
+          .from('notices')
+          .insert({ group_id: groupId, title, content, author_id: currentUserId }));
+      }
       if (error) return error.message;
     }
     setModal(null);
@@ -145,12 +171,10 @@ export default function NoticeList() {
 
         {loading ? (
           <div>불러오는 중...</div>
-        ) : loadError ? (
-          <div className={s.empty}>{loadError}</div>
         ) : notices.length === 0 && !isLeader ? (
           // 리더는 공지가 없어도 아래 목록(머리글 + "새 공지 추가" 행)이 보여야 첫 공지를 남길 수 있습니다
           <div className={s.empty}>
-            <div>등록된 공지가 없어요</div>
+            <div>{loadError || '등록된 공지가 없어요'}</div>
           </div>
         ) : (
           <div className={m.memberCard}>
@@ -178,10 +202,12 @@ export default function NoticeList() {
                   <Icon name="plus" className={s.addIcon} />
                 </div>
               )}
-              {/* 리더는 공지가 없어도 목록 화면이 보이므로, 비어 있다는 안내를 여기서 따로 보여줍니다 */}
-              {notices.length === 0 && (
+              {/* 목록을 못 읽어도 위의 기존 "새 공지 추가" 줄은 남겨 둡니다. */}
+              {loadError ? (
+                <div className={s.emptyHint}>{loadError}</div>
+              ) : notices.length === 0 ? (
                 <div className={s.emptyHint}>등록된 공지가 없어요. 위의 “새 공지 추가”로 첫 공지를 남겨보세요.</div>
-              )}
+              ) : null}
               {notices.map((n) => (
                 <div
                   key={n.id}
