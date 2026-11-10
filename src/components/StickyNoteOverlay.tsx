@@ -97,10 +97,19 @@ export default function StickyNoteOverlay({
       onPointerUp={onPointerUp}
     >
       <div
-        className={styles.header}
-        onPointerDown={onMovePointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
+        className={`${styles.header}${pinned ? ` ${styles.headerPinned}` : ''}`}
+        onPointerDown={(e) => {
+          const onButton = (e.target as HTMLElement).closest('button');
+          // 고정이 켜지면 제목줄을 잡아도 자리가 움직이지 않습니다. 끄면 다시 옮길 수 있습니다.
+          if (pinned || onButton) {
+            e.stopPropagation();
+            if (pinned && !onButton) onSelect();
+            return;
+          }
+          onMovePointerDown(e);
+        }}
+        onPointerMove={pinned ? undefined : onPointerMove}
+        onPointerUp={pinned ? undefined : onPointerUp}
       >
         <span className={styles.title}>메모장</span>
         <span className={styles.spacer} />
@@ -112,7 +121,15 @@ export default function StickyNoteOverlay({
             aria-label={pinned ? '고정 해제' : '고정'}
             aria-pressed={pinned}
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => onPin()}
+            onPointerUp={(e) => {
+              // click까지 쓰면, 붙는 순간 바뀐 버튼이 같은 클릭으로 고정을 다시 끕니다.
+              e.stopPropagation();
+              onPin();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+            }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill={pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M9 4h6l-1 6 3 3H7l3-3-1-6Z" />
@@ -157,7 +174,7 @@ export default function StickyNoteOverlay({
         </div>
       </div>
 
-      {selected && !draft ? (
+      {selected && !draft && !pinned ? (
         <div
           className={styles.handle}
           onPointerDown={(e) => {

@@ -1077,7 +1077,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   const stickyPlaceModeRef = useRef(false);
   /** 아직 보드에 붙지 않은 메모. x,y는 보드 좌표라 고정을 눌러도 끌어 둔 자리에 남습니다. */
   const [stickyDraft, setStickyDraft] = useState<{ text: string; color: string; x: number; y: number; width: number; height: number } | null>(null);
+  const stickyDraftRef = useRef(stickyDraft);
+  stickyDraftRef.current = stickyDraft;
   const stickyDraftDragRef = useRef<{ startPoint: Point; x: number; y: number } | null>(null);
+  /** 방금 붙인 클릭이 새 메모의 고정 버튼을 다시 누르지 않게 막습니다. */
+  const stickyPinAtRef = useRef(0);
 
   const [actorId, setActorId] = useState<string>('unknown');
 
@@ -3097,6 +3101,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
    */
   const unpinSticky = (item: PlacedSticky) => {
     if (item.authorId && item.authorId !== actorIdRef.current) return;
+    // 붙이는 클릭이 방금 생긴 고정 버튼까지 닿으면 바로 떨어집니다.
+    if (performance.now() - stickyPinAtRef.current < 400) return;
     removePlacedSticky(item.id);
     setStickyDraft({
       text: item.text,
@@ -3110,8 +3116,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
   /** 작성 창을 지금 놓인 자리 그대로 보드에 붙입니다. 연 사람만 나중에 고칠 수 있습니다. */
   const placeStickyFromDraft = () => {
-    const draft = stickyDraft;
+    const draft = stickyDraftRef.current;
     if (!draft) return;
+    stickyPinAtRef.current = performance.now();
+    stickyDraftDragRef.current = null;
     setShowLibrary(false);
     setPendingStampKind(null);
     pendingStampRef.current = null;
@@ -5829,15 +5837,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               onPin={!item.authorId || item.authorId === actorId ? () => unpinSticky(item) : undefined}
               onRemove={() => removePlacedSticky(item.id)}
               onMovePointerDown={(e) => {
+                // 고정된 메모는 보드에 붙어 있으므로 끌어서 옮기지 않습니다.
                 e.stopPropagation();
-                selectPlacedImage(null);
-                selectPlacedText(null);
-                selectPlacedFile(null);
                 selectPlacedSticky(item.id);
-                const p = getPoint(e.nativeEvent);
-                if (!p) return;
-                placedStickyDragRef.current = { id: item.id, mode: 'move', startPoint: p, start: { ...item } };
-                e.currentTarget.setPointerCapture(e.pointerId);
               }}
               onResizePointerDown={(e) => {
                 const p = getPoint(e.nativeEvent);

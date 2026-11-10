@@ -405,11 +405,13 @@
 .meetingList {
   display: flex;
   flex-direction: column;
+  /* 오른쪽 AI 요약 목록과 같이, 카드가 칸 한가운데로 퍼지지 않고 위부터 아래로 쌓입니다 */
+  justify-content: flex-start;
   /* 피그마 행 사이 20px × 0.703 ≈ 14px (예전 10px) */
   gap: 14px;
   /* 행 좌우: 피그마 패널 가장자리 → 행 21px × 0.703 ≈ 15px(패널 padding을 0으로 두고 여기서 줍니다) */
   margin: 0 15px;
-  /* 패널의 남은 높이를 차지하고, 카드들이 그 안에서 높이를 나눠 갖습니다(넘치지 않게) */
+  /* 패널의 남은 높이를 차지합니다. 카드는 이 높이를 나눠 늘리지 않고, 남는 공간은 목록 아래에 둡니다 */
   flex: 1;
   min-height: 0;
 }
@@ -421,12 +423,13 @@
   grid-template-columns: 165fr 150fr 162fr 196fr 94fr;
   align-items: center;
   gap: 0;
-  /* 세로 패딩은 0 — 높이는 아래 flex가 정합니다. 카드 4개가 패널 남은 높이를 똑같이
-     나눠 갖고(flex: 1 1 0), 패널이 넉넉할 땐 원래 높이(47px)까지만 커집니다. */
-  padding: 0 4px;
-  /* 카드 5장이 패널 남은 높이를 똑같이 나눠 가집니다(장수는 MainPage.tsx의 MEETING_VISIBLE) */
-  flex: 1 1 0;
-  min-height: 0;
+  padding: 8px 4px;
+  /* 패널 남은 높이를 카드가 나눠 가지면 글자가 각 카드 한가운데에 놓입니다.
+     AI 요약 카드처럼 높이를 고정하고, 목록은 위에서부터 쌓습니다. 패널이 낮을 때만 줄어듭니다. */
+  flex: 0 1 auto;
+  height: 44px;
+  min-height: 36px;
+  max-height: 44px;
 
   background: #fff;
   border: 1.5px solid var(--gray-divider, #e3e0db);

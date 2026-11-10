@@ -47,6 +47,12 @@
   cursor: grabbing;
 }
 
+/* 고정이 켜진 메모는 제목줄을 잡아도 따라오지 않습니다. */
+.headerPinned,
+.headerPinned:active {
+  cursor: default;
+}
+
 .title {
   font-size: 12px;
   font-weight: 700;
