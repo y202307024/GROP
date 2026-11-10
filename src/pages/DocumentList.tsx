@@ -1246,7 +1246,10 @@ export default function DocumentList() {
               <>
               {pendingDocs.map((doc) => renderDocRow(doc))}
               {groupSections.map(({ group, docs: groupDocs, latest }) => {
-                const fileCount = unionAttachments(groupDocs.map((doc) => doc.attachments)).length;
+                // 그룹 문서들의 첨부를 펼쳐서 셉니다. 배열째로 넘기면 파일이 하나도 없는 것으로 셉니다.
+                const files = unionAttachments(...groupDocs.map((doc) => doc.attachments))
+                  .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+                const fileCount = files.length;
                 const empty = fileCount === 0;
                 const collapsed = collapsedGroupIds.has(group.id);
                 return (
@@ -1282,10 +1285,10 @@ export default function DocumentList() {
                         </button>
                       </span>
                     </div>
-                    {/* 그룹 아래에는 파일을 풀지 않고, 그 그룹 문서를 묶음 행으로 나열합니다. */}
-                    {!collapsed && !empty ? (
-                      <div className={styles.groupDocs}>{groupDocs.map((doc) => renderDocRow(doc))}</div>
-                    ) : null}
+                    {/* 펼치면 이 그룹에 올린 파일을 그룹 행 바로 아래에 나열합니다. */}
+                    {!collapsed && !empty
+                      ? renderInlineFiles(files, false, '이 그룹에 올린 파일이 없습니다.')
+                      : null}
                   </div>
                 );
               })}
