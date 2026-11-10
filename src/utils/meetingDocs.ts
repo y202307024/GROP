@@ -1,6 +1,6 @@
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
-import type { MeetingSharedFile } from './meetingChat';
+import { preferDisplayName, type MeetingSharedFile } from './meetingChat';
 import { notifyDocumentUpload } from './notifications';
 
 /** meetings.attachments / 서버 meeting-docs 에 넣을 형태로 맞춥니다. */
@@ -12,6 +12,7 @@ export function toMeetingAttachments(files: MeetingSharedFile[]) {
     size: f.size,
     mime: f.mime,
     ts: f.ts,
+    ...(typeof f.uploadedBy === 'string' && f.uploadedBy ? { uploadedBy: f.uploadedBy } : {}),
   }));
 }
 
@@ -74,6 +75,7 @@ export async function fetchMeetingDocAttachments(
         size: typeof item.size === 'number' ? item.size : 0,
         mime: typeof item.mime === 'string' ? item.mime : 'application/octet-stream',
         ts: typeof item.ts === 'number' ? item.ts : 0,
+        ...(typeof item.uploadedBy === 'string' && item.uploadedBy ? { uploadedBy: item.uploadedBy } : {}),
       }));
   } catch {
     return [];
@@ -137,6 +139,7 @@ export async function fetchGroupChatFiles(groupId: string): Promise<ReturnType<t
         size: typeof item.size === 'number' ? item.size : 0,
         mime: typeof item.mime === 'string' ? item.mime : 'application/octet-stream',
         ts: typeof item.ts === 'number' ? item.ts : 0,
+        ...(typeof item.uploadedBy === 'string' && item.uploadedBy ? { uploadedBy: item.uploadedBy } : {}),
       }));
   } catch {
     return [];
@@ -174,7 +177,16 @@ function mergeAttachmentLists(
     if (!list) continue;
     for (const f of toMeetingAttachments(list as MeetingSharedFile[])) {
       if (!f.path) continue;
-      byPath.set(f.path, f);
+      const prev = byPath.get(f.path);
+      if (!prev) {
+        byPath.set(f.path, f);
+        continue;
+      }
+      byPath.set(f.path, {
+        ...f,
+        name: preferDisplayName(prev.name, f.name),
+        ...(f.uploadedBy || prev.uploadedBy ? { uploadedBy: f.uploadedBy || prev.uploadedBy } : {}),
+      });
     }
   }
   return [...byPath.values()];
@@ -227,7 +239,10 @@ export async function syncMeetingAttachmentsDoc(options: {
   const date = now.toISOString();
   let meetingId = options.meetingId;
   const errors: string[] = [];
-  const incoming = toMeetingAttachments(files);
+  const incoming = toMeetingAttachments(files.map((file) => ({
+    ...file,
+    uploadedBy: file.uploadedBy || userId || null,
+  })));
   let previousPaths = new Set<string>();
   let attachPayload = incoming;
 

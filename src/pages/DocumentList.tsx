@@ -19,6 +19,7 @@ import {
   downloadMeetingFile,
   formatChatFileSize,
   isStoredChatFileName,
+  preferDisplayName,
   renameMeetingFile,
   uploadMeetingAttachment,
   type MeetingSharedFile,
@@ -45,7 +46,7 @@ function loadDocBookmarks(): Set<string> {
   }
 }
 
-type MeetingAttachment = Pick<MeetingSharedFile, 'id' | 'name' | 'path' | 'size' | 'mime' | 'ts'>;
+type MeetingAttachment = Pick<MeetingSharedFile, 'id' | 'name' | 'path' | 'size' | 'mime' | 'ts' | 'uploadedBy'>;
 
 /** 파일 탐색기에서 고른 뒤, 회의를 고르고 체크하기 전까지 화면에만 있는 파일 */
 type PendingUpload = {
@@ -110,11 +111,15 @@ function withResolvedFileNames(
   files: MeetingAttachment[],
   resolved: MeetingAttachment[],
 ): MeetingAttachment[] {
-  const byPath = new Map(resolved.map((file) => [file.path, file.name]));
+  const byPath = new Map(resolved.map((file) => [file.path, file]));
   return files.map((file) => {
-    const better = byPath.get(file.path);
-    if (!better || !isStoredChatFileName(file.name) || isStoredChatFileName(better)) return file;
-    return { ...file, name: better };
+    const known = byPath.get(file.path);
+    const better = known?.name;
+    const named = better && isStoredChatFileName(file.name) && !isStoredChatFileName(better)
+      ? { ...file, name: better }
+      : file;
+    if (!named.uploadedBy && known?.uploadedBy) return { ...named, uploadedBy: known.uploadedBy };
+    return named;
   });
 }
 
@@ -139,6 +144,7 @@ function normalizeAttachments(raw: unknown): MeetingAttachment[] {
       size: typeof item.size === 'number' ? item.size : 0,
       mime: typeof item.mime === 'string' ? item.mime : 'application/octet-stream',
       ts: typeof item.ts === 'number' ? item.ts : 0,
+      ...(typeof item.uploadedBy === 'string' && item.uploadedBy ? { uploadedBy: item.uploadedBy } : {}),
     }));
 }
 
@@ -148,7 +154,17 @@ function unionAttachments(...lists: unknown[]): MeetingAttachment[] {
   for (const list of lists) {
     for (const file of normalizeAttachments(list)) {
       if (!file.path) continue;
-      byPath.set(file.path, file);
+      const prev = byPath.get(file.path);
+      if (!prev) {
+        byPath.set(file.path, file);
+        continue;
+      }
+      // 디스크 목록의 저장용 이름이 회의 기록에 있는 원래 이름을 덮어쓰지 않게 합니다.
+      byPath.set(file.path, {
+        ...file,
+        name: preferDisplayName(prev.name, file.name),
+        ...(file.uploadedBy || prev.uploadedBy ? { uploadedBy: file.uploadedBy || prev.uploadedBy } : {}),
+      });
     }
   }
   return [...byPath.values()];
@@ -193,8 +209,8 @@ function mergeSameDayMeetings(docs: MeetingDoc[]): MeetingDoc[] {
       continue;
     }
     const filesByPath = new Map<string, MeetingAttachment>();
-    for (const file of normalizeAttachments(prev.attachments)) filesByPath.set(file.path, file);
-    for (const file of normalizeAttachments(doc.attachments)) filesByPath.set(file.path, file);
+    // 먼저 넣은 회의의 이름을 남깁니다. 그쪽이 저장용 이름뿐이면 다른 회의의 파일명을 씁니다.
+    for (const file of unionAttachments(prev.attachments, doc.attachments)) filesByPath.set(file.path, file);
     const newer = new Date(doc.date).getTime() > new Date(prev.date).getTime() ? doc : prev;
     buckets.set(doc.group_id, {
       ...newer,
@@ -230,16 +246,13 @@ export default function DocumentList() {
   const [renameDraft, setRenameDraft] = useState('');
   const [savingRename, setSavingRename] = useState(false);
   /**
-   * 상단 탭("전체 문서" / "내가 올린 문서"). 파일마다 올린 사람을 저장하진 않아서, "내가 올린 문서"는
-   * 그 문서(회의록 행)를 만든 사람(meetings.created_by)이 나인 문서로 판단합니다.
-   * 같은 날 다른 사람이 이어서 올린 파일은 파일 단위로 구분되지 않는 한계가 있습니다.
+   * 상단 탭. 「내가 올린 문서」는 파일의 올린 사람(uploadedBy)이 나인 것만 보여 줍니다.
    */
   const [activeTab, setActiveTab] = useState<'all' | 'mine' | 'group'>('all');
-  /** 「그룹별 문서」 탭에서 펼쳐 둔 그룹 id — 여러 그룹을 동시에 펼칠 수 있고, 새로고침하면 접힌 상태로 돌아갑니다 */
+  /** 「그룹별 문서」 탭에서 접어 둔 그룹 id. 기본은 펼쳐서 그 그룹 문서를 묶음으로 보여 줍니다. */
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(new Set());
+  /** 「내가 올린 문서」에서 펼쳐 둔 문서 id */
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
-  /** 펼친 그룹의 첨부 파일. 팝업 대신 그룹 행 바로 아래에 위에서부터 쌓습니다. */
-  const [groupFileLists, setGroupFileLists] = useState<Record<string, MeetingAttachment[]>>({});
-  const [loadingGroupIds, setLoadingGroupIds] = useState<Set<string>>(new Set());
   /** 로그인한 사용자 id — 「내가 올린 문서」 필터와 「올린 사람」 열의 "나" 표시에 씁니다 */
   const [myUserId, setMyUserId] = useState<string | null>(null);
   /** 만든 사람 id → 닉네임(profiles.nickname). 「올린 사람」 열에 내가 아닌 사람의 이름을 보여줄 때 씁니다 */
@@ -377,6 +390,18 @@ export default function DocumentList() {
         }),
       );
 
+      // 올린 사람이 비어 있는 예전 파일은, 그 회의를 만든 사람의 파일로 둡니다.
+      // 같은 날 디스크 파일을 합치기 전에 찍어야 다른 사람 파일이 내 것으로 바뀌지 않습니다.
+      for (const [id, doc] of byId) {
+        if (!doc.created_by) continue;
+        byId.set(id, {
+          ...doc,
+          attachments: normalizeAttachments(doc.attachments).map((file) => (
+            file.uploadedBy ? file : { ...file, uploadedBy: doc.created_by }
+          )),
+        });
+      }
+
       // 첨부가 없으면 같은 날 파일을 채우고, 있으면 저장용 이름을 원래 이름으로 바꿉니다.
       await Promise.all(
         ids.map(async (gid) => {
@@ -388,6 +413,7 @@ export default function DocumentList() {
             const sameDay = diskFiles.filter((f) => f.ts && isSameLocalDay(f.ts, doc.date));
             const current = normalizeAttachments(doc.attachments);
             if (sameDay.length === 0 && current.length === 0) continue;
+            // 회의 기록의 이름을 먼저 둡니다. 디스크의 저장용 이름은 기록이 없을 때만 채웁니다.
             const mergedFiles = sameDay.length > 0 ? unionAttachments(current, sameDay) : current;
             byId.set(id, { ...doc, attachments: withResolvedFileNames(mergedFiles, diskFiles) });
           }
@@ -463,7 +489,7 @@ export default function DocumentList() {
 
       // 1) 서버 meeting-docs와 모아 둔 첨부를 함께 엽니다.
       const serverFiles = await fetchMeetingDocAttachments(doc.id, doc.group_id);
-      const mergedFiles = unionAttachments(serverFiles, doc.attachments);
+      const mergedFiles = unionAttachments(doc.attachments, serverFiles);
       if (mergedFiles.length > 0) {
         setOpenFiles(applyNames(mergedFiles));
         return;
@@ -503,11 +529,6 @@ export default function DocumentList() {
       const saved = await renameMeetingFile(file.path, next);
       const renameFile = (item: MeetingAttachment) => (item.path === file.path ? { ...item, name: saved } : item);
       setOpenFiles((prev) => prev.map(renameFile));
-      setGroupFileLists((prev) => {
-        const next: Record<string, MeetingAttachment[]> = {};
-        for (const [groupId, files] of Object.entries(prev)) next[groupId] = files.map(renameFile);
-        return next;
-      });
       setDocs((prev) => prev.map((doc) => {
         const files = normalizeAttachments(doc.attachments);
         if (!files.some((item) => item.path === file.path)) return doc;
@@ -516,17 +537,26 @@ export default function DocumentList() {
           attachments: files.map((item) => (item.path === file.path ? { ...item, name: saved } : item)),
         };
       }));
-      // DB에 저장용 이름이 남아 있으면 다음 조회가 그 이름으로 돌아가지 않게 같이 고칩니다.
-      const targets = docs.filter((doc) => normalizeAttachments(doc.attachments).some((item) => item.path === file.path));
-      await Promise.all(targets.map(async (doc) => {
-        const files = normalizeAttachments(doc.attachments).map((item) => (
-          item.path === file.path ? { ...item, name: saved } : item
-        ));
-        const { error } = await supabase.from('meetings').update({ attachments: files }).eq('id', doc.id);
-        if (error && !/attachments/i.test(error.message)) {
-          console.warn('첨부 이름 DB 반영 실패:', error.message);
+      // 같은 파일이 여러 회의 행에 있으면 전부 바꿉니다. 한 곳만 바꾸면 다음 조회에서 예전 이름이 다시 나옵니다.
+      const groupId = file.path.split('/').filter(Boolean)[0];
+      if (groupId) {
+        const { data: rows, error: readError } = await supabase
+          .from('meetings')
+          .select('id, attachments')
+          .eq('group_id', groupId);
+        if (readError && !/attachments/i.test(readError.message)) {
+          console.warn('첨부 이름 DB 조회 실패:', readError.message);
         }
-      }));
+        await Promise.all((rows ?? []).map(async (row) => {
+          const files = normalizeAttachments(row.attachments);
+          if (!files.some((item) => item.path === file.path)) return;
+          const nextFiles = files.map((item) => (item.path === file.path ? { ...item, name: saved } : item));
+          const { error } = await supabase.from('meetings').update({ attachments: nextFiles }).eq('id', row.id);
+          if (error && !/attachments/i.test(error.message)) {
+            console.warn('첨부 이름 DB 반영 실패:', error.message);
+          }
+        }));
+      }
       setRenamingPath(null);
       setEditingDocId(null);
     } catch (err) {
@@ -556,11 +586,6 @@ export default function DocumentList() {
         return { ...doc, attachments: strip(files) };
       })
       .filter((doc) => normalizeAttachments(doc.attachments).length > 0));
-    setGroupFileLists((prev) => {
-      const next: Record<string, MeetingAttachment[]> = {};
-      for (const [key, files] of Object.entries(prev)) next[key] = strip(files);
-      return next;
-    });
     await Promise.all(targets.map(async (doc) => {
       const files = strip(normalizeAttachments(doc.attachments));
       const { error } = await supabase.from('meetings').update({ attachments: files }).eq('id', doc.id);
@@ -610,7 +635,7 @@ export default function DocumentList() {
 
     setSavingPendingId(doc.id);
     try {
-      const meta = await uploadMeetingAttachment(pending.file, groupId);
+      const meta = await uploadMeetingAttachment(pending.file, groupId, myUserId);
       const result = await syncMeetingAttachmentsDoc({
         meetingId: null,
         groupId,
@@ -622,6 +647,7 @@ export default function DocumentList() {
           size: meta.size,
           mime: meta.mime,
           ts: Date.now(),
+          uploadedBy: myUserId,
         }],
       });
       if (result.error) {
@@ -701,53 +727,6 @@ export default function DocumentList() {
     setEditingDocId(null);
   };
 
-  /**
-   * 펼칠 때 첨부 팝업과 같은 파일 목록을 가져옵니다.
-   * listKey는 그룹 id 또는 문서 id. 파일은 그 그룹 저장소에서 읽습니다.
-   * 화면에는 행 바로 아래, 위쪽부터 한 줄씩 붙입니다.
-   */
-  const loadListedFiles = async (listKey: string, groupId: string, groupDocs: MeetingDoc[]) => {
-    setLoadingGroupIds((prev) => new Set(prev).add(listKey));
-    try {
-      const disk = await fetchGroupChatFiles(groupId);
-      const collected: MeetingAttachment[] = [];
-      for (const doc of groupDocs) {
-        const serverFiles = await fetchMeetingDocAttachments(doc.id, doc.group_id);
-        const merged = unionAttachments(serverFiles, doc.attachments);
-        const source = merged.length > 0
-          ? merged
-          : disk.filter((file) => file.ts && isSameLocalDay(file.ts, doc.date));
-        collected.push(...withResolvedFileNames(source, disk));
-      }
-      setGroupFileLists((prev) => ({ ...prev, [listKey]: unionAttachments(collected) }));
-    } catch {
-      setGroupFileLists((prev) => ({
-        ...prev,
-        [listKey]: unionAttachments(groupDocs.map((doc) => doc.attachments)),
-      }));
-    } finally {
-      setLoadingGroupIds((prev) => {
-        const next = new Set(prev);
-        next.delete(listKey);
-        return next;
-      });
-    }
-  };
-
-  /** 행의 화살표 — 펼치면 파일을 아래에 나열하고, 다시 누르면 접습니다. */
-  const toggleListed = (listKey: string, groupId: string, groupDocs: MeetingDoc[]) => {
-    setExpandedGroupIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(listKey)) {
-        next.delete(listKey);
-        return next;
-      }
-      next.add(listKey);
-      if (groupId) void loadListedFiles(listKey, groupId, groupDocs);
-      return next;
-    });
-  };
-
   const meetingName = openDoc
     ? openDoc.group_name?.trim() || `${formatDocDate(openDoc.date)} 회의`
     : '';
@@ -755,10 +734,15 @@ export default function DocumentList() {
   /** 검색창 입력값으로 문서명/연결된 회의명을 좁힙니다. */
   const filteredDocs = useMemo(() => {
     const q = query.trim().toLowerCase();
-    // 「내가 올린 문서」 탭이면 내가 만든 문서만 남기고, 그 안에서 검색어로 한 번 더 좁힙니다
+    // 「내가 올린 문서」는 내가 올린 파일만 남깁니다. 다른 사람 파일은 같은 그룹이어도 빼니다.
     const base =
       activeTab === 'mine'
-        ? docs.filter((doc) => !!myUserId && (doc.creator_ids ?? []).includes(myUserId))
+        ? docs
+            .map((doc) => ({
+              ...doc,
+              attachments: normalizeAttachments(doc.attachments).filter((file) => file.uploadedBy === myUserId),
+            }))
+            .filter((doc) => normalizeAttachments(doc.attachments).length > 0)
         : docs;
     const matched = !q
       ? base
@@ -939,7 +923,7 @@ export default function DocumentList() {
                   (체크/닫기는 오른쪽 액션 칸으로). 내가 아니면 만든 사람(created_by)의 닉네임을, 모르면 "—"를 보여줍니다.
                   저장 대기 행은 방금 내가 올려서 연결을 고르는 중인 경우라 "나"로 둡니다. */}
               <span className={styles.uploaderCol}>
-                {pending || (!!myUserId && (doc.creator_ids ?? []).includes(myUserId))
+                {pending || activeTab === 'mine' || (!!myUserId && (doc.creator_ids ?? []).includes(myUserId))
                   ? '나'
                   : (doc.created_by && nameById[doc.created_by]) || '—'}
               </span>
@@ -1262,12 +1246,9 @@ export default function DocumentList() {
               <>
               {pendingDocs.map((doc) => renderDocRow(doc))}
               {groupSections.map(({ group, docs: groupDocs, latest }) => {
-                const expanded = expandedGroupIds.has(group.id);
-                // 그룹 문서는 한 줄로 합쳐져 있어서, 행 수가 아니라 첨부 파일 수를 문서 수로 셉니다.
-                const listedFiles = groupFileLists[group.id] ?? unionAttachments(groupDocs.map((doc) => doc.attachments));
-                const fileCount = listedFiles.length;
+                const fileCount = unionAttachments(groupDocs.map((doc) => doc.attachments)).length;
                 const empty = fileCount === 0;
-                const loadingThisGroup = loadingGroupIds.has(group.id) && !groupFileLists[group.id];
+                const collapsed = collapsedGroupIds.has(group.id);
                 return (
                   <div className={styles.groupBlock} key={group.id}>
                     <div className="list-row doc-row">
@@ -1284,20 +1265,27 @@ export default function DocumentList() {
                         {/* 문서가 없는 그룹은 펼칠 게 없어서 버튼을 비활성화 */}
                         <button
                           type="button"
-                          className={`${styles.groupToggle}${expanded ? ` ${styles.groupToggleOpen}` : ''}`}
-                          aria-label={expanded ? `${group.name} 접기` : `${group.name} 펼치기`}
-                          aria-expanded={expanded}
+                          className={`${styles.groupToggle}${collapsed ? '' : ` ${styles.groupToggleOpen}`}`}
+                          aria-label={collapsed ? `${group.name} 펼치기` : `${group.name} 접기`}
+                          aria-expanded={!collapsed}
                           disabled={empty}
-                          onClick={() => toggleListed(group.id, group.id, groupDocs)}
+                          onClick={() => {
+                            setCollapsedGroupIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(group.id)) next.delete(group.id);
+                              else next.add(group.id);
+                              return next;
+                            });
+                          }}
                         >
                           <Icon name="chevron-down" />
                         </button>
                       </span>
                     </div>
-                    {/* 펼치면 첨부 팝업 대신, 이 그룹 행 바로 아래에서 파일을 위쪽부터 한 줄씩 보여 줍니다. */}
-                    {expanded && !empty
-                      ? renderInlineFiles(listedFiles, loadingThisGroup, '이 그룹에 저장된 첨부 파일이 없습니다.')
-                      : null}
+                    {/* 그룹 아래에는 파일을 풀지 않고, 그 그룹 문서를 묶음 행으로 나열합니다. */}
+                    {!collapsed && !empty ? (
+                      <div className={styles.groupDocs}>{groupDocs.map((doc) => renderDocRow(doc))}</div>
+                    ) : null}
                   </div>
                 );
               })}
@@ -1307,13 +1295,21 @@ export default function DocumentList() {
                 // 전체 문서는 파일을 이미 한 줄씩 나눠 두었습니다. 내가 올린 문서만 묶음을 펼칩니다.
                 if (activeTab === 'all' || isPendingLink(doc)) return renderDocRow(doc);
                 const expanded = expandedGroupIds.has(doc.id);
-                const listedFiles = groupFileLists[doc.id] ?? unionAttachments(doc.attachments);
-                const loadingThisDoc = loadingGroupIds.has(doc.id) && !groupFileLists[doc.id];
+                // 이미 내가 올린 파일만 남겨 둔 행입니다. 다시 받으면 다른 사람 파일이 섞입니다.
+                const listedFiles = unionAttachments(doc.attachments);
+                const loadingThisDoc = false;
                 return (
                   <div className={styles.groupBlock} key={doc.id}>
                     {renderDocRow(doc, {
                       expanded,
-                      onToggle: () => toggleListed(doc.id, doc.group_id, [doc]),
+                      onToggle: () => {
+                        setExpandedGroupIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(doc.id)) next.delete(doc.id);
+                          else next.add(doc.id);
+                          return next;
+                        });
+                      },
                     })}
                     {expanded
                       ? renderInlineFiles(listedFiles, loadingThisDoc, '이 문서에 저장된 첨부 파일이 없습니다.')

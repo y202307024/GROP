@@ -264,6 +264,7 @@ function writeChatFileMeta(filePath, meta) {
     name: sanitizeDisplayFileName(meta.name),
     mime: typeof meta.mime === 'string' && meta.mime ? meta.mime : 'application/octet-stream',
   }
+  if (typeof meta.userId === 'string' && meta.userId.trim()) payload.userId = meta.userId.trim()
   fs.writeFileSync(chatFileMetaPath(filePath), JSON.stringify(payload), 'utf8')
 }
 
@@ -804,9 +805,11 @@ app.post('/api/chat-files/upload', checkUploadToken, uploadChatFile.single('file
   try {
     fs.mkdirSync(destDir, { recursive: true })
     fs.renameSync(req.file.path, destPath)
+    const uploaderId = typeof req.body.userId === 'string' ? req.body.userId.trim() : ''
     writeChatFileMeta(destPath, {
       name: originalName,
       mime: guessChatFileMime(originalName, req.file.mimetype),
+      ...(uploaderId ? { userId: uploaderId } : {}),
     })
   } catch (err) {
     console.error('채팅 파일 저장 실패:', err)
@@ -862,8 +865,9 @@ app.get('/api/chat-files', (req, res) => {
     const relPath = `${groupId}/${name}`
     const meta = readChatFileMeta(full)
     const savedName = savedNames.get(relPath)
-    // 옆에 적어 둔 이름 → 회의 문서에 남은 이름 → 저장용 이름 순입니다.
-    const displayName = (meta && meta.name) || savedName || name
+    // 메타에 저장용 이름만 있으면, 회의 문서에 남은 원래 이름을 먼저 씁니다.
+    const metaName = meta && meta.name && !isStoredChatFileName(meta.name) ? meta.name : ''
+    const displayName = metaName || savedName || name
     files.push({
       id: name,
       name: displayName,
@@ -871,6 +875,7 @@ app.get('/api/chat-files', (req, res) => {
       size: st.size,
       mime: (meta && meta.mime) || guessChatFileMime(displayName, ''),
       ts,
+      ...(meta && typeof meta.userId === 'string' && meta.userId ? { uploadedBy: meta.userId } : {}),
     })
   }
 
@@ -914,9 +919,6 @@ app.patch('/api/chat-files/name', checkUploadToken, (req, res) => {
   if (!full.startsWith(groupDir)) {
     return res.status(400).json({ error: '잘못된 파일 경로입니다' })
   }
-  if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {
-    return res.status(404).json({ error: '파일을 찾지 못했습니다' })
-  }
 
   let nextName = sanitizeDisplayFileName(req.body?.name)
   const storedExt = fileExtFromName(filename)
@@ -925,11 +927,15 @@ app.patch('/api/chat-files/name', checkUploadToken, (req, res) => {
     return res.status(400).json({ error: '파일 이름을 입력해 주세요' })
   }
 
-  const prev = readChatFileMeta(full)
-  writeChatFileMeta(full, {
-    name: nextName,
-    mime: (prev && prev.mime) || guessChatFileMime(nextName, ''),
-  })
+  // 디스크 파일은 다른 서버에만 있을 수 있습니다. 없어도 보이는 이름과 회의 문서 목록은 바꿉니다.
+  if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+    const prev = readChatFileMeta(full)
+    writeChatFileMeta(full, {
+      name: nextName,
+      mime: (prev && prev.mime) || guessChatFileMime(nextName, ''),
+      ...(prev && prev.userId ? { userId: prev.userId } : {}),
+    })
+  }
   renameInMeetingDocs(groupId, `${groupId}/${filename}`, nextName)
   res.json({ path: `${groupId}/${filename}`, name: nextName })
 })
@@ -980,6 +986,7 @@ app.put('/api/meeting-docs/:meetingId', checkUploadToken, (req, res) => {
       size: typeof f.size === 'number' ? f.size : 0,
       mime: typeof f.mime === 'string' ? f.mime : 'application/octet-stream',
       ts: typeof f.ts === 'number' ? f.ts : Date.now(),
+      ...(typeof f.uploadedBy === 'string' && f.uploadedBy ? { uploadedBy: f.uploadedBy } : {}),
     }))
 
   const dir = path.join(MEETING_DOCS_DIR, groupId)

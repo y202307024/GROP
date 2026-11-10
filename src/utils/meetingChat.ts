@@ -15,6 +15,8 @@ export type MeetingChatFile = {
 export type MeetingSharedFile = MeetingChatFile & {
   id: string;
   ts: number;
+  /** 이 파일을 올린 사용자. 없으면 예전 파일이라 회의를 만든 사람으로 추정합니다. */
+  uploadedBy?: string | null;
 };
 
 export type MeetingChatMessage = {
@@ -77,7 +79,7 @@ export function decodeMeetingSharedFile(payload: Uint8Array): MeetingSharedFile 
 }
 
 /** 회의 첨부 파일을 회의 서버에 올리고 메타데이터를 돌려받습니다. */
-export async function uploadMeetingAttachment(file: File, groupId?: string): Promise<MeetingChatFile> {
+export async function uploadMeetingAttachment(file: File, groupId?: string, userId?: string | null): Promise<MeetingChatFile> {
   if (file.size > MAX_CHAT_FILE_BYTES) {
     throw new Error('파일은 20MB 이하만 첨부할 수 있어요.');
   }
@@ -86,6 +88,7 @@ export async function uploadMeetingAttachment(file: File, groupId?: string): Pro
   // multer가 파일명을 latin1로 읽어 한글이 깨지므로, 원래 이름은 별도 필드로 보냅니다.
   body.append('originalName', file.name);
   body.append('groupId', groupId || 'unknown');
+  if (userId) body.append('userId', userId);
   const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
   const res = await fetch(`${getApiBase()}/api/chat-files/upload`, {
     method: 'POST',
@@ -167,6 +170,18 @@ export async function deleteMeetingFile(path: string) {
 /** 디스크에 저장한 `시각-임의문자.확장자` 이름인지. 이 이름이면 원래 파일명을 찾아 보여 줍니다. */
 export function isStoredChatFileName(name: string) {
   return /^\d{13}-[a-z0-9]{6,}\.[a-z0-9]{1,8}$/i.test(name);
+}
+
+/**
+ * 같은 파일을 여러 곳에서 합칠 때 화면에 쓸 이름.
+ * 먼저 정해진 이름(업로드 이름, 그 다음 변경한 이름)을 유지하고,
+ * 저장용 이름(시각-임의문자)만 있으면 나중에 찾은 원래 이름으로 바꿉니다.
+ */
+export function preferDisplayName(current: string, incoming: string) {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  if (isStoredChatFileName(current) && !isStoredChatFileName(incoming)) return incoming;
+  return current;
 }
 
 /** 예전에 latin1로 저장된 한글 파일명을 화면에서 복원합니다. */

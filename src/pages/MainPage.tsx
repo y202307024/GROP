@@ -14,7 +14,7 @@ import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingA
 import { liveHeadcount, liveRoomForMeeting, useLiveRooms } from '../utils/liveMeeting';
 import { isListedMeeting, isRecordedMeeting } from '../utils/meetingVideo';
 import { fetchGroupChatFiles, fetchGroupMeetingDocs, fetchMeetingDocAttachments, isSameLocalDay, localDayKey } from '../utils/meetingDocs';
-import { displayFileName, downloadMeetingFile, formatChatFileSize } from '../utils/meetingChat';
+import { displayFileName, downloadMeetingFile, formatChatFileSize, preferDisplayName } from '../utils/meetingChat';
 import { useGroupMemberAvatars } from '../hooks/useGroupMemberAvatars';
 import { getAvatarSrc } from '../utils/avatarOptions';
 import { findNextLocalSchedule, loadLocalSchedules } from '../utils/localSchedules';
@@ -69,7 +69,12 @@ function unionUploadedFiles(...lists: unknown[]): { path: string; name: string }
       if (!item || typeof item !== 'object') continue;
       const file = item as { path?: unknown; name?: unknown };
       if (typeof file.path !== 'string' || !file.path || typeof file.name !== 'string' || !file.name) continue;
-      byPath.set(file.path, { path: file.path, name: file.name });
+      const prev = byPath.get(file.path);
+      // 이미 올린 파일명이 있으면 유지합니다. 저장용 이름만 있을 때만 다른 쪽 이름으로 바꿉니다.
+      byPath.set(file.path, {
+        path: file.path,
+        name: prev ? preferDisplayName(prev.name, file.name) : file.name,
+      });
     }
   }
   return [...byPath.values()];
