@@ -514,9 +514,14 @@ export default function DocumentList() {
     }
   };
 
-  /** 첨부 모달의 이름을 서버에 저장하고, 열린 목록과 문서 행에도 바로 반영합니다. */
+  /** 같은 이름 저장이 겹치지 않게 합니다. Enter와 포커스 아웃이 같이 들어와도 한 번만 저장합니다. */
+  const renameLock = useRef(false);
+  /** Esc로 닫을 때 따라오는 blur가 방금 친 이름을 저장하지 않게 합니다. */
+  const skipRenameBlur = useRef(false);
+
+  /** 첨부 이름을 바꿉니다. 파일 서버에 원본이 없어도 목록에 보이는 이름은 저장합니다. */
   const commitRename = async (file: MeetingAttachment, nextName?: string) => {
-    if (savingRename) return;
+    if (renameLock.current) return;
     const next = (nextName ?? renameDraft).trim();
     const current = displayFileName(file.name);
     if (!next || next === current) {
@@ -524,19 +529,29 @@ export default function DocumentList() {
       setEditingDocId(null);
       return;
     }
+    renameLock.current = true;
     setSavingRename(true);
+    // 서버가 확장자를 붙여 주던 것과 같이, 서버 요청이 실패해도 확장자는 남깁니다.
+    const storedExt = (file.path.split('/').pop() || '').match(/\.[a-z0-9]{1,8}$/i)?.[0] || '';
+    let saved = storedExt && !next.toLowerCase().endsWith(storedExt.toLowerCase()) ? `${next}${storedExt}` : next;
     try {
-      const saved = await renameMeetingFile(file.path, next);
+      saved = await renameMeetingFile(file.path, next);
+    } catch (err) {
+      // 디스크에 파일이 없어도 문서 목록의 이름은 바꿉니다.
+      console.warn('파일 서버 이름 변경 실패, 목록 이름만 저장합니다:', err);
+    }
+    try {
       const renameFile = (item: MeetingAttachment) => (item.path === file.path ? { ...item, name: saved } : item);
       setOpenFiles((prev) => prev.map(renameFile));
-      setDocs((prev) => prev.map((doc) => {
+      const renamedDocs = docs.map((doc) => {
         const files = normalizeAttachments(doc.attachments);
         if (!files.some((item) => item.path === file.path)) return doc;
         return {
           ...doc,
           attachments: files.map((item) => (item.path === file.path ? { ...item, name: saved } : item)),
         };
-      }));
+      });
+      setDocs(renamedDocs);
       // 같은 파일이 여러 회의 행에 있으면 전부 바꿉니다. 한 곳만 바꾸면 다음 조회에서 예전 이름이 다시 나옵니다.
       const groupId = file.path.split('/').filter(Boolean)[0];
       if (groupId) {
@@ -557,11 +572,23 @@ export default function DocumentList() {
           }
         }));
       }
+      await Promise.all(renamedDocs.map(async (doc) => {
+        const files = normalizeAttachments(doc.attachments);
+        if (!files.some((item) => item.path === file.path)) return;
+        const meetingId = doc.sourceId || doc.id.split('::')[0];
+        if (!meetingId || !doc.group_id) return;
+        await saveMeetingDocToServer({
+          meetingId,
+          groupId: doc.group_id,
+          title: doc.title || '',
+          date: doc.date,
+          files,
+        });
+      }));
       setRenamingPath(null);
       setEditingDocId(null);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : '파일 이름을 바꾸지 못했습니다.');
     } finally {
+      renameLock.current = false;
       setSavingRename(false);
     }
   };
@@ -853,15 +880,18 @@ export default function DocumentList() {
                   disabled={savingTitle || savingRename}
                   placeholder="문서명"
                   onChange={(e) => setEditTitle(e.target.value)}
-                  onBlur={() => {
+                  onBlur={(e) => {
                     const file = normalizeAttachments(doc.attachments)[0];
-                    if (doc.fileRow && file) void commitRename(file, editTitle);
+                    if (doc.fileRow && file) void commitRename(file, e.currentTarget.value);
                     else void commitEditTitle(doc);
                   }}
                   onKeyDown={(e) => {
+                    // 한글 조합 중 Enter는 글자를 확정할 뿐이라, 그때는 저장하지 않습니다.
+                    if (e.nativeEvent.isComposing) return;
                     if (e.key === 'Enter') {
+                      e.preventDefault();
                       const file = normalizeAttachments(doc.attachments)[0];
-                      if (doc.fileRow && file) void commitRename(file, editTitle);
+                      if (doc.fileRow && file) void commitRename(file, e.currentTarget.value);
                       else void commitEditTitle(doc);
                     }
                     if (e.key === 'Escape') setEditingDocId(null);
@@ -1068,9 +1098,25 @@ export default function DocumentList() {
                   disabled={savingRename}
                   aria-label="첨부 파일 이름"
                   onChange={(e) => setRenameDraft(e.target.value)}
+                  onBlur={(e) => {
+                    if (skipRenameBlur.current) {
+                      skipRenameBlur.current = false;
+                      return;
+                    }
+                    void commitRename(file, e.currentTarget.value);
+                  }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') void commitRename(file);
-                    if (e.key === 'Escape') setRenamingPath(null);
+                    // 한글 조합 중 Enter는 글자를 확정할 뿐이라, 그때는 저장하지 않습니다.
+                    if (e.nativeEvent.isComposing) return;
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void commitRename(file, e.currentTarget.value);
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      skipRenameBlur.current = true;
+                      setRenamingPath(null);
+                    }
                   }}
                 />
               ) : (

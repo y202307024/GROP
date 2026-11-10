@@ -320,6 +320,7 @@
 
 /* 문서명 + 그 아래 "형식 · 크기" 두 줄 */
 .titleText {
+  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -347,7 +348,8 @@
 
 .renameInput {
   width: 100%;
-  min-width: 0;
+  min-width: 8em;
+  box-sizing: border-box;
   border: 1px solid var(--color-primary, #667c55);
   border-radius: 6px;
   padding: 4px 8px;
