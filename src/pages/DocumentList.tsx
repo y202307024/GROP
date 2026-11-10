@@ -17,6 +17,7 @@ import {
   downloadMeetingFile,
   formatChatFileSize,
   isStoredChatFileName,
+  uploadMeetingAttachment,
   type MeetingSharedFile,
 } from '../utils/meetingChat';
 import {
@@ -24,6 +25,7 @@ import {
   fetchMeetingDocAttachments,
   fetchGroupChatFiles,
   isSameLocalDay,
+  syncMeetingAttachmentsDoc,
 } from '../utils/meetingDocs';
 import { isListedMeeting } from '../utils/meetingVideo';
 
@@ -40,6 +42,13 @@ function loadDocBookmarks(): Set<string> {
 }
 
 type MeetingAttachment = Pick<MeetingSharedFile, 'id' | 'name' | 'path' | 'size' | 'mime' | 'ts'>;
+
+/** 파일 탐색기에서 고른 뒤, 회의를 고르고 체크하기 전까지 화면에만 있는 파일 */
+type PendingUpload = {
+  id: string;
+  file: File;
+  date: string;
+};
 
 /** "연결할 회의를 선택하세요" 드롭다운에 쓰는 내 그룹 목록 */
 type GroupOption = { id: string; name: string };
@@ -180,7 +189,6 @@ function mergeSameDayMeetings(docs: MeetingDoc[]): MeetingDoc[] {
 export default function DocumentList() {
   const navigate = useNavigate();
   const [docs, setDocs] = useState<MeetingDoc[]>([]);
-  const [groupIds, setGroupIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   /** 열기로 고른 문서 — 첨부 목록 모달 */
   const [openDoc, setOpenDoc] = useState<MeetingDoc | null>(null);
@@ -223,6 +231,16 @@ export default function DocumentList() {
   const [pendingLinkDraft, setPendingLinkDraft] = useState<Record<string, string>>({});
   /** 체크(저장)로 확정한 연결 — 문서 id → 그룹 이름 */
   const [linkOverrides, setLinkOverrides] = useState<Record<string, string>>({});
+  /** 업로드가 끝나면 목록을 다시 읽습니다. */
+  const [listVersion, setListVersion] = useState(0);
+  /**
+   * 파일 탐색기에서 골랐지만 아직 회의에 넣지 않은 파일.
+   * 체크를 눌러야 선택한 회의로 올라갑니다.
+   */
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
+  /** 체크를 눌러 서버에 올리는 중인 대기 행 id */
+  const [savingPendingId, setSavingPendingId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -242,7 +260,6 @@ export default function DocumentList() {
       const ids = [...new Set((memberRows ?? []).map((row) => row.group_id).filter(Boolean))];
       if (!mounted) return;
       setMyUserId(sessionData.session.user.id);
-      setGroupIds(ids);
 
       if (ids.length === 0) {
         setDocs([]);
@@ -373,18 +390,29 @@ export default function DocumentList() {
     return () => {
       mounted = false;
     };
-  }, [navigate]);
+  }, [navigate, listVersion]);
 
   const handleCreate = () => {
-    if (groupIds.length === 1) {
-      navigate(`/room/${groupIds[0]}`);
+    if (groups.length === 0) {
+      alert('먼저 그룹을 만든 뒤 문서를 올릴 수 있어요.');
       return;
     }
-    if (groupIds.length > 1) {
-      navigate('/main');
-      return;
-    }
-    alert('먼저 그룹을 만든 뒤 회의방에서 파일을 올리면, 여기에 문서가 생깁니다.');
+    const input = fileInputRef.current;
+    if (!input) return;
+    input.value = '';
+    input.click();
+  };
+
+  /** 고른 파일은 아직 올리지 않고, 저장 대기 행으로만 목록 위에 둡니다. */
+  const handleUploadFiles = (list: FileList | null) => {
+    const files = list ? Array.from(list) : [];
+    if (files.length === 0) return;
+    const date = new Date().toISOString();
+    setPendingUploads((prev) => [
+      ...files.map((file) => ({ id: crypto.randomUUID(), file, date })),
+      ...prev,
+    ]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleOpen = async (doc: MeetingDoc) => {
@@ -432,28 +460,65 @@ export default function DocumentList() {
     return doc.title?.trim() || `${formatDocDate(doc.date)} 회의`;
   };
 
-  /**
-   * "저장 대기" 상태: 그룹명을 못 찾아 연결된 회의가 비어 있는 문서.
-   * 지금은 모든 문서가 group_id로 이미 그룹에 묶여 있어 실제로는 거의 발생하지 않지만,
-   * 나중에 회의와 분리된 업로드를 지원할 때를 대비해 드롭다운/확정 UI를 먼저 만들어 둡니다.
-   */
-  const isPendingLink = (doc: MeetingDoc) => !linkOverrides[doc.id] && !doc.group_name?.trim();
+  /** 저장 대기: 방금 고른 파일이거나, 연결된 회의가 아직 없는 문서 */
+  const isPendingLink = (doc: MeetingDoc) =>
+    pendingUploads.some((item) => item.id === doc.id) || (!linkOverrides[doc.id] && !doc.group_name?.trim());
 
-  /** 체크(✓) — 드롭다운에서 고른 그룹을 연결된 회의로 확정합니다(화면에서만, 저장 X) */
-  const confirmPendingLink = (doc: MeetingDoc) => {
+  /** 체크 — 드롭다운에서 고른 회의에 파일을 올리고 목록을 다시 읽습니다. */
+  const confirmPendingLink = async (doc: MeetingDoc) => {
     const groupId = pendingLinkDraft[doc.id];
-    const group = groups.find((g) => g.id === groupId);
-    if (!group) return;
-    setLinkOverrides((prev) => ({ ...prev, [doc.id]: group.name }));
-    setPendingLinkDraft((prev) => {
-      const next = { ...prev };
-      delete next[doc.id];
-      return next;
-    });
+    const pending = pendingUploads.find((item) => item.id === doc.id);
+    if (!groupId || savingPendingId) return;
+    // 파일 없이 회의만 비어 있는 예전 행은 화면에서만 이름을 붙입니다.
+    if (!pending) {
+      const group = groups.find((item) => item.id === groupId);
+      if (!group) return;
+      setLinkOverrides((prev) => ({ ...prev, [doc.id]: group.name }));
+      setPendingLinkDraft((prev) => {
+        const next = { ...prev };
+        delete next[doc.id];
+        return next;
+      });
+      return;
+    }
+
+    setSavingPendingId(doc.id);
+    try {
+      const meta = await uploadMeetingAttachment(pending.file, groupId);
+      const result = await syncMeetingAttachmentsDoc({
+        meetingId: null,
+        groupId,
+        userId: myUserId,
+        files: [{
+          id: crypto.randomUUID(),
+          name: meta.name,
+          path: meta.path,
+          size: meta.size,
+          mime: meta.mime,
+          ts: Date.now(),
+        }],
+      });
+      if (result.error) {
+        alert(result.error);
+        return;
+      }
+      setPendingUploads((prev) => prev.filter((item) => item.id !== doc.id));
+      setPendingLinkDraft((prev) => {
+        const next = { ...prev };
+        delete next[doc.id];
+        return next;
+      });
+      setListVersion((version) => version + 1);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '문서를 올리지 못했습니다.');
+    } finally {
+      setSavingPendingId(null);
+    }
   };
 
-  /** 닫기(×) — 드롭다운에서 고른 값을 버리고 "연결할 회의를 선택하세요" 상태로 되돌립니다 */
+  /** 닫기(×) — 아직 올리지 않은 대기 파일을 목록에서 뺍니다. */
   const cancelPendingLink = (docId: string) => {
+    setPendingUploads((prev) => prev.filter((item) => item.id !== docId));
     setPendingLinkDraft((prev) => {
       const next = { ...prev };
       delete next[docId];
@@ -570,11 +635,43 @@ export default function DocumentList() {
       });
   }, [groups, filteredDocs, query]);
 
-  /** 하단 "문서 N개 · 저장 대기 M개" 요약에 쓰는 저장 대기 문서 수 */
-  const pendingCount = useMemo(
-    () => filteredDocs.filter((doc) => isPendingLink(doc)).length,
-    [filteredDocs, isPendingLink],
+  /** 파일 탐색기에서 고른 파일을 저장 대기 행으로 바꿉니다. 확장자는 아래 형식 줄에만 둡니다. */
+  const pendingDocs = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return pendingUploads
+      .map((item): MeetingDoc => {
+        const dot = item.file.name.lastIndexOf('.');
+        const title = dot > 0 ? item.file.name.slice(0, dot) : item.file.name;
+        return {
+          id: item.id,
+          title,
+          date: item.date,
+          summary: null,
+          group_id: '',
+          group_name: null,
+          created_by: myUserId,
+          creator_ids: myUserId ? [myUserId] : [],
+          attachments: [{
+            id: item.id,
+            name: item.file.name,
+            path: item.id,
+            size: item.file.size,
+            mime: item.file.type || 'application/octet-stream',
+            ts: new Date(item.date).getTime(),
+          }],
+        };
+      })
+      .filter((doc) => !q || (doc.title || '').toLowerCase().includes(q));
+  }, [pendingUploads, query, myUserId]);
+
+  /** 저장 대기 행을 저장된 문서보다 위에 둡니다. */
+  const visibleDocs = useMemo(
+    () => [...pendingDocs, ...filteredDocs],
+    [pendingDocs, filteredDocs],
   );
+
+  /** 하단 "문서 N개 · 저장 대기 M개" 요약에 쓰는 저장 대기 문서 수 */
+  const pendingCount = pendingDocs.length + filteredDocs.filter((doc) => isPendingLink(doc)).length;
 
   /** 문서 한 행 — 「전체/내가 올린 문서」 목록과 「그룹별 문서」의 펼친 그룹 안에서 똑같이 씁니다 */
   const renderDocRow = (doc: MeetingDoc) => {
@@ -605,15 +702,22 @@ export default function DocumentList() {
                 <button
                   type="button"
                   className={styles.titleCell}
-                  onClick={() => { void handleOpen(doc); }}
+                  onClick={() => { if (!pending) void handleOpen(doc); }}
                 >
                   <FileTypeIcon fileName={attachments[0]?.name} className={styles.fileIcon} />
                   <span className={styles.titleText}>
-                    {/* 화이트보드 이름 대신 그 문서가 속한 그룹 이름을 보여 줍니다. */}
-                  <span className={styles.titleName}>{doc.group_name?.trim() || `${formatDocDate(doc.date)} 회의`}</span>
-                    {/* 문서명 아래 "형식 · 크기" — 첨부가 없으면 줄 자체를 안 그립니다 */}
+                    {/* 저장 대기는 올린 파일 이름, 저장된 문서는 그룹 이름을 보여 줍니다. */}
+                    <span className={styles.titleName}>
+                      {pending
+                        ? (doc.title?.trim() || attachments[0]?.name || '문서')
+                        : (doc.group_name?.trim() || `${formatDocDate(doc.date)} 회의`)}
+                    </span>
+                    {/* 문서명 아래 "형식 · 크기". 아직 회의에 넣기 전이면 저장 대기를 붙입니다. */}
                     {fileSummary(attachments) ? (
-                      <span className={styles.fileMeta}>{fileSummary(attachments)}</span>
+                      <span className={styles.fileMeta}>
+                        {fileSummary(attachments)}
+                        {pending ? <span className={styles.pendingMark}> | 저장 대기</span> : null}
+                      </span>
                     ) : null}
                   </span>
                 </button>
@@ -659,9 +763,9 @@ export default function DocumentList() {
                     <button
                       type="button"
                       className={styles.iconButton}
-                      aria-label="연결 저장"
-                      disabled={!pendingLinkDraft[doc.id]}
-                      onClick={() => confirmPendingLink(doc)}
+                      aria-label="선택한 회의에 업로드"
+                      disabled={!pendingLinkDraft[doc.id] || savingPendingId === doc.id}
+                      onClick={() => { void confirmPendingLink(doc); }}
                     >
                       <img src={checkIcon} alt="" />
                     </button>
@@ -812,6 +916,13 @@ export default function DocumentList() {
               />
             </div>
             <div className={styles.toolbarDivider} />
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => { void handleUploadFiles(e.target.files); }}
+            />
             <button type="button" className={styles.uploadButton} onClick={handleCreate}>
               <Icon name="plus" />
               문서 업로드
@@ -821,7 +932,7 @@ export default function DocumentList() {
 
         {loading ? (
           <div>불러오는 중...</div>
-        ) : (activeTab === 'group' ? groupSections.length === 0 : filteredDocs.length === 0) ? (
+        ) : (activeTab === 'group' ? groupSections.length === 0 && pendingDocs.length === 0 : visibleDocs.length === 0) ? (
           // MeetingList와 같은 패턴: 문서가 하나도 없을 땐 목록 카드(헤더 포함)를 아예 안 띄우고
           // 빈 상태 문구만 보여줍니다. (전엔 헤더 행이 .list-card 안에 항상 떠 있어서, 그 행이
           // ":last-child"가 되는 바람에 구분선도 사라지고 화면에 빈 테이블처럼 남아있었습니다.)
@@ -831,7 +942,7 @@ export default function DocumentList() {
                 ? '검색 결과가 없어요.'
                 : '아직 속한 그룹이 없어요.'
               : docs.length === 0
-                ? '아직 문서가 없어요. 회의방에서 파일을 올리면 이 목록에 나타납니다.'
+                ? '아직 문서가 없어요. 문서 업로드로 파일을 올리면 이 목록에 나타납니다.'
               : activeTab === 'mine' && !query.trim()
                 ? '내가 올린 문서가 없어요.'
                 : '검색 결과가 없어요.'}
@@ -866,8 +977,10 @@ export default function DocumentList() {
             </div>
 
             {activeTab === 'group' ? (
-              // 그룹별 문서: 그룹마다 한 행, 오른쪽 화살표를 누르면 그 그룹의 문서가 아래로 펼쳐집니다
-              groupSections.map(({ group, docs: groupDocs, latest }) => {
+              // 저장 대기 파일은 그룹에 넣기 전이라 목록 맨 위에 두고, 그 아래는 그룹마다 한 행입니다.
+              <>
+              {pendingDocs.map((doc) => renderDocRow(doc))}
+              {groupSections.map(({ group, docs: groupDocs, latest }) => {
                 const expanded = expandedGroupIds.has(group.id);
                 const empty = groupDocs.length === 0;
                 return (
@@ -901,15 +1014,16 @@ export default function DocumentList() {
                     ) : null}
                   </div>
                 );
-              })
+              })}
+              </>
             ) : (
-              filteredDocs.map((doc) => renderDocRow(doc))
+              visibleDocs.map((doc) => renderDocRow(doc))
             )}
             </div>
 
             {/* 피그마 디자인의 "문서 N개 · 저장 대기 M개" 하단 요약 — 이 분기는 이미 filteredDocs가 비어있지 않을 때라 항상 보여줍니다 */}
             <div className={styles.listFooter}>
-              {activeTab === 'group' ? `그룹 ${groupSections.length}개 · ` : ''}문서 {filteredDocs.length}개
+              {activeTab === 'group' ? `그룹 ${groupSections.length}개 · ` : ''}문서 {visibleDocs.length}개
               {pendingCount > 0 ? ` · 저장 대기 ${pendingCount}개` : ''}
             </div>
           </div>
