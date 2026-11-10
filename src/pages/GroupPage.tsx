@@ -117,7 +117,8 @@ export default function GroupPage() {
           return;
         }
         try {
-          setMemo(localStorage.getItem(groupMemoKey(id)) ?? '');
+          // 그룹 주소가 있을 때만 이 브라우저에 남겨 둔 메모를 읽습니다. id가 없으면 키가 만들어지지 않습니다.
+          setMemo(id ? (localStorage.getItem(groupMemoKey(id)) ?? '') : '');
         } catch {
           setMemo('');
         }
