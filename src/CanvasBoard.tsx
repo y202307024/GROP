@@ -175,6 +175,8 @@ type Props = {
 export type CanvasBoardHandle = {
   clearBoard: () => void;
   getCanvasElement: () => HTMLCanvasElement | null;
+  /** 지금 보고 있는 화이트보드 이름. 녹화 종료 때 회의 제목으로 씁니다. */
+  getBoardTitle: () => string;
   pickTool: (tool: ExcalidrawTool) => void;
   toggleLibrary: () => void;
   /** 메모 작성 창을 띄웁니다. 추가를 눌러야 보드에 붙습니다. */
@@ -4991,6 +4993,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   useImperativeHandle(ref, () => ({
     clearBoard: () => clearAllRef.current(),
     getCanvasElement: () => canvasRef.current,
+    getBoardTitle: () => boardTitleRef.current.trim(),
     pickTool,
     toggleLibrary: () => setShowLibrary((v) => !v),
     addStickyNote,
@@ -5806,7 +5809,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
               floating
               onSelect={() => {}}
               onTextChange={(text) => setStickyDraft((prev) => (prev ? { ...prev, text } : prev))}
-              onAdd={placeStickyFromDraft}
+              onPin={placeStickyFromDraft}
               onRemove={() => setStickyDraft(null)}
               onMovePointerDown={(e) => e.stopPropagation()}
               onResizePointerDown={(e) => e.stopPropagation()}

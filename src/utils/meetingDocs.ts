@@ -287,16 +287,13 @@ export async function syncMeetingAttachmentsDoc(options: {
       attachPayload = mergeAttachmentLists(prev, files);
     }
 
+    // 제목은 바꾸지 않습니다. 녹화 종료 때 넣은 화이트보드 이름을 날짜로 덮어쓰지 않기 위해서입니다.
     const { error } = await supabase
       .from('meetings')
-      .update({ attachments: attachPayload, title })
+      .update({ attachments: attachPayload })
       .eq('id', meetingId);
     if (error && !/attachments/i.test(error.message)) {
-      const fallback = await supabase
-        .from('meetings')
-        .update({ title })
-        .eq('id', meetingId);
-      if (fallback.error) errors.push(error.message);
+      errors.push(error.message);
     }
   }
 

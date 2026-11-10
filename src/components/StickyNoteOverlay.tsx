@@ -26,7 +26,7 @@ type Props = {
   selected: boolean;
   /** 연 사람만 true. 다른 사람은 글은 보이지만 고치지 못합니다. */
   canEdit?: boolean;
-  /** 아직 보드에 붙기 전 작성 창. 추가를 눌러야 붙습니다. */
+  /** 아직 보드에 붙기 전 작성 창. 고정을 눌러야 붙습니다. */
   draft?: boolean;
   /** 화면 가운데에 띄울 때 보드 좌표를 쓰지 않습니다. */
   floating?: boolean;
@@ -34,8 +34,8 @@ type Props = {
   passThrough?: boolean;
   onSelect: () => void;
   onTextChange: (text: string) => void;
-  /** 작성 창의 추가. 지금 글을 화이트보드에 붙입니다. */
-  onAdd?: () => void;
+  /** 작성 창의 고정. 지금 글을 화이트보드에 붙입니다. */
+  onPin?: () => void;
   onRemove: () => void;
   /** 제목줄을 잡아 옮길 때. 캡처는 호출 쪽에서 합니다. */
   onMovePointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
@@ -46,7 +46,7 @@ type Props = {
 
 /**
  * 회의 보드 위 메모장.
- * 글은 메모를 연 사람만 고치고, 작성 창은 추가를 눌러야 보드에 붙습니다.
+ * 글은 메모를 연 사람만 고치고, 작성 창은 고정을 눌러야 보드에 붙습니다.
  */
 export default function StickyNoteOverlay({
   note,
@@ -57,7 +57,7 @@ export default function StickyNoteOverlay({
   passThrough = false,
   onSelect,
   onTextChange,
-  onAdd,
+  onPin,
   onRemove,
   onMovePointerDown,
   onResizePointerDown,
@@ -102,11 +102,16 @@ export default function StickyNoteOverlay({
         {draft ? (
           <button
             type="button"
-            className={styles.addBtn}
+            className={styles.removeBtn}
+            title="고정"
+            aria-label="고정"
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => onAdd?.()}
+            onClick={() => onPin?.()}
           >
-            추가
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M9 4h6l-1 6 3 3H7l3-3-1-6Z" />
+              <path d="M12 13v7" />
+            </svg>
           </button>
         ) : null}
         <button

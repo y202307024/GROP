@@ -1209,7 +1209,8 @@ export default function Room() {
       await patchLocalRecording(recordingId, {
         status: 'pending_upload',
         meetingId: sessionMeetingIdRef.current,
-        title: recordingTitleFromDate(stored?.date ?? ''),
+        // 날짜 대신, 종료 시점에 열려 있던 화이트보드 이름을 회의 제목으로 둡니다.
+        title: canvasBoardRef.current?.getBoardTitle() || recordingTitleFromDate(stored?.date ?? ''),
         attachments,
         chatLog,
         createdBy,
@@ -1226,7 +1227,7 @@ export default function Room() {
         groupId: gid,
         dateStr,
         mimeType: blob.type || 'video/webm',
-        title: recordingTitleFromDate(dateStr),
+        title: canvasBoardRef.current?.getBoardTitle() || recordingTitleFromDate(dateStr),
         meetingId: sessionMeetingIdRef.current,
         attachments,
         chatLog,
