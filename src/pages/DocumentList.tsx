@@ -601,8 +601,12 @@ export default function DocumentList() {
     try {
       await deleteMeetingFile(file.path);
     } catch (err) {
-      alert(err instanceof Error ? err.message : '파일을 지우지 못했습니다.');
-      return;
+      const message = err instanceof Error ? err.message : '';
+      // 배포 화면은 파일 서버가 없어 404가 납니다. 그때는 회의 기록의 첨부만 지워 목록에서 뺍니다.
+      if (!/\b404\b/.test(message)) {
+        alert(message || '파일을 지우지 못했습니다.');
+        return;
+      }
     }
     const strip = (files: MeetingAttachment[]) => files.filter((item) => item.path !== file.path);
     const targets = docs.filter((doc) => normalizeAttachments(doc.attachments).some((item) => item.path === file.path));
