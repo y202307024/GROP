@@ -5,6 +5,7 @@
  */
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
+import { bearerHeaders } from './authHeader';
 import { addGroupMember } from './joinGroup';
 import { appendMeetingChat, readSessionMeetingId } from './liveMeeting';
 import type { MeetingChatMessage } from './meetingChat';
@@ -94,10 +95,8 @@ function explainVideoSaveError(message: string) {
 }
 
 async function storeVideoFile(input: SaveInput): Promise<StoredVideo> {
-  const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
   // Content-Type은 브라우저가 경계 문자열을 붙여야 해서 여기서 지정하지 않습니다.
-  const headers: Record<string, string> = {};
-  if (uploadToken) headers['x-upload-token'] = uploadToken;
+  const headers = await bearerHeaders();
 
   // 브라우저가 R2로 직접 올리면 전송이 끊깁니다. 파일은 서버가 받아 R2에 넣습니다.
   const form = new FormData();
@@ -115,7 +114,7 @@ async function storeVideoFile(input: SaveInput): Promise<StoredVideo> {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : '네트워크 오류';
-    throw new Error(`녹화본을 서버에 보내지 못했습니다. 서버가 켜져 있는지 확인해 주세요. (${msg})`);
+    throw new Error(`녹화본을 서버에 보내지 못했습니다. 서버가 켜져 있는지 확인해 주세요. (${msg})`, { cause: err });
   }
   if (!uploadRes.ok) {
     const errBody = await uploadRes.json().catch(() => ({}));

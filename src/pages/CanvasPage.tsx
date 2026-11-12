@@ -68,17 +68,17 @@ export default function CanvasPage() {
     let mounted = true;
 
     const init = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
+      const { data: userData, error: authError } = await supabase.auth.getUser();
       if (!mounted) return;
 
-      if (!sessionData.session) {
+      if (authError || !userData.user) {
         alert('캔버스를 사용하려면 로그인이 필요합니다.');
         navigate('/');
         return;
       }
 
       if (groupId) {
-        const userId = sessionData.session.user.id;
+        const userId = userData.user.id;
         setUserId(userId);
         const access = await ensureGroupCanvasAccess(groupId, userId);
 

@@ -27,25 +27,6 @@ export default function TimelapsePage() {
   const [draftTitle, setDraftTitle] = useState('');
   const [loadError, setLoadError] = useState('');
 
-  const loadBoards = async () => {
-    setIsLoadingBoards(true);
-    try {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) {
-        navigate('/');
-        return;
-      }
-
-      const list = await fetchBoards();
-      setBoards(list);
-      if (!boardId && list[0]) setBoardId(list[0].id);
-    } catch (e) {
-      setLoadError(e instanceof Error ? e.message : '보드 불러오기 실패');
-    } finally {
-      setIsLoadingBoards(false);
-    }
-  };
-
   const loadAllSaves = async () => {
     try {
       const rows = await fetchAllTimelapseSaves();
@@ -63,7 +44,6 @@ export default function TimelapsePage() {
       return;
     }
 
-    setIsLoadingSaves(true);
     try {
       const rows = await fetchTimelapseSavesForBoard(targetBoardId);
       setBoardSaves(rows);
@@ -75,14 +55,62 @@ export default function TimelapsePage() {
     }
   };
 
+  const [seenBoardId, setSeenBoardId] = useState(boardId);
+  // 보드를 바꾸면 저장 목록을 다시 읽는 동안 이전 목록을 로딩으로 둡니다.
+  if (boardId !== seenBoardId) {
+    setSeenBoardId(boardId);
+    if (boardId) setIsLoadingSaves(true);
+    else setBoardSaves([]);
+  }
+
   useEffect(() => {
-    void loadBoards();
-    void loadAllSaves();
+    let cancelled = false;
+    void supabase.auth.getUser().then(async ({ data: userData }) => {
+      if (cancelled) return;
+      if (!userData.user) {
+        navigate('/');
+        return;
+      }
+      try {
+        const list = await fetchBoards();
+        if (cancelled) return;
+        setBoards(list);
+        setBoardId((current) => current || list[0]?.id || '');
+      } catch (e) {
+        if (!cancelled) setLoadError(e instanceof Error ? e.message : '보드 불러오기 실패');
+      } finally {
+        if (!cancelled) setIsLoadingBoards(false);
+      }
+    });
+    void fetchAllTimelapseSaves().then((rows) => {
+      if (cancelled) return;
+      setAllSaves(rows);
+      setLoadError('');
+    }).catch((e: unknown) => {
+      if (cancelled) return;
+      setLoadError(e instanceof Error ? e.message : '타임랩스 불러오기 실패');
+      setAllSaves([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // 마운트 때 한 번만 보드와 전체 저장을 읽습니다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    void loadBoardSaves(boardId);
+    if (!boardId) return;
+    let cancelled = false;
+    void fetchTimelapseSavesForBoard(boardId).then((rows) => {
+      if (!cancelled) setBoardSaves(rows);
+    }).catch(() => {
+      if (!cancelled) setBoardSaves([]);
+    }).finally(() => {
+      if (!cancelled) setIsLoadingSaves(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [boardId]);
 
   const otherBoardGroups = useMemo(() => {
@@ -98,6 +126,7 @@ export default function TimelapsePage() {
   }, [allSaves, boardId]);
 
   const refreshAfterChange = async (targetBoardId: string) => {
+    if (targetBoardId) setIsLoadingSaves(true);
     await Promise.all([loadBoardSaves(targetBoardId), loadAllSaves()]);
   };
 

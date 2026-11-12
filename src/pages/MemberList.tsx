@@ -28,30 +28,33 @@ export default function MemberList() {
   const [leaveOpen, setLeaveOpen] = useState(false);
 
   useEffect(() => {
-    fetchMembers();
-  }, [groupId]);
+    let cancelled = false;
+    void supabase.auth.getUser().then(async ({ data: userData }) => {
+      if (cancelled) return;
+      setCurrentUserId(userData.user?.id || '');
 
-  const fetchMembers = async () => {
-    const { data: userData } = await supabase.auth.getUser();
-    setCurrentUserId(userData.user?.id || '');
+      const { data, error } = await supabase.rpc('get_group_members_with_profiles', {
+        p_group_id: groupId,
+      });
+      if (cancelled) return;
+      if (error) {
+        console.error('멤버 조회 실패:', error);
+        setLoading(false);
+        return;
+      }
 
-    const { data, error } = await supabase.rpc('get_group_members_with_profiles', {
-      p_group_id: groupId
-    });
+      setMembers(uniqueMembersByUserId((data || []) as Member[]));
 
-    if (error) {
-      console.error('멤버 조회 실패:', error);
+      // 그룹 삭제 확인(이름 입력)에 쓸 그룹 이름
+      const { data: groupRow } = await supabase.from('groups').select('name').eq('id', groupId).maybeSingle();
+      if (cancelled) return;
+      setGroupName(groupRow?.name ?? '');
       setLoading(false);
-      return;
-    }
-
-    setMembers(uniqueMembersByUserId((data || []) as Member[]));
-
-    // 그룹 삭제 확인(이름 입력)에 쓸 그룹 이름
-    const { data: groupRow } = await supabase.from('groups').select('name').eq('id', groupId).maybeSingle();
-    setGroupName(groupRow?.name ?? '');
-    setLoading(false);
-  };
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [groupId]);
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);

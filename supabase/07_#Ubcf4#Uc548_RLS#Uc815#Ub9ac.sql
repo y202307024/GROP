@@ -13,19 +13,41 @@
 --   원인: groups 에 RLS 를 켜는 구문이 어디에도 없었습니다.
 --
 -- 안전성:
---   앱의 모든 groups/profiles 조회는 로그인 이후에 일어나므로
---   아래 정책으로 바꿔도 화면이 깨지지 않습니다.
+--   그룹·프로필은 멤버만 봅니다. 초대코드 가입은 find_group_by_invite 로 id·이름만 받습니다.
+--   group_id 가 비어 있는 보드는 그대로 두어, 예전 개인 캔버스가 숨지 않습니다.
 --
 -- 실행 후 할 일:
 --   이미 유출된 초대코드 13개는 재발급하세요 (맨 아래 참고).
 -- ═══════════════════════════════════════════════════════════
 
--- ── groups: 익명 차단 ───────────────────────────────────────
+-- ── groups: 멤버(또는 만든 사람)만 조회 ─────────────────────
 alter table public.groups enable row level security;
 
+-- 초대코드로 가입할 때는 그룹 전체를 열지 않고, 맞는 코드의 id·이름만 돌려줍니다.
+create or replace function public.find_group_by_invite(p_code text)
+returns table (id uuid, name text)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select g.id, g.name
+  from public.groups g
+  where g.invite_code = upper(trim(p_code))
+  limit 1;
+$$;
+
+revoke all on function public.find_group_by_invite(text) from public;
+grant execute on function public.find_group_by_invite(text) to authenticated;
+
 drop policy if exists "groups_select_authed" on public.groups;
-create policy "groups_select_authed" on public.groups
-for select to authenticated using (true);
+drop policy if exists "groups_select_member" on public.groups;
+create policy "groups_select_member" on public.groups
+for select to authenticated
+using (
+  created_by = auth.uid()
+  or public.is_group_member(id)
+);
 
 drop policy if exists "groups_insert_own" on public.groups;
 create policy "groups_insert_own" on public.groups
@@ -41,12 +63,37 @@ with check (created_by = auth.uid());
 
 revoke all on public.groups from anon;
 
--- ── profiles: 익명 차단 ─────────────────────────────────────
+-- ── profiles: 본인, 또는 같은 그룹 멤버만 조회 ──────────────
+-- group_members 는 본인 줄만 보이므로, 같은 그룹 여부는 definer 함수로 확인합니다.
+create or replace function public.shares_group_with(p_user_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1
+    from public.group_members mine
+    join public.group_members theirs on theirs.group_id = mine.group_id
+    where mine.user_id = auth.uid()
+      and theirs.user_id = p_user_id
+  );
+$$;
+
+revoke all on function public.shares_group_with(uuid) from public;
+grant execute on function public.shares_group_with(uuid) to authenticated;
+
 alter table public.profiles enable row level security;
 
 drop policy if exists "profiles_read_authed" on public.profiles;
-create policy "profiles_read_authed" on public.profiles
-for select to authenticated using (true);
+drop policy if exists "profiles_read_visible" on public.profiles;
+create policy "profiles_read_visible" on public.profiles
+for select to authenticated
+using (
+  id = auth.uid()
+  or public.shares_group_with(id)
+);
 
 revoke all on public.profiles from anon;
 
@@ -60,28 +107,50 @@ revoke all on public.board_timelapse_saves from anon;
 
 
 -- ═══════════════════════════════════════════════════════════
--- 아래는 아직 적용하지 마세요 (코드 수정이 함께 필요합니다)
+-- 보드: group_id 가 있는 캔버스만 그 그룹 멤버로 제한합니다.
+-- group_id 가 비어 있는 예전·개인 보드는 그대로 두어 화면에서 사라지지 않게 합니다.
 -- ═══════════════════════════════════════════════════════════
--- boards / board_events 를 그룹 단위로 좁히는 정책입니다.
--- 지금은 로그인만 하면 다른 그룹 캔버스도 전부 보입니다.
---
--- 먼저 04_캔버스_보드.sql 로 boards.group_id 를 만들고,
--- 기존 보드에 group_id 를 채워 넣은 뒤에 적용해야
--- 기존 캔버스가 안 보이게 되는 사고를 피할 수 있습니다.
---
--- drop policy if exists "boards_read_authed" on public.boards;
--- create policy "boards_read_member" on public.boards
--- for select to authenticated
--- using (group_id is null or public.is_group_member(group_id));
---
--- drop policy if exists "events_read_authed" on public.board_events;
--- create policy "events_read_member" on public.board_events
--- for select to authenticated
--- using (exists (
---   select 1 from public.boards b
---   where b.id = board_events.board_id
---     and (b.group_id is null or public.is_group_member(b.group_id))
--- ));
+alter table public.boards
+  add column if not exists group_id uuid references public.groups(id) on delete cascade;
+
+drop policy if exists "boards_read_authed" on public.boards;
+drop policy if exists "boards_read_member" on public.boards;
+create policy "boards_read_member" on public.boards
+for select to authenticated
+using (group_id is null or public.is_group_member(group_id));
+
+drop policy if exists "boards_insert_authed" on public.boards;
+drop policy if exists "boards_insert_member" on public.boards;
+create policy "boards_insert_member" on public.boards
+for insert to authenticated
+with check (group_id is null or public.is_group_member(group_id));
+
+drop policy if exists "boards_update_authed" on public.boards;
+drop policy if exists "boards_update_member" on public.boards;
+create policy "boards_update_member" on public.boards
+for update to authenticated
+using (group_id is null or public.is_group_member(group_id))
+with check (group_id is null or public.is_group_member(group_id));
+
+drop policy if exists "events_read_authed" on public.board_events;
+drop policy if exists "events_read_member" on public.board_events;
+create policy "events_read_member" on public.board_events
+for select to authenticated
+using (exists (
+  select 1 from public.boards b
+  where b.id = board_events.board_id
+    and (b.group_id is null or public.is_group_member(b.group_id))
+));
+
+drop policy if exists "events_insert_authed" on public.board_events;
+drop policy if exists "events_insert_member" on public.board_events;
+create policy "events_insert_member" on public.board_events
+for insert to authenticated
+with check (exists (
+  select 1 from public.boards b
+  where b.id = board_events.board_id
+    and (b.group_id is null or public.is_group_member(b.group_id))
+));
 
 
 -- ═══════════════════════════════════════════════════════════

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
+import { signedInUserId } from '../utils/authHeader';
 import Icon from './Icon';
 import {
   fetchMyNotifications,
@@ -22,7 +23,10 @@ export default function NotificationBell() {
   const [items, setItems] = useState<AppNotification[]>([]);
   const [userId, setUserId] = useState('');
 
-  openRef.current = open;
+  // 알림이 들어오는 순간에 드롭다운이 열려 있는지 판단합니다. 렌더 중에 ref를 바꾸지 않습니다.
+  useLayoutEffect(() => {
+    openRef.current = open;
+  }, [open]);
   const unread = items.filter((n) => !n.read).length;
 
   const load = async () => {
@@ -32,11 +36,11 @@ export default function NotificationBell() {
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getUser().then(({ data }) => {
-      if (!mounted || !data.user) return;
-      setUserId(data.user.id);
+    // 로그인 전에는 알림을 조회하지 않습니다. 세션이 생긴 뒤에만 목록을 가져옵니다.
+    void signedInUserId().then((id) => {
+      if (!mounted || !id) return;
+      setUserId(id);
     });
-    void load();
     return () => {
       mounted = false;
     };
@@ -44,6 +48,10 @@ export default function NotificationBell() {
 
   useEffect(() => {
     if (!userId) return;
+    let cancelled = false;
+    void fetchMyNotifications().then((list) => {
+      if (!cancelled) setItems(list);
+    });
 
     const applyIncoming = (row: AppNotification) => {
       if (row.user_id && row.user_id !== userId) return;
@@ -83,6 +91,7 @@ export default function NotificationBell() {
     }, 4000);
 
     return () => {
+      cancelled = true;
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onFocus);
       window.clearInterval(poll);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { createScaledPortal } from './AppScaleLayer';
 import { supabase } from '../services/supabaseClient';
 import { getAvatarSrc } from '../utils/avatarOptions';
@@ -51,17 +51,20 @@ export default function LeaveGroupModal({
   const [typedName, setTypedName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-
-  // 열 때마다 처음 단계로 되돌립니다(이전에 입력한 그룹 이름이 남아 있으면 안 되므로)
-  useEffect(() => {
-    if (!open) return;
-    setStep(firstStep);
-    setChoice('delegate');
-    setNewLeaderId('');
-    setTypedName('');
-    setBusy(false);
-    setError('');
-  }, [open, firstStep]);
+  // 열릴 때마다 처음 단계로 되돌립니다. 이전에 입력한 그룹 이름이 남지 않게 합니다.
+  const resetKey = open ? firstStep : '';
+  const [appliedResetKey, setAppliedResetKey] = useState(resetKey);
+  if (resetKey !== appliedResetKey) {
+    setAppliedResetKey(resetKey);
+    if (open) {
+      setStep(firstStep);
+      setChoice('delegate');
+      setNewLeaderId('');
+      setTypedName('');
+      setBusy(false);
+      setError('');
+    }
+  }
 
   if (!open) return null;
 

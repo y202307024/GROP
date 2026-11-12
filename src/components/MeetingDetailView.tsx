@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Icon from './Icon';
 import styles from './MeetingDetailView.module.css';
 import a from './MeetingDetailAi.module.css';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
+import { bearerHeaders } from '../utils/authHeader';
 import { appendMeetingChat, chatLogForSummary, collectSameDayChat } from '../utils/liveMeeting';
 import { realChatMessages } from '../utils/meetingChat';
 import {
@@ -469,89 +470,32 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
   const [duration, setDuration] = useState(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const seekPrimedRef = useRef(false);
+  // 회의가 바뀌면 이전 조회 결과는 버리기 위해 세대 번호를 올립니다.
+  const fetchGen = useRef(0);
 
   const activeIndex = findActiveChapterIndex(chapters, currentTime);
-
-  useEffect(() => {
-    // 회의가 바뀌면 이전 회의 상태가 남지 않도록 초기화하고 다시 불러옵니다.
-    seekPrimedRef.current = false;
+  const [seenMeetingId, setSeenMeetingId] = useState(meetingId);
+  // 회의가 바뀌면 이전 회의의 재생·요약 편집 상태를 비웁니다.
+  if (meetingId !== seenMeetingId) {
+    setSeenMeetingId(meetingId);
     setEditingSummary(false);
     setCurrentTime(0);
     setDuration(0);
-    setLoading(true);
-    fetchMeeting();
-  }, [meetingId]);
-
-  useEffect(() => {
-    const groupId = meeting?.group_id;
-    if (!groupId) {
-      setGroupName('');
-      return;
-    }
-    let cancelled = false;
-    void supabase
-      .from('groups')
-      .select('name')
-      .eq('id', groupId)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (!cancelled) setGroupName(data?.name?.trim() || '—');
-      });
-    return () => { cancelled = true; };
-  }, [meeting?.group_id]);
-
-  useEffect(() => {
-    const groupId = meeting?.group_id;
-    if (!groupId || !meeting) {
-      setNicknames([]);
-      return;
-    }
-    let cancelled = false;
-    // 팀원 목록과 같은 프로필 닉네임을 가져옵니다. 본인 행만 보이는 테이블을 직접 읽지 않습니다.
-    void supabase.rpc('get_group_members_with_profiles', { p_group_id: groupId }).then(({ data }) => {
-      if (cancelled) return;
-      const byId = new Map<string, string>();
-      for (const row of (data as { user_id?: string; nickname?: string }[]) || []) {
-        const nick = row.nickname?.trim();
-        if (row.user_id && nick) byId.set(row.user_id, nick);
-      }
-      setNicknames(nicknamesForMeeting(meeting, byId));
-    });
-    return () => { cancelled = true; };
-  }, [meeting]);
-
-  useEffect(() => {
-    const videoKey = meeting?.video_key?.trim() || '';
-    const videoUrl = meeting?.video_url?.trim() || '';
-    // R2 키가 있으면 재생 주소를 다시 받고, 없으면 예전 /videos 경로를 그대로 씁니다.
-    if (!videoKey && !videoUrl) {
-      setPlaybackUrl(null);
-      setPlaybackError('');
-      return;
-    }
-    let mounted = true;
-    void resolveMeetingVideoUrl(videoUrl, videoKey).then((url) => {
-      if (!mounted) return;
-      setPlaybackUrl(url || null);
-      setPlaybackError(url ? '' : '녹화 파일을 불러올 수 없습니다.');
-    }).catch((err: unknown) => {
-      if (!mounted) return;
-      setPlaybackError(err instanceof Error ? err.message : '녹화 파일을 불러올 수 없습니다.');
-    });
-    return () => { mounted = false; };
-  }, [meeting?.video_url, meeting?.video_key]);
-
-  const fetchGen = useRef(0);
-  const fetchMeeting = async () => {
-    // 선택된 회의가 없으면(id가 null) 서버 조회 없이 바로 빈 상태로 둡니다.
-    const gen = ++fetchGen.current;
     if (!meetingId) {
       setMeeting(null);
       setSummaryInput('');
       setChapters([]);
       setLoading(false);
-      return;
+    } else {
+      setLoading(true);
     }
+  }
+
+  // effect보다 위에 둡니다. 아래에서 선언하면 회의가 바뀔 때 이 조회를 따라가지 못한다고 린트가 봅니다.
+  const fetchMeeting = useCallback(async () => {
+    // 선택된 회의가 없으면 렌더에서 이미 빈 상태로 맞춰 둡니다.
+    const gen = ++fetchGen.current;
+    if (!meetingId) return;
     const { data } = await supabase
       .from('meetings')
       .select('*')
@@ -579,7 +523,87 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       setMeeting(null);
     }
     setLoading(false);
-  };
+  }, [meetingId]);
+
+  useEffect(() => {
+    // 회의가 바뀌면 이전 조회 결과는 세대 번호로 버리고 다시 불러옵니다.
+    seekPrimedRef.current = false;
+    if (!meetingId) return;
+    void fetchMeeting();
+  }, [meetingId, fetchMeeting]);
+
+  const detailGroupId = meeting?.group_id ?? '';
+  const [seenDetailGroupId, setSeenDetailGroupId] = useState(detailGroupId);
+  if (detailGroupId !== seenDetailGroupId) {
+    setSeenDetailGroupId(detailGroupId);
+    if (!detailGroupId) setGroupName('');
+  }
+
+  useEffect(() => {
+    if (!detailGroupId) return;
+    let cancelled = false;
+    void supabase
+      .from('groups')
+      .select('name')
+      .eq('id', detailGroupId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setGroupName(data?.name?.trim() || '—');
+      });
+    return () => { cancelled = true; };
+  }, [detailGroupId]);
+
+  const canLoadNicknames = Boolean(meeting?.group_id);
+  const [seenNicknameGate, setSeenNicknameGate] = useState(canLoadNicknames);
+  if (canLoadNicknames !== seenNicknameGate) {
+    setSeenNicknameGate(canLoadNicknames);
+    if (!canLoadNicknames) setNicknames([]);
+  }
+
+  useEffect(() => {
+    const groupId = meeting?.group_id;
+    if (!groupId || !meeting) return;
+    let cancelled = false;
+    // 팀원 목록과 같은 프로필 닉네임을 가져옵니다. 본인 행만 보이는 테이블을 직접 읽지 않습니다.
+    void supabase.rpc('get_group_members_with_profiles', { p_group_id: groupId }).then(({ data }) => {
+      if (cancelled) return;
+      const byId = new Map<string, string>();
+      for (const row of (data as { user_id?: string; nickname?: string }[]) || []) {
+        const nick = row.nickname?.trim();
+        if (row.user_id && nick) byId.set(row.user_id, nick);
+      }
+      setNicknames(nicknamesForMeeting(meeting, byId));
+    });
+    return () => { cancelled = true; };
+  }, [meeting]);
+
+  const videoKey = meeting?.video_key?.trim() || '';
+  const videoUrl = meeting?.video_url?.trim() || '';
+  const videoSource = `${videoKey}\0${videoUrl}`;
+  const [seenVideoSource, setSeenVideoSource] = useState(videoSource);
+  // 영상이 없는 회의로 바뀌면 재생 주소를 비웁니다.
+  if (videoSource !== seenVideoSource) {
+    setSeenVideoSource(videoSource);
+    if (!videoKey && !videoUrl) {
+      setPlaybackUrl(null);
+      setPlaybackError('');
+    }
+  }
+
+  useEffect(() => {
+    // R2 키가 있으면 재생 주소를 다시 받고, 없으면 디스크 경로로 짧은 주소를 받습니다.
+    if (!videoKey && !videoUrl) return;
+    let mounted = true;
+    void resolveMeetingVideoUrl(videoUrl, videoKey).then((url) => {
+      if (!mounted) return;
+      setPlaybackUrl(url || null);
+      setPlaybackError(url ? '' : '녹화 파일을 불러올 수 없습니다.');
+    }).catch((err: unknown) => {
+      if (!mounted) return;
+      setPlaybackError(err instanceof Error ? err.message : '녹화 파일을 불러올 수 없습니다.');
+    });
+    return () => { mounted = false; };
+  }, [videoKey, videoUrl]);
 
   /** 용량 옆 제거. 이 회의 탭(요약·영상·기록)을 통째로 지우고 목록으로 돌아갑니다. */
   const removeRecording = async () => {
@@ -698,7 +722,7 @@ export default function MeetingDetailView({ meetingId, onBack, backLabel = '회�
       const videoKey = meeting.video_key?.trim();
       const res = await fetch(`${getApiBase()}/api/summarize`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await bearerHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           ...(videoKey ? { videoKey } : { videoUrl: meeting.video_url }),
           chatLog: chatLogForSummary(meeting.chat_log),

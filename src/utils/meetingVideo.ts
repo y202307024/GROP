@@ -1,5 +1,7 @@
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
+import { bearerHeaders } from './authHeader';
+import { issueSignedMediaUrl } from './signedMediaUrl';
 
 /** 바이트를 B/KB/MB/GB로 짧게 바꿉니다. 그룹 저장 공간과 회의 영상 용량이 같은 표기를 씁니다. */
 export function formatStorageBytes(bytes: number) {
@@ -96,13 +98,12 @@ function rememberHiddenMeeting(id: string) {
 
 /** 로그인 세션으로 서버에 행 삭제를 맡깁니다. 브라우저 삭제 권한이 없을 때의 경로입니다. */
 async function deleteMeetingOnServer(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
-  if (!token) return { ok: false, error: '로그인이 필요합니다.' };
+  const headers = await bearerHeaders();
+  if (!headers.Authorization) return { ok: false, error: '로그인이 필요합니다.' };
   try {
     const res = await fetch(`${getApiBase()}/api/meetings/record/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
+      headers,
     });
     if (res.ok) return { ok: true };
     if (res.status === 404) return { ok: false, error: '회의 삭제 서버가 아직 없습니다.' };
@@ -182,9 +183,7 @@ export async function deleteStoredMeetingVideo(meeting: {
   const path = meeting.video_url?.trim() || '';
   if (!key && !path) return { ok: false, error: '지울 녹화 영상이 없습니다.' };
 
-  const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
-  const headers: Record<string, string> = {};
-  if (uploadToken) headers['x-upload-token'] = uploadToken;
+  const headers = await bearerHeaders();
   const params = new URLSearchParams();
   if (key) params.set('key', key);
   if (path) params.set('path', path);
@@ -222,8 +221,8 @@ export async function deleteStoredMeetingVideo(meeting: {
 
 /**
  * 재생 주소.
- * video_key(R2)가 있으면 서버가 1시간짜리 주소를 발급합니다.
- * 없으면 예전 video_url(/videos/...)을 서버 디스크 재생 주소로 바꿉니다.
+ * video_key(R2)가 있으면 서버가 그룹 멤버에게 4시간짜리 주소를 발급합니다.
+ * 없으면 예전 video_url 경로로 디스크용 짧은 주소를 받습니다.
  */
 export async function resolveMeetingVideoUrl(
   videoUrl: string | null | undefined,
@@ -231,7 +230,9 @@ export async function resolveMeetingVideoUrl(
 ): Promise<string> {
   const key = videoKey?.trim();
   if (key) {
-    const res = await fetch(`${getApiBase()}/api/meetings/video-url?key=${encodeURIComponent(key)}`);
+    const res = await fetch(`${getApiBase()}/api/meetings/video-url?key=${encodeURIComponent(key)}`, {
+      headers: await bearerHeaders(),
+    });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
       const message = (errBody as { error?: string }).error || `재생 주소를 받지 못했습니다 (${res.status})`;
@@ -247,10 +248,10 @@ export async function resolveMeetingVideoUrl(
 }
 
 /**
- * DB의 video_url → 서버 컴퓨터에서 재생하는 주소
+ * DB의 video_url → 이 서버 디스크의 짧은 재생 주소.
  * 예전 영상은 Storage가 아니라 서버 디스크에 있으므로 Supabase Storage는 호출하지 않습니다.
  */
-function resolveLegacyMeetingVideoUrl(videoUrl: string): string {
+async function resolveLegacyMeetingVideoUrl(videoUrl: string): Promise<string> {
   let path = videoUrl.trim();
   if (!path) return videoUrl;
 
@@ -268,9 +269,8 @@ function resolveLegacyMeetingVideoUrl(videoUrl: string): string {
   }
 
   if (path.endsWith('.url.txt')) path = path.slice(0, -'.url.txt'.length);
-
-  // DB에 localhost가 들어 있어도, 호스트는 VITE_API_URL(서버 PC)로 붙입니다.
-  return `${getApiBase()}/videos/${path}`;
+  const issued = await issueSignedMediaUrl('video', path);
+  return issued.url;
 }
 
 export function pickMeetingRecorderMimeType(hasVideo: boolean, hasAudio = true): string {

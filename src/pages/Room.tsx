@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type RefObject } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { RoomEvent } from 'livekit-client';
 import {
@@ -17,6 +17,7 @@ import MeetingDrawingTools, { type MeetingDrawAction } from '../components/Meeti
 import type { ExcalidrawTool } from '../components/ExcalidrawToolbar';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from '../utils/apiBase';
+import { bearerHeaders } from '../utils/authHeader';
 import {
   MEETING_FILE_TOPIC,
   decodeMeetingSharedFile,
@@ -194,6 +195,12 @@ function RoomTopHeader({
   const room = useRoomContext();
   // 화면에 보이는 시간은 회의 입장 시각이 아니라 녹화 길이입니다. 녹화 전에는 0초에 멈춥니다.
   const [recordingElapsed, setRecordingElapsed] = useState(0);
+  const [seenRecording, setSeenRecording] = useState(isRecording);
+  // 녹화를 켜거나 끄면 화면 시간을 0부터 다시 셉니다.
+  if (isRecording !== seenRecording) {
+    setSeenRecording(isRecording);
+    setRecordingElapsed(0);
+  }
 
   useEffect(() => {
     // 화면 시계와는 별개로, 회의 기록에 남길 입장 시각을 참가자끼리 맞춥니다.
@@ -260,14 +267,11 @@ function RoomTopHeader({
 
   useEffect(() => {
     // 녹화 버튼을 누르기 전에는 시간을 올리지 않습니다. 누르면 그 시점부터 1초씩 셉니다.
-    if (!isRecording) {
-      setRecordingElapsed(0);
-      return;
-    }
+    if (!isRecording) return;
     const started = Date.now();
-    const tick = () => setRecordingElapsed(Math.floor((Date.now() - started) / 1000));
-    tick();
-    const id = window.setInterval(tick, 1000);
+    const id = window.setInterval(() => {
+      setRecordingElapsed(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
     return () => window.clearInterval(id);
   }, [isRecording]);
 
@@ -289,7 +293,10 @@ function RoomTopHeader({
 /** 지금 방에 있는 사람 수. 로컬 참가자도 포함하므로 1이면 혼자 남은 것입니다. */
 function ParticipantCountTracker({ countRef }: { countRef: RefObject<number> }) {
   const participants = useParticipants();
-  countRef.current = participants.length;
+  // 렌더 중에 ref를 쓰지 않습니다. 화면이 반영된 뒤에 넣어야 버려진 렌더가 인원 수를 남기지 않습니다.
+  useLayoutEffect(() => {
+    countRef.current = participants.length;
+  }, [countRef, participants.length]);
   return null;
 }
 
@@ -449,9 +456,12 @@ function RecordingDataSync({
   const onRemoteStartRef = useRef(onRemoteStart);
   const onRemoteStopRef = useRef(onRemoteStop);
   const onResumeRef = useRef(onResume);
-  onRemoteStartRef.current = onRemoteStart;
-  onRemoteStopRef.current = onRemoteStop;
-  onResumeRef.current = onResume;
+  // 구독 effect와 분리합니다. 콜백만 바뀌면 ref만 갱신하고 LiveKit 구독은 다시 걸지 않습니다.
+  useLayoutEffect(() => {
+    onRemoteStartRef.current = onRemoteStart;
+    onRemoteStopRef.current = onRemoteStop;
+    onResumeRef.current = onResume;
+  }, [onRemoteStart, onRemoteStop, onResume]);
 
   useEffect(() => {
     const publish = (type: 'recording:start' | 'recording:query', to?: string) => (
@@ -679,17 +689,6 @@ function RoomContent({
       });
   };
 
-  useEffect(() => {
-    const handler = (payload: Uint8Array, _p?: unknown, _k?: unknown, topic?: string) => {
-      if (topic && topic !== MEETING_FILE_TOPIC) return;
-      const file = decodeMeetingSharedFile(payload);
-      if (!file) return;
-      appendSharedFileRef.current(file, false);
-    };
-    room.on(RoomEvent.DataReceived, handler);
-    return () => { room.off(RoomEvent.DataReceived, handler); };
-  }, [room]);
-
   const appendSharedFileRef = useRef<(file: MeetingSharedFile, broadcast: boolean) => void>(() => {});
 
   const appendSharedFile = (file: MeetingSharedFile, broadcast: boolean) => {
@@ -708,7 +707,21 @@ function RoomContent({
       });
     }
   };
-  appendSharedFileRef.current = appendSharedFile;
+  // 수신 구독보다 앞에서 ref를 바꿉니다. 구독은 room이 바뀔 때만 다시 겁니다.
+  useLayoutEffect(() => {
+    appendSharedFileRef.current = appendSharedFile;
+  }, [appendSharedFile]);
+
+  useEffect(() => {
+    const handler = (payload: Uint8Array, _p?: unknown, _k?: unknown, topic?: string) => {
+      if (topic && topic !== MEETING_FILE_TOPIC) return;
+      const file = decodeMeetingSharedFile(payload);
+      if (!file) return;
+      appendSharedFileRef.current(file, false);
+    };
+    room.on(RoomEvent.DataReceived, handler);
+    return () => { room.off(RoomEvent.DataReceived, handler); };
+  }, [room]);
 
   const handleUploadAttachment = async (file: File) => {
     setUploadingAttachment(true);
@@ -1008,8 +1021,11 @@ export default function Room() {
     groupIdRef.current = id;
   }, [id]);
 
-  userIdRef.current = userId;
-  groupNameRef.current = groupName;
+  // 탭을 닫는 스냅샷이 이 effect보다 늦게 읽으므로, 페인트 전에 ref를 맞춰 둡니다.
+  useLayoutEffect(() => {
+    userIdRef.current = userId;
+    groupNameRef.current = groupName;
+  }, [userId, groupName]);
 
   // 탭이 꺼지기 직전에 회의 행·채팅을 보관분에 남깁니다. 상태는 recording이라 다음 입장에서 업로드를 물어봅니다.
   useEffect(() => {
@@ -1338,7 +1354,7 @@ export default function Room() {
 
         const res = await fetch(`${getApiBase()}/api/livekit-token`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: await bearerHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ roomName: id, userName: name, userId: userData.user.id }),
         });
 

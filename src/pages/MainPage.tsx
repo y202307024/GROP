@@ -10,7 +10,7 @@ import AppShell from '../components/AppShell';
 import { createScaledPortal } from '../components/AppScaleLayer';
 import GroupModal from '../components/GroupModal';
 import Icon from '../components/Icon';
-import { loadGroupFaceIndex, meetingAttendeeCount } from '../components/MeetingAttendeeFaces';
+import { loadGroupFaceIndex, meetingAttendeeCount } from '../utils/meetingAttendees';
 import { liveHeadcount, liveRoomForMeeting, useLiveRooms } from '../utils/liveMeeting';
 import { isListedMeeting, isRecordedMeeting } from '../utils/meetingVideo';
 import { fetchGroupChatFiles, fetchGroupMeetingDocs, fetchMeetingDocAttachments, isSameLocalDay, localDayKey } from '../utils/meetingDocs';
@@ -240,7 +240,7 @@ function formatMeetingDate(dateStr: string) {
 
 /**
  * 메인 대시보드
- * grop/js/main.js 의 메인 HTML 구조를 그대로 쓰고, 그룹/회의 데이터만 실제 DB에서 채웁니다.
+ * 화면 구조는 grop/css/main.css 전역 클래스를 쓰고, 그룹/회의 데이터만 실제 DB에서 채웁니다.
  */
 export default function MainPage() {
   const navigate = useNavigate();
@@ -294,23 +294,7 @@ export default function MainPage() {
     return () => { stop = true; };
   }, [liveRooms, meetings]);
 
-  useEffect(() => {
-    const init = async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) { navigate('/'); return; }
-      setUserId(userData.user.id);
-      await fetchGroups(userData.user.id);
-      setLoaded(true);
-    };
-    init();
-  }, []);
-
-  useEffect(() => {
-    if (!userId) return;
-    const timer = window.setInterval(() => { void fetchGroups(userId); }, 5000);
-    return () => window.clearInterval(timer);
-  }, [userId]);
-
+  // effect보다 위에 둡니다. 아래에서 선언하면 5초 갱신이 함수 변경을 따라가지 못한다고 린트가 봅니다.
   const fetchGroups = async (uid: string) => {
     const { data } = await supabase
       .from('group_members')
@@ -386,6 +370,23 @@ export default function MainPage() {
     }
     setGroupStats(stats);
   };
+
+  useEffect(() => {
+    const init = async () => {
+      const { data: userData } = await supabase.auth.getUser();
+      if (!userData.user) { navigate('/'); return; }
+      setUserId(userData.user.id);
+      await fetchGroups(userData.user.id);
+      setLoaded(true);
+    };
+    init();
+  }, []);
+
+  useEffect(() => {
+    if (!userId) return;
+    const timer = window.setInterval(() => { void fetchGroups(userId); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [userId]);
 
   const createGroup = async () => {
     if (!groupName.trim()) return;

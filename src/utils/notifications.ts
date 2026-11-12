@@ -1,4 +1,5 @@
 import { supabase } from '../services/supabaseClient';
+import { signedInUserId } from './authHeader';
 
 export type NoticeType =
   | 'document_update'
@@ -44,6 +45,8 @@ export async function fetchDisplayNickname(userId: string, groupId?: string | nu
 }
 
 export async function fetchMyNotifications(limit = 40): Promise<AppNotification[]> {
+  // 로그아웃 상태의 조회는 RLS에 막혀 경고로 남습니다. 세션이 없으면 요청 자체를 하지 않습니다.
+  if (!(await signedInUserId())) return [];
   const { data, error } = await supabase
     .from('notifications')
     .select('id, user_id, group_id, actor_id, type, title, body, link, read, created_at')

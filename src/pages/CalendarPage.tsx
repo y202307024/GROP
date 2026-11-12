@@ -232,8 +232,8 @@ export default function CalendarPage() {
     let mounted = true;
 
     const load = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
+      const { data: userData, error: authError } = await supabase.auth.getUser();
+      if (authError || !userData.user) {
         navigate('/');
         return;
       }
@@ -241,7 +241,7 @@ export default function CalendarPage() {
       const { data: memberRows } = await supabase
         .from('group_members')
         .select('group_id')
-        .eq('user_id', sessionData.session.user.id);
+        .eq('user_id', userData.user.id);
 
       const ids = [...new Set((memberRows ?? []).map((row) => row.group_id).filter(Boolean))];
       if (!mounted) return;

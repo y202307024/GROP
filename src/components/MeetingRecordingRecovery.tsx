@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../services/supabaseClient';
+import { signedInUserId } from '../utils/authHeader';
 import {
   countRecordingChunks,
   deleteLocalRecording,
@@ -33,7 +34,7 @@ function ownsRecording(record: LocalRecording, userId: string) {
 }
 
 async function loadBannerItems(): Promise<BannerItem[]> {
-  let records: LocalRecording[] = [];
+  let records: LocalRecording[];
   try {
     records = await listLocalRecordings();
   } catch (err) {
@@ -64,11 +65,11 @@ async function loadBannerItems(): Promise<BannerItem[]> {
  * 녹화 중에 끊긴 조각은 올리기 전에 한 번 물어봅니다.
  */
 async function runRecoveryPass() {
-  const { data } = await supabase.auth.getUser();
-  const userId = data.user?.id;
+  // 로그인 전에는 복구를 시도하지 않습니다. 세션 없음은 업로드 실패가 아닙니다.
+  const userId = await signedInUserId();
   if (!userId) return;
 
-  let records: LocalRecording[] = [];
+  let records: LocalRecording[];
   try {
     records = await listLocalRecordings();
   } catch (err) {
@@ -81,7 +82,7 @@ async function runRecoveryPass() {
     if (isActiveRecording(record.id) || !ownsRecording(record, userId)) continue;
     if (promptedIds.has(record.id) || declinedIds.has(record.id)) continue;
 
-    let count = 0;
+    let count: number;
     try {
       count = await countRecordingChunks(record.id);
     } catch {
@@ -105,7 +106,7 @@ async function runRecoveryPass() {
     }
   }
 
-  let pending: LocalRecording[] = [];
+  let pending: LocalRecording[];
   try {
     pending = await listLocalRecordings();
   } catch {

@@ -1,5 +1,6 @@
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
+import { bearerHeaders } from './authHeader';
 import { preferDisplayName, type MeetingSharedFile } from './meetingChat';
 import { notifyDocumentUpload } from './notifications';
 
@@ -20,9 +21,8 @@ function meetingTitleFromNow(now = new Date()) {
   return `${now.getFullYear()}년 ${now.getMonth() + 1}월 ${now.getDate()}일 회의`;
 }
 
-function uploadHeaders(): HeadersInit | undefined {
-  const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
-  return uploadToken ? { 'x-upload-token': uploadToken, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+async function uploadHeaders() {
+  return bearerHeaders({ 'Content-Type': 'application/json' });
 }
 
 /** 서버 디스크에 회의 첨부 목록을 저장합니다. (DB 컬럼 없이도 문서 탭에서 조회 가능) */
@@ -36,7 +36,7 @@ export async function saveMeetingDocToServer(options: {
   try {
     const res = await fetch(`${getApiBase()}/api/meeting-docs/${encodeURIComponent(options.meetingId)}`, {
       method: 'PUT',
-      headers: uploadHeaders(),
+      headers: await uploadHeaders(),
       body: JSON.stringify({
         groupId: options.groupId,
         title: options.title,
@@ -61,7 +61,9 @@ export async function fetchMeetingDocAttachments(
 ): Promise<ReturnType<typeof toMeetingAttachments>> {
   const qs = groupId ? `?groupId=${encodeURIComponent(groupId)}` : '';
   try {
-    const res = await fetch(`${getApiBase()}/api/meeting-docs/${encodeURIComponent(meetingId)}${qs}`);
+    const res = await fetch(`${getApiBase()}/api/meeting-docs/${encodeURIComponent(meetingId)}${qs}`, {
+      headers: await bearerHeaders(),
+    });
     if (!res.ok) return [];
     const data = (await res.json()) as { files?: unknown };
     if (!Array.isArray(data.files)) return [];
@@ -91,7 +93,9 @@ export async function fetchGroupMeetingDocs(groupId: string): Promise<Array<{
   files: ReturnType<typeof toMeetingAttachments>;
 }>> {
   try {
-    const res = await fetch(`${getApiBase()}/api/meeting-docs?groupId=${encodeURIComponent(groupId)}`);
+    const res = await fetch(`${getApiBase()}/api/meeting-docs?groupId=${encodeURIComponent(groupId)}`, {
+      headers: await bearerHeaders(),
+    });
     if (!res.ok) return [];
     const data = (await res.json()) as unknown;
     if (!Array.isArray(data)) return [];
@@ -125,7 +129,9 @@ export async function fetchGroupMeetingDocs(groupId: string): Promise<Array<{
 export async function fetchGroupChatFiles(groupId: string): Promise<ReturnType<typeof toMeetingAttachments>> {
   if (!groupId) return [];
   try {
-    const res = await fetch(`${getApiBase()}/api/chat-files?groupId=${encodeURIComponent(groupId)}`);
+    const res = await fetch(`${getApiBase()}/api/chat-files?groupId=${encodeURIComponent(groupId)}`, {
+      headers: await bearerHeaders(),
+    });
     if (!res.ok) return [];
     const data = (await res.json()) as unknown;
     if (!Array.isArray(data)) return [];

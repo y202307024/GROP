@@ -69,15 +69,15 @@ export default function AiMeetingList() {
   useEffect(() => {
     let mounted = true;
     const load = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
+      const { data: userData, error: authError } = await supabase.auth.getUser();
+      if (authError || !userData.user) {
         navigate('/');
         return;
       }
       const { data: memberRows } = await supabase
         .from('group_members')
         .select('group_id, joined_at')
-        .eq('user_id', sessionData.session.user.id)
+        .eq('user_id', userData.user.id)
         .order('joined_at', { ascending: true });
       const ids = [...new Set((memberRows ?? []).map((r) => r.group_id).filter(Boolean))] as string[];
       if (ids.length === 0) {

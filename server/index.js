@@ -9,12 +9,14 @@ const { execFile } = require('child_process')
 // node-fetch dynamic import
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args))
 
+const crypto = require('crypto')
 const os = require('os')
 const path = require('path')
 const { pipeline } = require('stream/promises')
 const { S3Client, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand } = require('@aws-sdk/client-s3')
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner')
 const { startOauthFallback, rememberOauthOrigin, getOauthOrigin } = require('./oauthFallback')
+const { LOG_FILE, requestLogger } = require('./requestLog')
 // AI 요약(오디오 추출 → Whisper → LLM)은 server/aiSummary.js 가 담당합니다.
 const { getChatModel, getTranscribeModel, summarizeMeeting, summaryErrorMessage } = require('./aiSummary')
 dotenv.config({ path: path.resolve(__dirname, '../.env') })
@@ -22,6 +24,8 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') })
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '50mb' }))
+// 토큰은 기록하지 않고, 누가 어떤 주소를 호출했는지만 콘솔과 server/logs/access.log 에 남깁니다.
+app.use(requestLogger)
 
 
 // ─────────────────────────────────────────────────────────────
@@ -104,20 +108,59 @@ function resolveMeetingVideoFile(videoUrl) {
   return findMeetingVideoByBasename(path.basename(rel))
 }
 
-// 업로드 엔드포인트를 아무나 두드릴 수 없도록 최소한의 토큰 체크를 둡니다.
-// .env 에 MEETING_UPLOAD_TOKEN 을 설정하면 활성화되고, 없으면 검사를 생략합니다.
-function checkUploadToken(req, res, next) {
-  const required = process.env.MEETING_UPLOAD_TOKEN
-  if (!required) return next()
-  if (req.header('x-upload-token') !== required) {
-    return res.status(401).json({ error: '업로드 권한이 없습니다' })
-  }
-  next()
+const USER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+/** 로그인 확인에 필요한 Supabase 주소와 anon 키. 서비스 롤 키는 여기서 쓰지 않습니다. */
+function supabaseAuthConfig() {
+  const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
+  const anon = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
+  if (!url || !anon) return null
+  return { url, anon }
 }
 
-// 브라우저가 R2로 직접 올리는 주소는 15분, 재생 주소는 1시간만 유효합니다.
+/**
+ * 이 PC에서 온 TCP 연결인지.
+ * X-Forwarded-For 같은 헤더는 호출자가 적을 수 있어 소켓 주소만 봅니다.
+ */
+function isLoopback(req) {
+  const addr = req.socket?.remoteAddress || ''
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1'
+}
+
+/**
+ * Authorization Bearer 를 Supabase /auth/v1/user 로 확인합니다.
+ * 브라우저에 적어 둔 값만으로는 통과하지 못하고, 확인된 사용자 id 는 req.authUser 에 붙입니다.
+ */
+async function requireUser(req, res, next) {
+  const token = String(req.header('authorization') || '').replace(/^Bearer\s+/i, '')
+  // 토큰이 없는 401은 로그아웃 상태입니다. 요청 로그에서 장애로 세지 않게 표시만 합니다.
+  if (!token) {
+    req.anonymousAuth = true
+    return res.status(401).json({ error: '로그인이 필요합니다' })
+  }
+  const cfg = supabaseAuthConfig()
+  if (!cfg) return res.status(500).json({ error: '로그인 확인 설정이 없습니다' })
+  try {
+    const userRes = await fetch(`${cfg.url}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${token}`, apikey: cfg.anon },
+    })
+    if (!userRes.ok) return res.status(401).json({ error: '로그인이 필요합니다' })
+    const user = await userRes.json()
+    const userId = typeof user?.id === 'string' ? user.id : ''
+    if (!USER_ID_RE.test(userId)) return res.status(401).json({ error: '로그인이 필요합니다' })
+    req.authUser = { id: userId }
+    next()
+  } catch (err) {
+    console.error('로그인 확인 실패:', err.message)
+    res.status(401).json({ error: '로그인이 필요합니다' })
+  }
+}
+
+// 올리는 주소는 15분, 재생·첨부 주소는 4시간만 유효합니다.
+// 회의를 보다가 탐색이 바로 끊기지 않게, 디스크 짧은 주소와 R2 재생 주소를 같은 시간으로 둡니다.
 const R2_PUT_EXPIRES_SEC = 15 * 60
-const R2_GET_EXPIRES_SEC = 60 * 60
+const MEDIA_URL_TTL_SEC = 4 * 60 * 60
+const R2_GET_EXPIRES_SEC = MEDIA_URL_TTL_SEC
 const MAX_MEETING_VIDEO_BYTES = 1024 * 1024 * 1024
 
 let r2Client = null
@@ -379,6 +422,10 @@ app.get('/api/oauth-origin', (req, res) => {
 })
 
 app.post('/api/oauth-origin', (req, res) => {
+  // 로그인 전이라 세션이 없습니다. 복귀 주소는 이 PC의 폴백만 읽으므로, 이 PC에서만 바꿉니다.
+  if (!isLoopback(req)) {
+    return res.status(403).json({ error: '이 PC에서만 복귀 주소를 저장할 수 있습니다' })
+  }
   res.json({ origin: rememberOauthOrigin(req.body?.origin) })
 })
 
@@ -398,14 +445,17 @@ function meetingIdFromMetadata(metadata) {
   }
 }
 
-/** 사람이 남아 있는 방. 회의 목록의 진행중/완료와 참석자 아이콘이 이 목록을 봅니다. */
-app.get('/api/live-rooms', async (_req, res) => {
+/** 사람이 남아 있는 방. 이 사용자가 속한 그룹 방만 돌려줍니다. */
+app.get('/api/live-rooms', requireUser, async (req, res) => {
   const svc = livekitRoomService()
   if (!svc) return res.status(500).json({ error: 'LiveKit 서버 설정이 없습니다' })
+  const groups = await memberGroupIds(req.authUser.id)
+  if (groups == null) return res.status(500).json({ error: '그룹 권한을 확인하지 못했습니다' })
   try {
     const rooms = await svc.listRooms()
     const active = []
     for (const room of rooms) {
+      if (!groups.has(room.name)) continue
       if (Number(room.numParticipants) <= 0) continue
       let identities = []
       try {
@@ -429,12 +479,13 @@ app.get('/api/live-rooms', async (_req, res) => {
 })
 
 /** 이 방에 표시할 회의 행을 붙입니다. 이미 있으면 그 행을 그대로 돌려줍니다. */
-app.post('/api/live-room-meeting', async (req, res) => {
+app.post('/api/live-room-meeting', requireUser, async (req, res) => {
   const roomName = String(req.body?.roomName || '').trim()
   const meetingId = String(req.body?.meetingId || '').trim()
   if (!roomName || !meetingId) {
     return res.status(400).json({ error: 'roomName과 meetingId가 필요합니다' })
   }
+  if (!(await requireGroupMember(req, res, roomName))) return
   const svc = livekitRoomService()
   if (!svc) return res.status(500).json({ error: 'LiveKit 서버 설정이 없습니다' })
   try {
@@ -450,10 +501,14 @@ app.post('/api/live-room-meeting', async (req, res) => {
   }
 })
 
-app.post('/api/livekit-token', async (req, res) => {
+app.post('/api/livekit-token', requireUser, async (req, res) => {
   try {
-    const { roomName, userName, userId } = req.body
-    const identity = String(userId || userName || 'guest')
+    const roomName = String(req.body?.roomName || '').trim()
+    const userName = req.body?.userName
+    // 방 이름은 그룹 id입니다. 그 그룹 멤버만 입장 토큰을 받습니다.
+    if (!(await requireGroupMember(req, res, roomName))) return
+    // 몸통의 userId 는 다른 사람으로 바꿀 수 있어, 확인된 로그인 사용자를 입장 식별자로 씁니다.
+    const identity = req.authUser.id
     console.log('토큰 발급 요청:', roomName, identity)
 
     const token = new AccessToken(
@@ -484,13 +539,14 @@ app.post('/api/livekit-token', async (req, res) => {
  * 방장이 멤버를 내보낼 때 LiveKit 방에서 강제 퇴장시킵니다.
  * roomName = 그룹 id, identity = 대상 user id
  */
-app.post('/api/livekit-remove-participant', async (req, res) => {
+app.post('/api/livekit-remove-participant', requireUser, async (req, res) => {
   try {
     const roomName = String(req.body?.roomName || '').trim()
     const identity = String(req.body?.identity || '').trim()
     if (!roomName || !identity) {
       return res.status(400).json({ error: 'roomName과 identity가 필요합니다' })
     }
+    if (!(await requireGroupMember(req, res, roomName))) return
 
     const host = process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || ''
     // wss:// → https:// (RoomService HTTP API)
@@ -514,7 +570,7 @@ app.post('/api/livekit-remove-participant', async (req, res) => {
 })
 
 // 예전 직접 업로드용 주소. 브라우저는 더 이상 이 주소로 PUT하지 않고 /api/meetings/upload-r2 로 보냅니다.
-app.post('/api/meetings/upload-url', checkUploadToken, async (req, res) => {
+app.post('/api/meetings/upload-url', requireUser, async (req, res) => {
   try {
     const groupId = req.body?.groupId
     const dateStr = req.body?.dateStr
@@ -523,6 +579,7 @@ app.post('/api/meetings/upload-url', checkUploadToken, async (req, res) => {
     if (!isSafePathSegment(groupId) || !isSafePathSegment(dateStr)) {
       return res.status(400).json({ error: 'groupId와 날짜가 올바르지 않습니다' })
     }
+    if (!(await requireGroupMember(req, res, groupId))) return
     const size = Number(req.body?.size)
     if (!Number.isFinite(size) || size <= 0) {
       return res.status(400).json({ error: '파일 크기가 올바르지 않습니다' })
@@ -550,7 +607,7 @@ app.post('/api/meetings/upload-url', checkUploadToken, async (req, res) => {
 
 // 브라우저는 파일을 이 서버로 보냅니다. 서버가 R2에 넣은 뒤 임시 파일은 지웁니다.
 // 브라우저가 R2로 직접 PUT하면 Failed to fetch로 끊겨 녹화가 저장되지 않았습니다.
-app.post('/api/meetings/upload-r2', checkUploadToken, uploadMeetingVideo.single('video'), async (req, res) => {
+app.post('/api/meetings/upload-r2', requireUser, uploadMeetingVideo.single('video'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: '업로드된 파일이 없습니다' })
   }
@@ -561,6 +618,10 @@ app.post('/api/meetings/upload-r2', checkUploadToken, uploadMeetingVideo.single(
   if (!isSafePathSegment(groupId) || !isSafePathSegment(dateStr)) {
     try { fs.unlinkSync(req.file.path) } catch { /* 거절된 임시 파일은 남기지 않습니다 */ }
     return res.status(400).json({ error: 'groupId와 날짜가 올바르지 않습니다' })
+  }
+  if (!(await requireGroupMember(req, res, groupId))) {
+    try { fs.unlinkSync(req.file.path) } catch { /* 권한 없는 임시 파일은 남기지 않습니다 */ }
+    return
   }
 
   const contentType = meetingUploadContentType(req.body?.mimeType || req.file.mimetype)
@@ -605,11 +666,13 @@ function meetingVideoDiskPath(raw) {
   return full
 }
 
-// 재생용 GET 주소. 키는 meeting-videos/ 아래만 허용합니다.
-app.get('/api/meetings/video-url', async (req, res) => {
+// 재생용 GET 주소. 그 영상 그룹의 멤버만 짧은 R2 주소를 받습니다.
+app.get('/api/meetings/video-url', requireUser, async (req, res) => {
   try {
     const key = normalizeMeetingVideoKey(typeof req.query.key === 'string' ? req.query.key : '')
     if (!key) return res.status(400).json({ error: '잘못된 영상 키입니다' })
+    const groupId = key.split('/')[1] || ''
+    if (!(await requireGroupMember(req, res, groupId))) return
     const client = getR2Client()
     const command = new GetObjectCommand({
       Bucket: process.env.R2_BUCKET,
@@ -623,9 +686,35 @@ app.get('/api/meetings/video-url', async (req, res) => {
   }
 })
 
-// 요약 화면의 전체 용량. meeting-videos/ 아래 파일 크기만 모읍니다.
-app.get('/api/meetings/storage', checkUploadToken, async (req, res) => {
+// 디스크의 예전 영상(/videos)과 첨부(/files)는 주소만으로 열지 않습니다.
+// 로그인한 그룹 멤버에게만, 그 경로에 묶인 짧은 주소를 돌려줍니다.
+app.get('/api/media-url', requireUser, async (req, res) => {
+  const kind = req.query.kind === 'video' ? 'video' : req.query.kind === 'file' ? 'file' : ''
+  if (!kind) return res.status(400).json({ error: '파일 종류가 올바르지 않습니다' })
+  const relPath = normalizeMediaRelPath(typeof req.query.path === 'string' ? req.query.path : '')
+  if (!relPath) return res.status(400).json({ error: '잘못된 파일 경로입니다' })
+  const groupId = relPath.split('/')[0]
+  if (!(await requireGroupMember(req, res, groupId))) return
+  const token = signMediaToken(kind, relPath)
+  if (!token) return res.status(500).json({ error: '파일 주소를 만들지 못했습니다' })
+  const prefix = kind === 'video' ? '/videos' : '/files'
+  const encoded = relPath.split('/').map((part) => encodeURIComponent(part)).join('/')
+  res.json({
+    url: `${prefix}/${encoded}?t=${encodeURIComponent(token)}`,
+    expiresIn: MEDIA_URL_TTL_SEC,
+  })
+})
+
+// 요약 화면의 용량. 로그인한 사람이 속한 그룹의 meeting-videos/ 파일만 모읍니다.
+app.get('/api/meetings/storage', requireUser, async (req, res) => {
   try {
+    const groups = await memberGroupIds(req.authUser.id)
+    if (groups == null) return res.status(500).json({ error: '그룹 권한을 확인하지 못했습니다' })
+    const only = typeof req.query.groupId === 'string' ? req.query.groupId : ''
+    if (only && !groups.has(only)) {
+      return res.status(403).json({ error: '이 그룹의 멤버만 할 수 있습니다' })
+    }
+    const allowed = only ? new Set([only]) : groups
     const client = getR2Client()
     let token
     let totalBytes = 0
@@ -633,11 +722,13 @@ app.get('/api/meetings/storage', checkUploadToken, async (req, res) => {
     do {
       const listed = await client.send(new ListObjectsV2Command({
         Bucket: process.env.R2_BUCKET,
-        Prefix: 'meeting-videos/',
+        Prefix: only ? `meeting-videos/${only}/` : 'meeting-videos/',
         ContinuationToken: token,
       }))
       for (const item of listed.Contents || []) {
         if (!item.Key) continue
+        const groupId = item.Key.split('/')[1]
+        if (!allowed.has(groupId)) continue
         const size = item.Size || 0
         totalBytes += size
         files.push({ key: item.Key, size })
@@ -656,32 +747,172 @@ const MEETING_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{
 function supabaseRestConfig() {
   const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
   const anon = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
+  // 서비스 롤 키는 RLS를 통과합니다. VITE_ 가 붙은 이름은 브라우저 번들에 들어가므로 읽지 않습니다.
   const service = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
   if (!url || !anon || !service) return null
   return { url, anon, service }
+}
+
+function postgrestQuotedEq(column, value) {
+  const escaped = String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `${column}.eq."${escaped}"`
+}
+
+/** 서비스 롤로 회의 행을 찾은 뒤, 그 그룹 멤버인지 확인합니다. 없으면 영상을 받지 않습니다. */
+async function userMaySummarizeVideo(userId, { videoKey, videoUrl }) {
+  const cfg = supabaseRestConfig()
+  if (!cfg) return { ok: false, status: 500, error: '요약 권한 확인 설정이 없습니다' }
+  const admin = { apikey: cfg.service, Authorization: `Bearer ${cfg.service}`, Accept: 'application/json' }
+  const urls = []
+  if (videoUrl) {
+    urls.push(videoUrl)
+    const rel = extractVideosRelativePath(videoUrl)
+    if (rel && rel !== videoUrl) urls.push(rel)
+  }
+
+  const loadMeetings = async (includeKey) => {
+    const parts = []
+    if (includeKey && videoKey) parts.push(postgrestQuotedEq('video_key', videoKey))
+    for (const url of urls) parts.push(postgrestQuotedEq('video_url', url))
+    if (parts.length === 0) return []
+    const or = encodeURIComponent(`(${parts.join(',')})`)
+    const res = await fetch(`${cfg.url}/rest/v1/meetings?select=group_id&limit=5&or=${or}`, { headers: admin })
+    if (!res.ok) {
+      const body = await res.text()
+      if (includeKey && videoKey && /video_key/i.test(body)) return loadMeetings(false)
+      return null
+    }
+    const rows = await res.json()
+    return Array.isArray(rows) ? rows : []
+  }
+
+  const meetings = await loadMeetings(true)
+  if (meetings == null) return { ok: false, status: 500, error: '영상 권한을 확인하지 못했습니다' }
+  for (const meeting of meetings) {
+    const groupId = typeof meeting?.group_id === 'string' ? meeting.group_id : ''
+    if (!USER_ID_RE.test(groupId) || !USER_ID_RE.test(userId)) continue
+    const memberRes = await fetch(
+      `${cfg.url}/rest/v1/group_members?group_id=eq.${groupId}&user_id=eq.${userId}&select=user_id&limit=1`,
+      { headers: admin },
+    )
+    if (!memberRes.ok) continue
+    const members = await memberRes.json()
+    if (Array.isArray(members) && members.length > 0) return { ok: true }
+  }
+  return { ok: false, status: 403, error: '이 영상을 요약할 권한이 없습니다' }
+}
+
+/** 서비스 롤로 group_members 를 읽어, 이 로그인 사용자가 그 그룹인지 확인합니다. */
+async function userIsGroupMember(userId, groupId) {
+  if (!USER_ID_RE.test(userId) || !USER_ID_RE.test(groupId)) return false
+  const cfg = supabaseRestConfig()
+  if (!cfg) return null
+  const admin = { apikey: cfg.service, Authorization: `Bearer ${cfg.service}`, Accept: 'application/json' }
+  const res = await fetch(
+    `${cfg.url}/rest/v1/group_members?group_id=eq.${groupId}&user_id=eq.${userId}&select=user_id&limit=1`,
+    { headers: admin },
+  )
+  if (!res.ok) return null
+  const rows = await res.json()
+  return Array.isArray(rows) && rows.length > 0
+}
+
+/** 이 사용자가 속한 그룹 id. 용량 조회처럼 여러 그룹을 한 번에 거를 때 씁니다. */
+async function memberGroupIds(userId) {
+  if (!USER_ID_RE.test(userId)) return new Set()
+  const cfg = supabaseRestConfig()
+  if (!cfg) return null
+  const admin = { apikey: cfg.service, Authorization: `Bearer ${cfg.service}`, Accept: 'application/json' }
+  const res = await fetch(
+    `${cfg.url}/rest/v1/group_members?user_id=eq.${userId}&select=group_id`,
+    { headers: admin },
+  )
+  if (!res.ok) return null
+  const rows = await res.json()
+  if (!Array.isArray(rows)) return null
+  return new Set(rows.map((row) => row.group_id).filter((id) => typeof id === 'string'))
+}
+
+/** 디스크 파일 주소에 넣는 서명. 서비스 롤 키는 서버에만 있으므로 브라우저가 만들 수 없습니다. */
+function mediaUrlSecret() {
+  return process.env.FILE_URL_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+}
+
+/** 그룹/파일 형태의 상대경로만 남깁니다. 폴더 밖이나 쿼리가 섞이면 빈 문자열입니다. */
+function normalizeMediaRelPath(raw) {
+  if (typeof raw !== 'string') return ''
+  let rel = raw.trim()
+  if (!rel || rel.includes('..') || rel.includes('\\') || rel.includes('\0') || rel.includes('?') || rel.includes('#')) {
+    return ''
+  }
+  try {
+    rel = decodeURIComponent(rel)
+  } catch {
+    return ''
+  }
+  const parts = rel.split('/').filter(Boolean)
+  // 파일 이름 안의 '..' 는 두고, 폴더를 벗어나는 조각만 거절합니다.
+  const safePart = (value) => typeof value === 'string' && value.length > 0 && value !== '.' && value !== '..' && !/[\\/]/.test(value)
+  if (parts.length < 2 || !parts.every(safePart)) return ''
+  return parts.join('/')
+}
+
+/** kind 와 경로, 만료 시각을 묶은 토큰. 다른 파일에는 쓸 수 없습니다. */
+function signMediaToken(kind, relPath) {
+  const secret = mediaUrlSecret()
+  if (!secret) return ''
+  const exp = Math.floor(Date.now() / 1000) + MEDIA_URL_TTL_SEC
+  const payload = Buffer.from(JSON.stringify({ k: kind, p: relPath, e: exp }), 'utf8').toString('base64url')
+  const sig = crypto.createHmac('sha256', secret).update(payload).digest('base64url')
+  return `${payload}.${sig}`
+}
+
+function verifyMediaToken(kind, relPath, token) {
+  try {
+    const secret = mediaUrlSecret()
+    if (!secret || typeof token !== 'string') return false
+    const dot = token.indexOf('.')
+    if (dot <= 0) return false
+    const payload = token.slice(0, dot)
+    const sig = token.slice(dot + 1)
+    const expected = crypto.createHmac('sha256', secret).update(payload).digest('base64url')
+    const left = Buffer.from(sig)
+    const right = Buffer.from(expected)
+    if (left.length !== right.length || !crypto.timingSafeEqual(left, right)) return false
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
+    if (data.k !== kind || data.p !== relPath) return false
+    return typeof data.e === 'number' && data.e >= Math.floor(Date.now() / 1000)
+  } catch {
+    return false
+  }
+}
+
+/** 멤버가 아니면 응답을 끝내고 false 를 돌려줍니다. */
+async function requireGroupMember(req, res, groupId) {
+  const allowed = await userIsGroupMember(req.authUser?.id, groupId)
+  if (allowed === null) {
+    res.status(500).json({ error: '그룹 권한을 확인하지 못했습니다' })
+    return false
+  }
+  if (!allowed) {
+    res.status(403).json({ error: '이 그룹의 멤버만 할 수 있습니다' })
+    return false
+  }
+  return true
 }
 
 /**
  * 브라우저의 행 삭제가 막혀도, 그 그룹 멤버이면 회의 행을 지웁니다.
  * 서비스 키로 지우기 전에 로그인과 멤버 여부를 확인합니다.
  */
-app.delete('/api/meetings/record/:id', async (req, res) => {
+app.delete('/api/meetings/record/:id', requireUser, async (req, res) => {
   const meetingId = String(req.params.id || '')
   if (!MEETING_ID_RE.test(meetingId)) return res.status(400).json({ error: '회의 id가 올바르지 않습니다' })
-  const token = String(req.header('authorization') || '').replace(/^Bearer\s+/i, '')
-  if (!token) return res.status(401).json({ error: '로그인이 필요합니다' })
   const cfg = supabaseRestConfig()
   if (!cfg) return res.status(500).json({ error: '회의 삭제 서버 설정이 없습니다' })
+  const userId = req.authUser.id
 
   try {
-    const userRes = await fetch(`${cfg.url}/auth/v1/user`, {
-      headers: { Authorization: `Bearer ${token}`, apikey: cfg.anon },
-    })
-    if (!userRes.ok) return res.status(401).json({ error: '로그인이 필요합니다' })
-    const user = await userRes.json()
-    const userId = typeof user?.id === 'string' ? user.id : ''
-    if (!MEETING_ID_RE.test(userId)) return res.status(401).json({ error: '로그인이 필요합니다' })
-
     const admin = { apikey: cfg.service, Authorization: `Bearer ${cfg.service}` }
     const meetingRes = await fetch(`${cfg.url}/rest/v1/meetings?id=eq.${meetingId}&select=id,group_id`, { headers: admin })
     const meetings = await meetingRes.json()
@@ -713,10 +944,20 @@ app.delete('/api/meetings/record/:id', async (req, res) => {
 })
 
 // 요약 화면의 삭제. R2 원본과 예전 디스크 파일을 지웁니다. 회의 행은 클라이언트가 비웁니다.
-app.delete('/api/meetings/video', checkUploadToken, async (req, res) => {
+app.delete('/api/meetings/video', requireUser, async (req, res) => {
   const key = normalizeMeetingVideoKey(typeof req.query.key === 'string' ? req.query.key : '')
   const diskPath = meetingVideoDiskPath(typeof req.query.path === 'string' ? req.query.path : '')
   if (!key && !diskPath) return res.status(400).json({ error: '지울 영상이 없습니다' })
+
+  const groupIds = []
+  if (key) groupIds.push(key.split('/')[1] || '')
+  if (diskPath) {
+    const rel = path.relative(MEETING_VIDEOS_DIR, diskPath)
+    groupIds.push(rel.split(path.sep)[0] || '')
+  }
+  for (const groupId of groupIds) {
+    if (!(await requireGroupMember(req, res, groupId))) return
+  }
 
   try {
     if (key) {
@@ -740,13 +981,21 @@ app.delete('/api/meetings/video', checkUploadToken, async (req, res) => {
 
 // 예전 녹화 호환. 클라이언트(Room.tsx)가 녹화 종료 시 이 엔드포인트로 webm blob 을 보냅니다.
 // 저장 위치는 Supabase Storage 가 아니라 이 서버 컴퓨터의 디스크입니다.
-app.post('/api/meetings/upload', checkUploadToken, uploadMeetingVideo.single('video'), (req, res) => {
+app.post('/api/meetings/upload', requireUser, uploadMeetingVideo.single('video'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: '업로드된 파일이 없습니다' })
   }
 
-  const groupId = isSafePathSegment(req.body.groupId) ? req.body.groupId : 'unknown'
+  const groupId = req.body.groupId
   const dateStr = isSafePathSegment(req.body.dateStr) ? req.body.dateStr : 'unknown-date'
+  if (!isSafePathSegment(groupId)) {
+    try { fs.unlinkSync(req.file.path) } catch { /* 거절된 임시 파일은 남기지 않습니다 */ }
+    return res.status(400).json({ error: 'groupId가 올바르지 않습니다' })
+  }
+  if (!(await requireGroupMember(req, res, groupId))) {
+    try { fs.unlinkSync(req.file.path) } catch { /* 권한 없는 임시 파일은 남기지 않습니다 */ }
+    return
+  }
   const ext = (req.file.originalname && req.file.originalname.split('.').pop()) || 'webm'
   const filename = `${Date.now()}.${ext}`
   const destDir = path.join(MEETING_VIDEOS_DIR, groupId, dateStr)
@@ -767,34 +1016,48 @@ app.post('/api/meetings/upload', checkUploadToken, uploadMeetingVideo.single('vi
 })
 
 // 저장된 녹화본을 서빙합니다. sendFile 이 Range 를 지원해 <video> seek 이 동작합니다.
+// 쿼리의 서명이 이 경로와 맞고 만료 전일 때만 내려줍니다.
 app.use('/videos', (req, res, next) => {
-  const relPath = decodeURIComponent(String(req.path || '').replace(/^\//, ''))
+  const relPath = normalizeMediaRelPath(String(req.path || '').replace(/^\//, ''))
   if (!relPath) return next()
+  if (!verifyMediaToken('video', relPath, typeof req.query.t === 'string' ? req.query.t : '')) {
+    return res.status(401).json({ error: '이 영상 주소는 만료되었거나 권한이 없습니다' })
+  }
 
   const direct = path.resolve(MEETING_VIDEOS_DIR, relPath)
-  if (!direct.startsWith(MEETING_VIDEOS_DIR)) {
+  if (!direct.startsWith(MEETING_VIDEOS_DIR + path.sep)) {
     return res.status(400).json({ error: '잘못된 영상 경로입니다' })
   }
 
-  // DB 경로와 실제 폴더가 같을 때
   if (fs.existsSync(direct) && fs.statSync(direct).isFile()) {
     return res.sendFile(direct)
   }
 
-  // 예전에 unknown/unknown-date 로 저장된 파일은 이름만 맞아도 찾아줍니다.
+  // 같은 그룹 폴더 안에서만, 파일 이름이 같은 예전 저장본을 찾습니다.
+  const groupDir = path.resolve(MEETING_VIDEOS_DIR, relPath.split('/')[0])
   const found = findMeetingVideoByBasename(path.basename(relPath))
-  if (found) return res.sendFile(found)
+  if (found && (found === groupDir || found.startsWith(groupDir + path.sep))) {
+    return res.sendFile(found)
+  }
 
   return res.status(404).json({ error: '영상 파일을 찾지 못했습니다', path: relPath })
 })
 
 // 회의 채팅 첨부파일. 영상과 같이 이 서버 디스크에 저장합니다.
-app.post('/api/chat-files/upload', checkUploadToken, uploadChatFile.single('file'), (req, res) => {
+app.post('/api/chat-files/upload', requireUser, uploadChatFile.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: '업로드된 파일이 없습니다' })
   }
 
-  const groupId = isSafePathSegment(req.body.groupId) ? req.body.groupId : 'unknown'
+  const groupId = req.body.groupId
+  if (!isSafePathSegment(groupId)) {
+    try { fs.unlinkSync(req.file.path) } catch { /* 거절된 임시 파일은 남기지 않습니다 */ }
+    return res.status(400).json({ error: 'groupId가 올바르지 않습니다' })
+  }
+  if (!(await requireGroupMember(req, res, groupId))) {
+    try { fs.unlinkSync(req.file.path) } catch { /* 권한 없는 임시 파일은 남기지 않습니다 */ }
+    return
+  }
   // 폼 필드의 originalName 은 UTF-8 그대로입니다. multer 파일명은 한글이 깨질 수 있어 보조로만 씁니다.
   const fromField = typeof req.body.originalName === 'string' ? req.body.originalName.trim() : ''
   const originalName = sanitizeDisplayFileName(fromField || decodeMulterOriginalName(req.file.originalname))
@@ -831,11 +1094,12 @@ app.post('/api/chat-files/upload', checkUploadToken, uploadChatFile.single('file
  * 그룹에 올라간 채팅/회의 첨부 파일 목록.
  * meeting-docs 가 비어 있을 때 문서 탭 「열기」 폴백으로 씁니다.
  */
-app.get('/api/chat-files', (req, res) => {
+app.get('/api/chat-files', requireUser, async (req, res) => {
   const groupId = req.query.groupId
   if (!isSafePathSegment(groupId)) {
     return res.status(400).json({ error: 'groupId 가 필요합니다' })
   }
+  if (!(await requireGroupMember(req, res, groupId))) return
   const dir = path.join(CHAT_FILES_DIR, groupId)
   if (!fs.existsSync(dir)) return res.json([])
 
@@ -884,11 +1148,14 @@ app.get('/api/chat-files', (req, res) => {
 })
 
 app.use('/files', (req, res, next) => {
-  const relPath = decodeURIComponent(String(req.path || '').replace(/^\//, ''))
+  const relPath = normalizeMediaRelPath(String(req.path || '').replace(/^\//, ''))
   if (!relPath) return next()
+  if (!verifyMediaToken('file', relPath, typeof req.query.t === 'string' ? req.query.t : '')) {
+    return res.status(401).json({ error: '이 파일 주소는 만료되었거나 권한이 없습니다' })
+  }
 
   const direct = path.resolve(CHAT_FILES_DIR, relPath)
-  if (!direct.startsWith(CHAT_FILES_DIR)) {
+  if (!direct.startsWith(CHAT_FILES_DIR + path.sep)) {
     return res.status(400).json({ error: '잘못된 파일 경로입니다' })
   }
   if (fs.existsSync(direct) && fs.statSync(direct).isFile()) {
@@ -906,7 +1173,7 @@ app.use('/files', (req, res, next) => {
  * 화면에 보이는 첨부 이름만 바꿉니다.
  * 주소에 쓰는 저장 파일명은 그대로 두고, 옆의 메타와 회의 문서 목록만 고칩니다.
  */
-app.patch('/api/chat-files/name', checkUploadToken, (req, res) => {
+app.patch('/api/chat-files/name', requireUser, async (req, res) => {
   const relPath = typeof req.body?.path === 'string' ? req.body.path.trim() : ''
   const parts = relPath.split('/').filter(Boolean)
   if (parts.length !== 2 || !parts.every(isSafePathSegment)) {
@@ -919,6 +1186,7 @@ app.patch('/api/chat-files/name', checkUploadToken, (req, res) => {
   if (!full.startsWith(groupDir)) {
     return res.status(400).json({ error: '잘못된 파일 경로입니다' })
   }
+  if (!(await requireGroupMember(req, res, groupId))) return
 
   let nextName = sanitizeDisplayFileName(req.body?.name)
   const storedExt = fileExtFromName(filename)
@@ -941,7 +1209,7 @@ app.patch('/api/chat-files/name', checkUploadToken, (req, res) => {
 })
 
 /** 첨부 파일 자체와 회의 문서 목록의 그 항목을 지웁니다. */
-app.delete('/api/chat-files', checkUploadToken, (req, res) => {
+app.delete('/api/chat-files', requireUser, async (req, res) => {
   const relPath = typeof req.body?.path === 'string' ? req.body.path.trim() : ''
   const parts = relPath.split('/').filter(Boolean)
   if (parts.length !== 2 || !parts.every(isSafePathSegment)) {
@@ -954,6 +1222,7 @@ app.delete('/api/chat-files', checkUploadToken, (req, res) => {
   if (!full.startsWith(groupDir)) {
     return res.status(400).json({ error: '잘못된 파일 경로입니다' })
   }
+  if (!(await requireGroupMember(req, res, groupId))) return
 
   try {
     if (fs.existsSync(full)) fs.unlinkSync(full)
@@ -969,12 +1238,13 @@ app.delete('/api/chat-files', checkUploadToken, (req, res) => {
 })
 
 /** 회의 문서 첨부 목록을 디스크에 저장합니다. (문서 탭 「열기」용) */
-app.put('/api/meeting-docs/:meetingId', checkUploadToken, (req, res) => {
+app.put('/api/meeting-docs/:meetingId', requireUser, async (req, res) => {
   const meetingId = String(req.params.meetingId || '')
   const groupId = req.body?.groupId
   if (!isSafePathSegment(meetingId) || !isSafePathSegment(groupId)) {
     return res.status(400).json({ error: '잘못된 회의/그룹 id 입니다' })
   }
+  if (!(await requireGroupMember(req, res, groupId))) return
 
   const files = Array.isArray(req.body?.files) ? req.body.files : []
   const normalized = files
@@ -1017,8 +1287,8 @@ app.put('/api/meeting-docs/:meetingId', checkUploadToken, (req, res) => {
   res.json(payload)
 })
 
-/** 한 회의의 첨부 목록 */
-app.get('/api/meeting-docs/:meetingId', (req, res) => {
+/** 한 회의의 첨부 목록. 그 그룹 멤버만 읽습니다. */
+app.get('/api/meeting-docs/:meetingId', requireUser, async (req, res) => {
   const meetingId = String(req.params.meetingId || '')
   const groupId = req.query.groupId
   if (!isSafePathSegment(meetingId)) {
@@ -1037,16 +1307,19 @@ app.get('/api/meeting-docs/:meetingId', (req, res) => {
   }
 
   if (isSafePathSegment(groupId)) {
+    if (!(await requireGroupMember(req, res, groupId))) return
     const doc = tryRead(groupId)
     if (doc) return res.json(doc)
     return res.status(404).json({ error: '문서 첨부를 찾지 못했습니다' })
   }
 
-  // groupId 없이 요청하면 모든 그룹 폴더에서 찾습니다.
+  // 그룹을 생략하면, 이 사용자가 속한 폴더에서만 찾습니다.
+  const groups = await memberGroupIds(req.authUser.id)
+  if (groups == null) return res.status(500).json({ error: '그룹 권한을 확인하지 못했습니다' })
   try {
-    const groups = fs.readdirSync(MEETING_DOCS_DIR, { withFileTypes: true })
-    for (const ent of groups) {
-      if (!ent.isDirectory() || ent.name.startsWith('_')) continue
+    const entries = fs.readdirSync(MEETING_DOCS_DIR, { withFileTypes: true })
+    for (const ent of entries) {
+      if (!ent.isDirectory() || ent.name.startsWith('_') || !groups.has(ent.name)) continue
       const doc = tryRead(ent.name)
       if (doc) return res.json(doc)
     }
@@ -1056,12 +1329,13 @@ app.get('/api/meeting-docs/:meetingId', (req, res) => {
   return res.status(404).json({ error: '문서 첨부를 찾지 못했습니다' })
 })
 
-/** 그룹의 회의 문서 목록(첨부 포함) — 문서 탭 보강용 */
-app.get('/api/meeting-docs', (req, res) => {
+/** 그룹의 회의 문서 목록(첨부 포함). 그 그룹 멤버만 읽습니다. */
+app.get('/api/meeting-docs', requireUser, async (req, res) => {
   const groupId = req.query.groupId
   if (!isSafePathSegment(groupId)) {
     return res.status(400).json({ error: 'groupId 가 필요합니다' })
   }
+  if (!(await requireGroupMember(req, res, groupId))) return
   const dir = path.join(MEETING_DOCS_DIR, groupId)
   if (!fs.existsSync(dir)) return res.json([])
 
@@ -1088,7 +1362,7 @@ app.get('/api/meeting-docs', (req, res) => {
 // AI 요약 엔드포인트 — 타임스탬프가 붙은 챕터까지 생성합니다.
 // R2 키(videoKey)면 원본을 내려받고, 예전 videoUrl(/videos/...)이면 디스크에서 읽습니다.
 // 음성 추출과 요약은 aiSummary.js 가 합니다. 영상 파일 자체는 Groq로 보내지 않습니다.
-app.post('/api/summarize', async (req, res) => {
+app.post('/api/summarize', requireUser, async (req, res) => {
   // R2에서 받은 원본은 요약이 끝나거나 실패해도 임시 폴더에 남기지 않습니다.
   let r2TempPath = null
   try {
@@ -1102,6 +1376,15 @@ app.post('/api/summarize', async (req, res) => {
     const hasChatLog = Array.isArray(chatLog) && chatLog.length > 0
     if (!videoKey && !String(videoUrl || '').trim() && !hasChatLog) {
       return res.status(400).json({ error: 'videoKey, videoUrl, chatLog 중 하나는 필요합니다' })
+    }
+
+    // 영상은 회의 행에 묶인 그룹의 멤버만 내려받습니다. 채팅만 있는 요약은 파일을 받지 않습니다.
+    if (videoKey || String(videoUrl || '').trim()) {
+      const allowed = await userMaySummarizeVideo(req.authUser.id, {
+        videoKey,
+        videoUrl: String(videoUrl || '').trim(),
+      })
+      if (!allowed.ok) return res.status(allowed.status).json({ error: allowed.error })
     }
 
     const loadVideo = videoKey || String(videoUrl || '').trim()
@@ -1126,11 +1409,12 @@ app.post('/api/summarize', async (req, res) => {
           }
           // 디스크에 없으면 같은 Node 서버의 HTTP /videos 로만 받습니다.
           // Vite(https://localhost:5173) 주소는 mkcert 때문에 Node fetch가 실패합니다.
-          const rel = extractVideosRelativePath(videoUrl)
-          const fetchUrl = rel
-            ? `http://127.0.0.1:${process.env.PORT || 3001}/videos/${rel}`
+          const rel = normalizeMediaRelPath(extractVideosRelativePath(videoUrl) || '')
+          const token = rel ? signMediaToken('video', rel) : ''
+          const fetchUrl = rel && token
+            ? `http://127.0.0.1:${process.env.PORT || 3001}/videos/${rel.split('/').map((part) => encodeURIComponent(part)).join('/')}?t=${encodeURIComponent(token)}`
             : videoUrl
-          console.log('로컬 파일이 없어 URL로 받습니다:', fetchUrl)
+          console.log('로컬 파일이 없어 URL로 받습니다:', rel || videoUrl)
           const response = await fetch(fetchUrl)
           if (!response.ok) {
             throw new Error(
@@ -1170,8 +1454,15 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3001
 // Render 등 클라우드는 외부 헬스체크를 위해 0.0.0.0 바인딩이 필요합니다.
+if (process.env.VITE_SUPABASE_SERVICE_ROLE_KEY) {
+  console.error('VITE_SUPABASE_SERVICE_ROLE_KEY 는 브라우저 번들에 들어갑니다. 이름을 SUPABASE_SERVICE_ROLE_KEY 로 두고 서버 .env 에만 두세요.')
+  delete process.env.VITE_SUPABASE_SERVICE_ROLE_KEY
+}
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`서버 실행중: port ${PORT}`)
+  console.log(`  요청 로그 파일: ${LOG_FILE}`)
+  console.log('  앱에서 보기: 관리자로 로그인한 뒤 설정 → 서버 로그')
   console.log(`  요약 모델: ${getChatModel()}`)
   console.log(`  음성 모델: ${getTranscribeModel()}`)
   console.log(`  녹화본 저장 경로(예전 영상): ${MEETING_VIDEOS_DIR}`)

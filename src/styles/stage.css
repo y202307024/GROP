@@ -1,8 +1,9 @@
 /**
  * 고정 캔버스 스케일 시스템
  * ─────────────────────────────────────────────────────────────
- * grop/css/common.css 를 그대로 옮겼습니다. (:root 변수는 tokens.css 로 옮기고,
- * box-sizing/margin 리셋은 reset.css 와 겹쳐서 여기서는 뺐습니다)
+ * 예전 common.css의 .stage만 남긴 파일입니다. (:root 변수는 tokens.css,
+ * box-sizing/margin 리셋은 reset.css 와 겹쳐서 여기서는 뺐습니다.
+ * common.css 파일은 이 이전 이후 지웠습니다.)
  *
  * 가로/세로를 --stage-width/--stage-height(1440x810, 16:9)로 고정해 두고,
  * 실제 창 크기에 맞춘 가로/세로 배율(--stage-scale-x/--stage-scale-y)로 각각 늘립니다

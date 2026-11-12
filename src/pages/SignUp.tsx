@@ -17,7 +17,7 @@ const isPasswordValid = (pw: string) => {
 
 /**
  * 회원가입 페이지
- * grop/signup.html 의 클래스명과 css/signup.css 를 그대로 사용합니다.
+ * 클래스명은 grop/css/signup.css 전역 스타일을 그대로 사용합니다.
  */
 export default function SignUp() {
   const [name, setName] = useState('');

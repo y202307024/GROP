@@ -26,9 +26,34 @@ alter table public.profiles
 alter table public.profiles enable row level security;
 grant select, insert, update on public.profiles to authenticated;
 
+-- 같은 그룹 사람만 프로필을 봅니다. group_members RLS 를 피하려고 definer 로 확인합니다.
+create or replace function public.shares_group_with(p_user_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1
+    from public.group_members mine
+    join public.group_members theirs on theirs.group_id = mine.group_id
+    where mine.user_id = auth.uid()
+      and theirs.user_id = p_user_id
+  );
+$$;
+
+revoke all on function public.shares_group_with(uuid) from public;
+grant execute on function public.shares_group_with(uuid) to authenticated;
+
 drop policy if exists "profiles_read_authed" on public.profiles;
-create policy "profiles_read_authed" on public.profiles
-for select to authenticated using (true);
+drop policy if exists "profiles_read_visible" on public.profiles;
+create policy "profiles_read_visible" on public.profiles
+for select to authenticated
+using (
+  id = auth.uid()
+  or public.shares_group_with(id)
+);
 
 drop policy if exists "profiles_insert_own" on public.profiles;
 create policy "profiles_insert_own" on public.profiles

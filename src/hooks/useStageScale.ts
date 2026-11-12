@@ -1,6 +1,6 @@
 import { useLayoutEffect } from 'react';
 
-// grop/css/common.css의 --stage-width/--stage-height와 반드시 같은 값이어야 합니다. (16:9)
+// stage.css의 --stage-width/--stage-height와 반드시 같은 값이어야 합니다. (16:9)
 const STAGE_WIDTH = 1440;
 const STAGE_HEIGHT = 810;
 

@@ -137,15 +137,3 @@ export default function ExcalidrawToolbar({ tool, locked, onToolChange, onLockTo
     </div>
   );
 }
-
-export const toolShortcutMap: Record<string, ExcalidrawTool> = {
-  '2': 'rectangle',
-  '3': 'diamond',
-  '4': 'ellipse',
-  '5': 'arrow',
-  '6': 'line',
-  '7': 'pen',
-  '8': 'text',
-  '9': 'image',
-  '0': 'eraser',
-};

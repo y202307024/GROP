@@ -88,6 +88,12 @@ export default function GroupPage() {
   const [memo, setMemo] = useState('');
   /** 이 그룹 회의 영상 + 첨부 파일 용량. 아직 못 읽으면 null */
   const [storageBytes, setStorageBytes] = useState<number | null>(null);
+  const [seenStorageGroupId, setSeenStorageGroupId] = useState(id);
+  // 다른 그룹으로 들어가면 이전 용량 숫자를 지웁니다.
+  if (id !== seenStorageGroupId) {
+    setSeenStorageGroupId(id);
+    setStorageBytes(null);
+  }
   // 캘린더에서 이 그룹으로 등록한 일정 중, 아직 시작 전인 가장 가까운 것
   const nextSchedule = useMemo(
     () => (id ? findNextLocalSchedule(loadLocalSchedules(), new Date(), 62, id) : null),
@@ -146,8 +152,7 @@ export default function GroupPage() {
       .then(({ data }) => setNotices((data as Notice[] | null) ?? []));
 
     // 저장 공간 — 회의 영상(video_size_bytes)과 첨부(attachments.size)를 더합니다.
-    // 영상 칸이 없는 배포에서는 첨부만 셉니다.
-    setStorageBytes(null);
+    // 영상 칸이 없는 배포에서는 첨부만 셉니다. 그룹이 바뀌면 렌더에서 숫자를 비워 둡니다.
     void (async () => {
       const withVideo = await supabase
         .from('meetings')

@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { supabase } from './services/supabaseClient';
-import ExcalidrawToolbar, { toolShortcutMap, type ExcalidrawTool } from './components/ExcalidrawToolbar';
+import ExcalidrawToolbar, { type ExcalidrawTool } from './components/ExcalidrawToolbar';
 // 타임랩스 사이드 패널 컴포넌트 import (현재 비활성화)
 import CanvasViewportControls from './components/CanvasViewportControls';
 import { colorWithOpacity, drawShapeTool, drawStamp, drawText, shapeDashArray, textFontSize, type ShapeTool } from './canvasShapeUtils';
@@ -10,14 +10,27 @@ import { dedupeBoardsById, getBoardOptionLabel } from './timelapseApi';
 import cb from './CanvasBoard.module.css';
 import { RoomEvent } from 'livekit-client';
 import { useMaybeRoomContext } from '@livekit/components-react';
-import BoardFilePreview from './components/BoardFilePreview';
+import { SignedBoardFilePreview } from './components/BoardFilePreview';
 import { expandedFileSize, getFilePreviewKind } from './filePreviewUtils';
 import { rasterizeBoardFile } from './rasterizeBoardFile';
-import { chatFileUrl, displayFileName, formatChatFileSize, MAX_CHAT_FILE_BYTES } from './utils/meetingChat';
+import { displayFileName, formatChatFileSize, MAX_CHAT_FILE_BYTES } from './utils/meetingChat';
 import { getAppShellScale } from './hooks/useAppShellScale';
 import StickyNoteOverlay, { type PlacedSticky } from './components/StickyNoteOverlay';
 
 const MEETING_BOARD_TOPIC = 'meeting-board';
+
+/** 숫자 키로 도구를 고릅니다. 툴바 버튼 순서와 같습니다. */
+const TOOL_SHORTCUTS: Record<string, ExcalidrawTool> = {
+  '2': 'rectangle',
+  '3': 'diamond',
+  '4': 'ellipse',
+  '5': 'arrow',
+  '6': 'line',
+  '7': 'pen',
+  '8': 'text',
+  '9': 'image',
+  '0': 'eraser',
+};
 /** 회의방 펜/지우개 획 실시간 동기화 (Supabase Realtime 병목 회피) */
 const MEETING_BOARD_STROKE_TOPIC = 'meeting-board-stroke';
 
@@ -382,6 +395,42 @@ function filterUndoneEvents(events: BoardEventRow[]): BoardEventRow[] {
   });
 }
 
+/** 실행 취소로 빠진 획. 다시 그리기 뒤에 진행 중 획을 되살릴 때 이 획은 제외합니다. */
+function collectUndoneStrokeIds(events: BoardEventRow[]): Set<string> {
+  const undoneStrokes = new Set<string>();
+  for (const ev of events) {
+    if (ev.type !== 'history.undo' && ev.type !== 'history.redo') continue;
+    const target = (ev.payload as HistoryTogglePayload | null)?.target;
+    if (!target || !('strokeId' in target)) continue;
+    if (ev.type === 'history.undo') undoneStrokes.add(target.strokeId);
+    else undoneStrokes.delete(target.strokeId);
+  }
+  return undoneStrokes;
+}
+
+/**
+ * 다시 그리기에 포함된 획의 점 개수입니다.
+ * null 이면 stroke.end 까지 있어 이미 끝난 획입니다. 0 이면 이 목록에 없습니다.
+ */
+function openStrokePointCount(events: BoardEventRow[], strokeId: string): number | null {
+  let count = 0;
+  let seen = false;
+  for (const ev of events) {
+    const payload = ev.payload as { strokeId?: string; points?: Point[] } | null;
+    if (!payload || payload.strokeId !== strokeId) continue;
+    if (ev.type === 'stroke.begin') {
+      seen = true;
+      count = 1;
+    } else if (ev.type === 'stroke.append' && Array.isArray(payload.points)) {
+      seen = true;
+      count += payload.points.length;
+    } else if (ev.type === 'stroke.end') {
+      return null;
+    }
+  }
+  return seen ? count : 0;
+}
+
 type StrokeBeginPayload = {
   strokeId: string;
   tool: StrokeTool;
@@ -403,6 +452,31 @@ type StrokeAppendPayload = {
 
 type StrokeEndPayload = {
   strokeId: string;
+  /** 이 획의 마지막 append 번호. 빈 번호가 있으면 end를 미룹니다. */
+  lastLiveSeq?: number;
+};
+
+/** 순서가 바뀐 append. seq가 없으면 예전 이벤트입니다. */
+type HeldAppend = { seq: number | null; points: Point[] };
+
+type StrokeStyleSnap = {
+  tool: StrokeTool;
+  color: string;
+  size: number;
+  opacity: number;
+  dash: 'solid' | 'dashed';
+};
+
+/** 보드를 다시 그리기 직전에 들고 있는, 아직 끝나지 않은 획입니다. */
+type PreservedStroke = {
+  strokeId: string;
+  local: boolean;
+  style: StrokeStyleSnap | null;
+  points: Point[];
+  held: HeldAppend[];
+  nextSeq: number;
+  endPending: boolean;
+  lastLiveSeq: number | null;
 };
 
 type ShapeAddPayload = {
@@ -591,8 +665,9 @@ function resizePlacedImage(img: PlacedImage, handle: ImageResizeHandle, p: Point
   const bottom = img.y + img.height;
   let x = img.x;
   let y = img.y;
-  let w = img.width;
-  let h = img.height;
+  // 아래 네 갈래가 모두 다시 넣습니다. 처음 값을 두면 한 번도 안 읽혀 린트에 걸립니다.
+  let w: number;
+  let h: number;
 
   if (handle === 'se') {
     w = Math.max(MIN_IMAGE_DRAW_SIZE, p.x - img.x);
@@ -641,8 +716,8 @@ function resizePlacedFile(file: PlacedFile, handle: ImageResizeHandle, p: Point)
   const bottom = file.y + file.height;
   let x = file.x;
   let y = file.y;
-  let w = file.width;
-  let h = file.height;
+  let w: number;
+  let h: number;
 
   if (handle === 'se') {
     w = Math.max(MIN_FILE_CARD_W, p.x - file.x);
@@ -664,8 +739,20 @@ function resizePlacedFile(file: PlacedFile, handle: ImageResizeHandle, p: Point)
   return { ...file, x, y, width: w, height: h };
 }
 
-function drawFileCard(_ctx: CanvasRenderingContext2D, _file: PlacedFile) {
+function drawFileCard(ctx: CanvasRenderingContext2D, file: PlacedFile) {
   // 파일 카드는 HTML로만 그립니다. 캔버스에 칠하면 펼친 파일 위 그림이 가려집니다.
+  void ctx;
+  void file;
+}
+
+/** LiveKit 참가자 객체에서 identity가 있을 때만 꺼냅니다. any로 단정하지 않습니다. */
+function asLiveKitParticipant(participant: unknown): { identity: unknown; metadata?: string } | null {
+  if (!participant || typeof participant !== 'object' || !('identity' in participant)) return null;
+  const record = participant as { identity?: unknown; metadata?: unknown };
+  return {
+    identity: record.identity,
+    metadata: typeof record.metadata === 'string' ? record.metadata : undefined,
+  };
 }
 
 type TextAddPayload = {
@@ -749,8 +836,8 @@ function resizeTextDraft(draft: TextDraft, handle: ImageResizeHandle, p: Point):
   const bottom = draft.y + draft.height;
   let x = draft.x;
   let y = draft.y;
-  let w = draft.width;
-  let h = draft.height;
+  let w: number;
+  let h: number;
 
   if (handle === 'se') {
     w = Math.max(MIN_TEXT_BOX, p.x - draft.x);
@@ -973,8 +1060,19 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
   /** LiveKit 또는 Realtime으로 이미 적용한 stroke 키 */
   const appliedLiveStrokeKeysRef = useRef<Set<string>>(new Set());
   const remoteLastPointByStrokeRef = useRef<Map<string, Point>>(new Map());
-  const remotePendingAppendsRef = useRef<Map<string, Point[][]>>(new Map());
+  /** begin이 없거나 liveSeq가 비어 있어 아직 못 그린 append */
+  const remotePendingAppendsRef = useRef<Map<string, HeldAppend[]>>(new Map());
   const remotePendingEndsRef = useRef<Set<string>>(new Set());
+  /** 획마다 다음에 그릴 liveSeq. 빠진 번호는 그 뒤에 온 점을 들고 기다립니다. */
+  const remoteNextSeqRef = useRef<Map<string, number>>(new Map());
+  /** stroke.end가 알려 준 마지막 번호. null이면 예전 클라이언트입니다. */
+  const remoteEndSeqRef = useRef<Map<string, number | null>>(new Map());
+  /** end를 미룬 획. 빈 칸이 채워진 뒤에 실행취소 스냅샷을 남깁니다. */
+  const remoteEndDeferredRef = useRef<Set<string>>(new Set());
+  /** 아직 끝나지 않은 원격 획의 점. 보드를 다시 그린 뒤 저장 전 꼬리를 다시 칠합니다. */
+  const remoteStrokePointsRef = useRef<Map<string, Point[]>>(new Map());
+  /** 이 화면에서 그리고 있는 획의 점. 다시 그리기로 지워지지 않게 들고 있습니다. */
+  const localStrokePointsRef = useRef<Point[] | null>(null);
   const replayTimerRef = useRef<number | null>(null);
   const isReplayingRef = useRef(false);
   /** 보드를 다시 그리는 동안 메모·도형을 한 장씩 지웠다 붙이지 않습니다. */
@@ -1398,9 +1496,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
 
     const handler = (payload: Uint8Array, participant?: unknown, _kind?: unknown, topic?: string) => {
       if (topic && topic !== MEETING_BOARD_TOPIC) return;
-      const sender = participant && 'identity' in (participant as any)
-        ? String((participant as any).identity)
-        : undefined;
+      const senderRecord = asLiveKitParticipant(participant);
+      const sender = senderRecord ? String(senderRecord.identity) : undefined;
       // localParticipant가 아직 없으면 identity 비교를 건너뜁니다.
       if (sender && sender === localParticipant?.identity) return;
 
@@ -1418,9 +1515,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // 주의: 이 이벤트의 첫 인자는 "바뀌기 전" metadata 입니다(livekit-client 규약).
     // 그 값을 쓰면 새 보드로 바뀐 직후 이전 보드로 되돌아가므로, 참가자의 현재 metadata 를 읽습니다.
     const participantMetadataHandler = (_prevMetadata: string | undefined, participant?: unknown) => {
-      if (!participant || !room) return;
-      if (!('identity' in (participant as any))) return;
-      const remote = participant as { identity: string; metadata?: string };
+      if (!room) return;
+      const remote = asLiveKitParticipant(participant);
+      if (!remote) return;
       if (remote.identity === localParticipant?.identity) return;
       const msg = decodeMeetingBoardMetadata(remote.metadata);
       if (!msg) return;
@@ -1751,7 +1848,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         removePlacedImageRef.current(selectedImageIdRef.current);
         return;
       }
-      const mapped = toolShortcutMap[e.key];
+      const mapped = TOOL_SHORTCUTS[e.key];
       if (mapped) pickTool(mapped);
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -2543,11 +2640,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const style = strokeStyleByIdRef.current.get(strokeId);
     if (!style) return false;
 
+    const applied = remoteStrokePointsRef.current.get(strokeId);
+
     // 반투명: 선분마다 그리지 않고 점만 모읍니다. (stroke.end 때 한 경로로 그림)
     if (isTranslucentPen(style.opacity, style.tool)) {
       const buf = translucentStrokePointsRef.current.get(strokeId) ?? [{ x: last.x, y: last.y }];
       for (const next of points) {
         buf.push({ x: next.x, y: next.y });
+        if (applied) applied.push({ x: next.x, y: next.y });
         last.x = next.x;
         last.y = next.y;
       }
@@ -2561,25 +2661,208 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       } else {
         applyStrokeSegment(last, next, style.tool, style.color, style.size, style.opacity, style.dash);
       }
+      if (applied) applied.push({ x: next.x, y: next.y });
       last.x = next.x;
       last.y = next.y;
     }
     return true;
   };
 
-  const flushRemotePendingStroke = (strokeId: string) => {
-    const pending = remotePendingAppendsRef.current.get(strokeId);
-    if (pending) {
-      remotePendingAppendsRef.current.delete(strokeId);
-      for (const points of pending) {
-        applyStrokeAppendPoints(strokeId, points);
+  const resetRemoteStrokeTracking = () => {
+    remoteLastPointByStrokeRef.current = new Map();
+    remotePendingAppendsRef.current = new Map();
+    remotePendingEndsRef.current = new Set();
+    remoteNextSeqRef.current = new Map();
+    remoteEndSeqRef.current = new Map();
+    remoteEndDeferredRef.current = new Set();
+    remoteStrokePointsRef.current = new Map();
+    strokeStyleByIdRef.current = new Map();
+    translucentStrokePointsRef.current = new Map();
+  };
+
+  const copyPoints = (points: Point[]) => points.map((pt) => ({ x: pt.x, y: pt.y }));
+
+  /** 다음 번호가 올 때까지 들고 있던 append를 순서대로 그립니다. */
+  const drainRemoteStroke = (strokeId: string) => {
+    if (!remoteLastPointByStrokeRef.current.has(strokeId)) return;
+    const bucket = remotePendingAppendsRef.current.get(strokeId);
+    if (bucket && bucket.length > 0) {
+      let next = remoteNextSeqRef.current.get(strokeId) ?? 1;
+      for (;;) {
+        const seqIdx = bucket.findIndex((item) => item.seq === next);
+        // 번호가 없는 예전 이벤트는, 같은 번호가 없을 때만 도착 순서로 붙입니다.
+        const idx = seqIdx >= 0 ? seqIdx : bucket.findIndex((item) => item.seq == null);
+        if (idx < 0) break;
+        const item = bucket.splice(idx, 1)[0];
+        applyStrokeAppendPoints(strokeId, item.points);
+        if (typeof item.seq === 'number') next = item.seq + 1;
+      }
+      remoteNextSeqRef.current.set(strokeId, next);
+      if (bucket.length === 0) remotePendingAppendsRef.current.delete(strokeId);
+    }
+    tryFinishRemoteStroke(strokeId);
+  };
+
+  const tryFinishRemoteStroke = (strokeId: string) => {
+    if (!remotePendingEndsRef.current.has(strokeId)) return;
+    if (!remoteLastPointByStrokeRef.current.has(strokeId)) return;
+    if (!remoteEndSeqRef.current.has(strokeId)) return;
+    const held = remotePendingAppendsRef.current.get(strokeId);
+    const lastSeq = remoteEndSeqRef.current.get(strokeId);
+    const next = remoteNextSeqRef.current.get(strokeId) ?? 1;
+    // 마지막 번호를 모르면, 들고 있는 점이 없을 때만 끝냅니다.
+    if (lastSeq == null) {
+      if (held && held.length > 0) return;
+    } else if (next <= lastSeq) {
+      return;
+    }
+    remotePendingEndsRef.current.delete(strokeId);
+    remoteEndSeqRef.current.delete(strokeId);
+    const deferred = remoteEndDeferredRef.current.delete(strokeId);
+    finalizeTranslucentStroke(strokeId);
+    remoteLastPointByStrokeRef.current.delete(strokeId);
+    strokeStyleByIdRef.current.delete(strokeId);
+    remoteNextSeqRef.current.delete(strokeId);
+    remoteStrokePointsRef.current.delete(strokeId);
+    remotePendingAppendsRef.current.delete(strokeId);
+    // 빈 칸을 채운 뒤에야 실행취소 스냅샷을 남깁니다. 다시 그리는 중에는 호출한 쪽이 쌓습니다.
+    if (deferred && !deferOverlayPaintRef.current && !isReplayingRef.current) commitHistory();
+  };
+
+  const queueRemoteAppend = (strokeId: string, points: Point[], seq: number | null) => {
+    if (points.length === 0) return;
+    const list = remotePendingAppendsRef.current.get(strokeId) ?? [];
+    list.push({ seq, points: copyPoints(points) });
+    remotePendingAppendsRef.current.set(strokeId, list);
+    drainRemoteStroke(strokeId);
+  };
+
+  /** end를 바로 끝낼 수 있으면 true. 빠진 append가 있으면 false를 돌려 실행취소를 미룹니다. */
+  const requestRemoteStrokeEnd = (strokeId: string, lastLiveSeq: number | undefined) => {
+    remoteEndSeqRef.current.set(strokeId, typeof lastLiveSeq === 'number' ? lastLiveSeq : null);
+    remotePendingEndsRef.current.add(strokeId);
+    drainRemoteStroke(strokeId);
+    const done = !remotePendingEndsRef.current.has(strokeId);
+    if (!done) remoteEndDeferredRef.current.add(strokeId);
+    return done;
+  };
+
+  /** 다시 그리기 직전에, 아직 저장이 안 끝난 획을 복사해 둡니다. */
+  const captureOpenStrokes = (): PreservedStroke[] => {
+    const snaps = new Map<string, PreservedStroke>();
+    const put = (strokeId: string, local: boolean) => {
+      if (snaps.has(strokeId)) return;
+      const style = strokeStyleByIdRef.current.get(strokeId) ?? null;
+      const points = local
+        ? (localStrokePointsRef.current ?? [])
+        : (remoteStrokePointsRef.current.get(strokeId) ?? []);
+      const endKnown = remoteEndSeqRef.current.has(strokeId);
+      snaps.set(strokeId, {
+        strokeId,
+        local,
+        style: style ? { ...style } : null,
+        points: copyPoints(points),
+        held: (remotePendingAppendsRef.current.get(strokeId) ?? []).map((item) => ({
+          seq: item.seq,
+          points: copyPoints(item.points),
+        })),
+        nextSeq: remoteNextSeqRef.current.get(strokeId) ?? 1,
+        endPending: remotePendingEndsRef.current.has(strokeId),
+        lastLiveSeq: endKnown ? (remoteEndSeqRef.current.get(strokeId) ?? null) : null,
+      });
+    };
+    if (drawingRef.current && localStrokeIdRef.current && localStrokePointsRef.current) {
+      put(localStrokeIdRef.current, true);
+    }
+    for (const strokeId of remoteStrokePointsRef.current.keys()) {
+      if (strokeId === localStrokeIdRef.current) continue;
+      put(strokeId, false);
+    }
+    for (const strokeId of remotePendingAppendsRef.current.keys()) {
+      if (strokeId === localStrokeIdRef.current) continue;
+      put(strokeId, false);
+    }
+    for (const strokeId of remotePendingEndsRef.current) {
+      if (strokeId === localStrokeIdRef.current) continue;
+      put(strokeId, false);
+    }
+    return [...snaps.values()];
+  };
+
+  /** 복사해 둔 꼬리와, 순서를 기다리던 append를 다시 그립니다. */
+  const requeuePreservedHeld = (snap: PreservedStroke) => {
+    const current = remoteNextSeqRef.current.get(snap.strokeId) ?? 1;
+    const next = Math.max(current, snap.nextSeq);
+    remoteNextSeqRef.current.set(snap.strokeId, next);
+    if (snap.endPending) {
+      remoteEndSeqRef.current.set(snap.strokeId, snap.lastLiveSeq);
+      remotePendingEndsRef.current.add(snap.strokeId);
+      remoteEndDeferredRef.current.add(snap.strokeId);
+    }
+    const pending = remotePendingAppendsRef.current.get(snap.strokeId) ?? [];
+    for (const item of snap.held) {
+      if (item.seq != null && item.seq < next) continue;
+      pending.push({ seq: item.seq, points: copyPoints(item.points) });
+    }
+    if (pending.length > 0) remotePendingAppendsRef.current.set(snap.strokeId, pending);
+    drainRemoteStroke(snap.strokeId);
+  };
+
+  const restorePreservedStrokes = (
+    snaps: PreservedStroke[],
+    events: BoardEventRow[],
+    undone: Set<string>,
+  ) => {
+    // 반투명 미리보기는 스냅샷 위에 다시 그리므로, 다른 획을 먼저 올린 뒤에 찍습니다.
+    let localTranslucent: { points: Point[]; style: StrokeStyleSnap } | null = null;
+    for (const snap of snaps) {
+      if (undone.has(snap.strokeId)) continue;
+      const dbCount = openStrokePointCount(events, snap.strokeId);
+      // DB에 끝까지 있으면 다시 칠하지 않습니다.
+      if (dbCount == null) continue;
+      const latestPoints = snap.local && localStrokePointsRef.current
+        ? copyPoints(localStrokePointsRef.current)
+        : snap.points;
+      const style = strokeStyleByIdRef.current.get(snap.strokeId) ?? snap.style;
+      const translucent = Boolean(style && isTranslucentPen(style.opacity, style.tool));
+
+      if (dbCount === 0 && style && latestPoints.length > 0) {
+        strokeStyleByIdRef.current.set(snap.strokeId, { ...style });
+        const start = { ...latestPoints[0] };
+        remoteLastPointByStrokeRef.current.set(snap.strokeId, { ...start });
+        remoteStrokePointsRef.current.set(snap.strokeId, [{ ...start }]);
+        remoteNextSeqRef.current.set(snap.strokeId, snap.nextSeq);
+        if (translucent) {
+          translucentStrokePointsRef.current.set(snap.strokeId, [{ ...start }]);
+        }
+        if (latestPoints.length > 1 && !(snap.local && translucent)) {
+          applyStrokeAppendPoints(snap.strokeId, latestPoints.slice(1));
+        }
+      } else if (
+        latestPoints.length > dbCount
+        && remoteLastPointByStrokeRef.current.has(snap.strokeId)
+        && !(snap.local && translucent)
+      ) {
+        applyStrokeAppendPoints(snap.strokeId, latestPoints.slice(dbCount));
+      }
+
+      requeuePreservedHeld(snap);
+
+      if (snap.local && translucent && style && latestPoints.length > 0) {
+        localTranslucent = { points: latestPoints, style };
       }
     }
-    if (remotePendingEndsRef.current.has(strokeId)) {
-      remotePendingEndsRef.current.delete(strokeId);
-      finalizeTranslucentStroke(strokeId);
-      remoteLastPointByStrokeRef.current.delete(strokeId);
-      strokeStyleByIdRef.current.delete(strokeId);
+    if (localTranslucent) {
+      takeSnapshot();
+      liveStrokePointsRef.current = copyPoints(localTranslucent.points);
+      applyStrokePath(
+        localTranslucent.points,
+        localTranslucent.style.tool,
+        localTranslucent.style.color,
+        localTranslucent.style.size,
+        localTranslucent.style.opacity,
+        localTranslucent.style.dash,
+      );
     }
   };
 
@@ -3253,7 +3536,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       nextPayload = { ...p, liveSeq: seq } satisfies StrokeAppendPayload;
     } else if (type === 'stroke.end') {
       const p = payload as StrokeEndPayload;
+      const lastLiveSeq = strokeLiveSeqByIdRef.current.get(p.strokeId) ?? 0;
       strokeLiveSeqByIdRef.current.delete(p.strokeId);
+      // 받는 쪽이 빠진 번호를 끝까지 기다릴 수 있게 마지막 번호를 같이 보냅니다.
+      nextPayload = { ...p, lastLiveSeq };
     }
 
     // 회의방: LiveKit으로 먼저 뿌려 동시 필기 체감을 DB RTT에서 분리합니다.
@@ -3272,7 +3558,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         payload: nextPayload,
       };
       void localParticipant.publishData(encodeMeetingStrokeMessage(msg), {
-        // append는 손실보다 지연이 치명적이라 unreliable, begin/end는 신뢰 전송
+        // append는 빠르게 보내 순서가 바뀌거나 빠질 수 있습니다. 받는 쪽이 liveSeq로 맞추고, 빈 칸은 DB가 채웁니다.
         reliable: type !== 'stroke.append',
         topic: MEETING_BOARD_STROKE_TOPIC,
       });
@@ -3431,9 +3717,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     });
 
     clearAllLocal();
-    remoteLastPointByStrokeRef.current = new Map();
-    strokeStyleByIdRef.current = new Map();
-    translucentStrokePointsRef.current = new Map();
+    resetRemoteStrokeTracking();
     return true;
   };
 
@@ -3445,9 +3729,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const clamped = Math.max(0, Math.min(events.length, Math.floor(index)));
 
     clearAllLocal();
-    remoteLastPointByStrokeRef.current = new Map();
-    strokeStyleByIdRef.current = new Map();
-    translucentStrokePointsRef.current = new Map();
+    resetRemoteStrokeTracking();
     liveStrokePointsRef.current = null;
 
     for (let k = 0; k < clamped; k += 1) {
@@ -3520,7 +3802,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     replaySpeedRef.current = replaySpeed;
     if (!isReplayingRef.current) return;
     armReplayClock(getReplayVirtualMs());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replaySpeed]);
 
   useEffect(() => {
@@ -3531,7 +3812,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     replayAdjustedMsRef.current = buildAdjustedMs(replayEventsRef.current);
     const atMs = replayAdjustedMsRef.current[Math.min(idx, replayAdjustedMsRef.current.length - 1)] ?? 0;
     armReplayClock(atMs);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compressGaps, maxGapMs]);
 
   // Supabase에 저장된 보드 이벤트를 읽어서 캔버스에 다시 그리는 함수입니다.
@@ -3541,6 +3821,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // 이 호출 이후 다른 보드 로딩이 시작되면 이번 결과는 버립니다.
     const loadSeq = ++boardLoadSeqRef.current;
     const isStale = () => loadSeq !== boardLoadSeqRef.current;
+    // 타임랩스 재생 중 화면은 저장본이라, 그 위에 회의 중 획을 다시 칠하지 않습니다.
+    const skipPreserve = isReplayingRef.current || replayEventsRef.current.length > 0;
     // 방금 그린 획의 저장이 끝나기 전에 조회하면, 이전 보드로 돌아왔을 때 그 내용이 빠집니다.
     // 여기서는 새 점으로 나누지 않고, 이미 큐에 들어간 저장만 기다립니다.
     await strokeWriteChainRef.current;
@@ -3563,7 +3845,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       return;
     }
     // 실행취소된 동작은 여기서 빼고 그려, 모든 참가자·새로고침 화면이 같게 합니다.
-    const events = filterUndoneEvents((data ?? []) as BoardEventRow[]);
+    const rawEvents = (data ?? []) as BoardEventRow[];
+    const undoneStrokeIds = collectUndoneStrokeIds(rawEvents);
+    const events = filterUndoneEvents(rawEvents);
     const transforms = new Map<string, ImageTransformPayload>();
     const textTransforms = new Map<string, TextTransformPayload>();
     const shapeTransforms = new Map<string, ShapeTransformPayload>();
@@ -3647,12 +3931,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     deferOverlayPaintRef.current = true;
 
     try {
-    remoteLastPointByStrokeRef.current = new Map();
-    remotePendingAppendsRef.current = new Map();
-    remotePendingEndsRef.current = new Set();
-    strokeStyleByIdRef.current = new Map();
-    translucentStrokePointsRef.current = new Map();
-    liveStrokePointsRef.current = null;
+    // 아직 DB에 없는 진행 중 획은 비우기 전에 복사해 두고, 다 그린 뒤 꼬리만 다시 칠합니다.
+    const preservedStrokes = skipPreserve || isStale() ? [] : captureOpenStrokes();
+    resetRemoteStrokeTracking();
+    if (skipPreserve) liveStrokePointsRef.current = null;
     clearAllLocal();
     for (const ev of events) {
       // 이미지 등은 비동기로 그려지므로, 그리는 도중 보드가 바뀌면 남은 이벤트를 멈춥니다.
@@ -3753,8 +4035,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         if (isHistoryCommitEvent(ev.type)) commitHistory();
         continue;
       }
-      await applyEvent(ev);
-      if (isHistoryCommitEvent(ev.type)) commitHistory();
+      const commit = await applyEvent(ev);
+      if (commit !== false && isHistoryCommitEvent(ev.type)) commitHistory();
+    }
+    if (!isStale() && preservedStrokes.length > 0) {
+      restorePreservedStrokes(preservedStrokes, events, undoneStrokeIds);
     }
     if (!isStale()) {
       revealExpandedFilesOnCanvas();
@@ -3845,7 +4130,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
             }
           }
 
-          void applyEvent(row).then(() => {
+          void applyEvent(row).then((commit) => {
+            if (commit === false) return;
             if (isHistoryCommitEvent(row.type)) commitHistory();
           });
         },
@@ -3888,16 +4174,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, initialBoardId, initialTimelapseSaveId, autoPlayTimelapse]);
 
-  const applyEvent = async (ev: BoardEventRow) => {
+  const applyEvent = async (ev: BoardEventRow): Promise<boolean | void> => {
     if (ev.type === 'board.clear') {
       clearAllLocal();
-      remoteLastPointByStrokeRef.current = new Map();
-      remotePendingAppendsRef.current = new Map();
-      remotePendingEndsRef.current = new Set();
-      strokeStyleByIdRef.current = new Map();
-      translucentStrokePointsRef.current = new Map();
+      resetRemoteStrokeTracking();
       strokeLiveSeqByIdRef.current = new Map();
       appliedLiveStrokeKeysRef.current = new Set();
+      // 지운 뒤에도 펜을 누르고 있으면, 그 점부터 다시 따라갑니다.
+      localStrokePointsRef.current = drawingRef.current && lastPointRef.current
+        ? [{ ...lastPointRef.current }]
+        : null;
       return;
     }
 
@@ -3913,6 +4199,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (ev.type === 'stroke.begin') {
       const p = ev.payload as StrokeBeginPayload;
       remoteLastPointByStrokeRef.current.set(p.strokeId, { x: p.point.x, y: p.point.y });
+      remoteStrokePointsRef.current.set(p.strokeId, [{ x: p.point.x, y: p.point.y }]);
+      if (!remoteNextSeqRef.current.has(p.strokeId)) remoteNextSeqRef.current.set(p.strokeId, 1);
       const opacity = typeof p.opacity === 'number' ? p.opacity : 1;
       strokeStyleByIdRef.current.set(p.strokeId, {
         tool: p.tool,
@@ -3925,31 +4213,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
       if (isTranslucentPen(opacity, p.tool)) {
         translucentStrokePointsRef.current.set(p.strokeId, [{ x: p.point.x, y: p.point.y }]);
       }
-      flushRemotePendingStroke(p.strokeId);
+      drainRemoteStroke(p.strokeId);
       return;
     }
 
     if (ev.type === 'stroke.append') {
       const p = ev.payload as StrokeAppendPayload;
-      if (!remoteLastPointByStrokeRef.current.has(p.strokeId)) {
-        const list = remotePendingAppendsRef.current.get(p.strokeId) ?? [];
-        list.push(p.points);
-        remotePendingAppendsRef.current.set(p.strokeId, list);
-        return;
-      }
-      applyStrokeAppendPoints(p.strokeId, p.points);
+      // 번호가 비면 도착 순서로, 있으면 다음 번호가 될 때까지 들고 있습니다.
+      const seq = typeof p.liveSeq === 'number' ? p.liveSeq : null;
+      queueRemoteAppend(p.strokeId, p.points, seq);
       return;
     }
 
     if (ev.type === 'stroke.end') {
       const p = ev.payload as StrokeEndPayload;
-      if (!remoteLastPointByStrokeRef.current.has(p.strokeId)) {
-        remotePendingEndsRef.current.add(p.strokeId);
-        return;
-      }
-      finalizeTranslucentStroke(p.strokeId);
-      remoteLastPointByStrokeRef.current.delete(p.strokeId);
-      strokeStyleByIdRef.current.delete(p.strokeId);
+      const done = requestRemoteStrokeEnd(p.strokeId, p.lastLiveSeq);
+      if (!done) return false;
       return;
     }
 
@@ -4265,7 +4544,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
         payload: msg.payload,
       };
 
-      void applyEvent(row).then(() => {
+      void applyEvent(row).then((commit) => {
+        if (commit === false) return;
         if (isHistoryCommitEvent(row.type)) commitHistory();
       });
     };
@@ -4774,6 +5054,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     strokeStartPointRef.current = p;
     localStrokeIdRef.current = crypto.randomUUID();
     pendingChunkRef.current = [];
+    localStrokePointsRef.current = [{ x: p.x, y: p.y }];
 
     const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
     const strokeOpacity = strokeTool === 'eraser' ? 1 : penOpacity;
@@ -4945,12 +5226,22 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     const strokeTool: StrokeTool = activeTool === 'eraser' ? 'eraser' : 'pen';
     const strokeOpacity = strokeTool === 'eraser' ? 1 : penOpacity;
     const strokeDash = strokeTool === 'eraser' ? 'solid' : penDash;
+    localStrokePointsRef.current?.push({ x: p.x, y: p.y });
 
     // 반투명: 스냅샷 복구 후 전체 경로를 다시 그려 동그란 겹침을 제거합니다.
     if (liveStrokePointsRef.current) {
       liveStrokePointsRef.current.push({ x: p.x, y: p.y });
+      pendingChunkRef.current.push(p);
+      scheduleChunkFlush();
+      lastPointRef.current = p;
+      // 보드를 다시 그리는 중에는 옛 스냅샷으로 화면을 덮지 않습니다. 끝나면 경로를 한 번 올립니다.
+      if (deferOverlayPaintRef.current) return;
       restoreSnapshot();
       applyStrokePath(liveStrokePointsRef.current, strokeTool, color, size, strokeOpacity, strokeDash);
+      return;
+    }
+
+    if (deferOverlayPaintRef.current) {
       pendingChunkRef.current.push(p);
       scheduleChunkFlush();
       lastPointRef.current = p;
@@ -5092,6 +5383,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
     if (!drawingRef.current) return;
     drawingRef.current = false;
     lastPointRef.current = null;
+    localStrokePointsRef.current = null;
     const sid = localStrokeIdRef.current;
     const startPoint = strokeStartPointRef.current;
     strokeStartPointRef.current = null;
@@ -5447,8 +5739,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, Props>(function CanvasBoard({
                 pointerEvents: drawThroughFile ? 'none' : 'auto',
               }}
             >
-              <BoardFilePreview
-                url={chatFileUrl(item.path)}
+              <SignedBoardFilePreview
+                path={item.path}
                 name={displayFileName(item.name)}
                 mime={item.mime}
                 interactive={!drawThroughFile}

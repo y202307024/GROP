@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import styles from './MeetingDrawingTools.module.css';
 import type { ExcalidrawTool } from './ExcalidrawToolbar';
-import { chatFileUrl, displayFileName, type MeetingChatFile } from '../utils/meetingChat';
+import { displayFileName, type MeetingChatFile } from '../utils/meetingChat';
+import { useSignedMediaUrl } from '../utils/signedMediaUrl';
 // 시안 SVG 아이콘 모음 (파일별 원래 크기 포함)
 import * as ICON from './toolIcons';
 
@@ -28,13 +29,10 @@ const PRIMARY_TOOLS: PrimaryTool[] = [
 /** 펜 색 팔레트 — 시안 순서: 검정·빨강·노랑·초록·파랑·보라·흰색 */
 const PEN_COLORS = ['#000000', '#ff0000', '#ffe100', '#59ff00', '#0077ff', '#7300ff', '#ffffff'] as const;
 
-/** 펜·텍스트·도형에서 쓰는 공통 색 팔레트 */
-export const DRAW_COLORS = PEN_COLORS;
-
 export type PenTipId = 'pencil' | 'marker' | 'brush';
 
 /** 시안: 연필 · 마커 · 붓 — 마커는 형광펜처럼 반투명·넓은 획 */
-export const PEN_TIPS = [
+const PEN_TIPS = [
   { id: 'pencil' as const, label: '연필', size: 3, opacity: 1 },
   { id: 'marker' as const, label: '마커', size: 18, opacity: 0.4 },
   { id: 'brush' as const, label: '붓', size: 14, opacity: 1 },
@@ -148,6 +146,28 @@ function MaskIcon({ icon, className }: { icon: ICON.ToolIcon; className?: string
   return <span className={`${styles.maskIcon}${className ? ` ${className}` : ''}`} style={vars} aria-hidden="true" />;
 }
 
+/** 첨부 칩. 저장된 경로로 짧은 주소를 받은 뒤에 새 탭에서 엽니다. */
+function SignedAttachmentLink({ file }: { file: MeetingChatFile }) {
+  const { url, error } = useSignedMediaUrl('file', file.path);
+  const name = displayFileName(file.name);
+  return (
+    <a
+      className={styles.attachmentChip}
+      href={url || undefined}
+      target="_blank"
+      rel="noreferrer"
+      download={name}
+      title={error || name}
+      onClick={(event) => {
+        if (!url) event.preventDefault();
+      }}
+    >
+      <MaskIcon icon={ICON.fileDoc} className={styles.attachmentChipIcon} />
+      <span>{name}</span>
+    </a>
+  );
+}
+
 /** 정렬 드롭다운에서 가운데·오른쪽 정렬 아이콘 (시안 SVG는 왼쪽 정렬만 있어 나머지는 기존 선 아이콘 유지) */
 function AlignLineIcon({ kind }: { kind: 'center' | 'right' }) {
   return (
@@ -202,6 +222,12 @@ export default function MeetingDrawingTools({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // 텍스트 px 입력칸 — 타이핑 중에는 문자열로 두고, 확정 시 숫자로 반영합니다.
   const [textSizeDraft, setTextSizeDraft] = useState(String(textFontSize));
+  const [seenFontSize, setSeenFontSize] = useState(textFontSize);
+  // 바깥에서 글자 크기가 바뀌면 입력칸도 그 숫자로 맞춥니다.
+  if (textFontSize !== seenFontSize) {
+    setSeenFontSize(textFontSize);
+    setTextSizeDraft(String(textFontSize));
+  }
   // 글자 크기 드롭다운 → 위로 px 입력칸 펼침
   const [textFontSizeMenuOpen, setTextFontSizeMenuOpen] = useState(false);
   // 정렬 드롭다운 → 위로 좌·중·우 정렬 펼침
@@ -215,15 +241,14 @@ export default function MeetingDrawingTools({
     onPenTipChange?.(tip);
   };
 
-  useEffect(() => {
-    setTextSizeDraft(String(textFontSize));
-  }, [textFontSize]);
-
+  const menuKey = `${active}:${textSelected ? '1' : '0'}`;
+  const [seenMenuKey, setSeenMenuKey] = useState(menuKey);
   // 도구를 바꾸면 글자 크기·정렬 드롭다운은 접습니다.
-  useEffect(() => {
+  if (menuKey !== seenMenuKey) {
+    setSeenMenuKey(menuKey);
     setTextFontSizeMenuOpen(false);
     setTextAlignMenuOpen(false);
-  }, [active, textSelected]);
+  }
 
   // 드롭다운이 열려 있는 동안만 바깥 클릭을 감시합니다. (값은 input blur에서 이미 확정)
   useEffect(() => {
@@ -598,18 +623,7 @@ export default function MeetingDrawingTools({
                 <span className={styles.submenuEmpty}>추가한 파일이 여기 쌓입니다</span>
               ) : (
                 attachments.map((file, index) => (
-                  <a
-                    key={`${file.path}-${index}`}
-                    className={styles.attachmentChip}
-                    href={chatFileUrl(file.path)}
-                    target="_blank"
-                    rel="noreferrer"
-                    download={displayFileName(file.name)}
-                    title={displayFileName(file.name)}
-                  >
-                    <MaskIcon icon={ICON.fileDoc} className={styles.attachmentChipIcon} />
-                    <span>{displayFileName(file.name)}</span>
-                  </a>
+                  <SignedAttachmentLink key={`${file.path}-${index}`} file={file} />
                 ))
               )}
             </div>

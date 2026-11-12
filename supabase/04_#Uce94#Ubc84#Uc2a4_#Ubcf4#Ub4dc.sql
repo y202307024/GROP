@@ -105,27 +105,45 @@ grant select, insert on public.board_events to authenticated;
 alter table public.boards enable row level security;
 alter table public.board_events enable row level security;
 
--- ⚠️ 현재는 로그인만 하면 모든 보드를 보고 쓸 수 있는 상태입니다.
---    그룹 단위로 좁히는 작업은 07_보안_RLS정리.sql 에 있습니다.
+-- 그룹 보드만 멤버로 제한합니다. group_id 가 없는 보드는 07 과 같이 그대로 둡니다.
 drop policy if exists "boards_read_authed" on public.boards;
-create policy "boards_read_authed" on public.boards
-for select to authenticated using (true);
+drop policy if exists "boards_read_member" on public.boards;
+create policy "boards_read_member" on public.boards
+for select to authenticated
+using (group_id is null or public.is_group_member(group_id));
 
 drop policy if exists "boards_insert_authed" on public.boards;
-create policy "boards_insert_authed" on public.boards
-for insert to authenticated with check (true);
+drop policy if exists "boards_insert_member" on public.boards;
+create policy "boards_insert_member" on public.boards
+for insert to authenticated
+with check (group_id is null or public.is_group_member(group_id));
 
 drop policy if exists "boards_update_authed" on public.boards;
-create policy "boards_update_authed" on public.boards
-for update to authenticated using (true) with check (true);
+drop policy if exists "boards_update_member" on public.boards;
+create policy "boards_update_member" on public.boards
+for update to authenticated
+using (group_id is null or public.is_group_member(group_id))
+with check (group_id is null or public.is_group_member(group_id));
 
 drop policy if exists "events_read_authed" on public.board_events;
-create policy "events_read_authed" on public.board_events
-for select to authenticated using (true);
+drop policy if exists "events_read_member" on public.board_events;
+create policy "events_read_member" on public.board_events
+for select to authenticated
+using (exists (
+  select 1 from public.boards b
+  where b.id = board_events.board_id
+    and (b.group_id is null or public.is_group_member(b.group_id))
+));
 
 drop policy if exists "events_insert_authed" on public.board_events;
-create policy "events_insert_authed" on public.board_events
-for insert to authenticated with check (true);
+drop policy if exists "events_insert_member" on public.board_events;
+create policy "events_insert_member" on public.board_events
+for insert to authenticated
+with check (exists (
+  select 1 from public.boards b
+  where b.id = board_events.board_id
+    and (b.group_id is null or public.is_group_member(b.group_id))
+));
 
 -- ── 실시간 동기화 ───────────────────────────────────────────
 -- board_events 를 Realtime publication 에 추가합니다.

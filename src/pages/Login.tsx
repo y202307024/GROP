@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { explainAuthError } from '../authErrors';
 import { startOAuth } from '../utils/oauthLogin';
+import { setRememberLogin } from '../utils/authStorage';
 import { useAppShellScale } from '../hooks/useAppShellScale';
 import heroArt from '../assets/image_login.png';
 import googleIcon from '../assets/icon_google.svg';
@@ -22,7 +23,7 @@ function FeatureIcon({ src }: { src: string }) {
 
 /**
  * 로그인 페이지
- * grop/login.html 의 클래스명과 css/login.css 를 그대로 사용합니다.
+ * 클래스명은 grop/css/login.css 전역 스타일을 그대로 사용합니다.
  */
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -52,10 +53,13 @@ export default function Login() {
     e.preventDefault();
     setMessage('');
     setLoading(true);
+    // 체크가 꺼져 있으면 이번 탭의 sessionStorage에만 두고, 브라우저를 닫으면 지웁니다.
+    setRememberLogin(remember);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
 
     if (error) {
+      setRememberLogin(false);
       setMessage(`로그인 실패: ${explainAuthError(error.message)}`);
     } else {
       navigate(afterLogin || '/main');

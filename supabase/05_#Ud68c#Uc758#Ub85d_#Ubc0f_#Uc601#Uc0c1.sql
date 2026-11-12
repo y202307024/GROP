@@ -80,20 +80,14 @@ for delete to authenticated
 using (public.is_group_member(group_id));
 
 -- ── 녹화 영상 저장소 ────────────────────────────────────────
--- 비공개 버킷입니다. 재생은 앱이 signed URL 을 발급해서 씁니다.
+-- 버킷은 비공개로 둡니다. 새 녹화는 R2, 예전 영상은 서버 디스크입니다.
+-- 브라우저 키로 버킷 전체를 읽거나 올리지 못하게, 예전에 열어 둔 정책은 지웁니다.
 insert into storage.buckets (id, name, public)
 values ('meeting-videos', 'meeting-videos', false)
 on conflict (id) do update set public = excluded.public;
 
 drop policy if exists "meeting_videos_read_authed" on storage.objects;
-create policy "meeting_videos_read_authed" on storage.objects
-for select to authenticated
-using (bucket_id = 'meeting-videos');
-
 drop policy if exists "meeting_videos_insert_authed" on storage.objects;
-create policy "meeting_videos_insert_authed" on storage.objects
-for insert to authenticated
-with check (bucket_id = 'meeting-videos');
 
 comment on table public.meetings is '회의록 — 녹화·AI요약·타임라인 저장';
 comment on column public.meetings.chapters is

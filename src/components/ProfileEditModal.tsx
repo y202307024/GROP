@@ -34,12 +34,17 @@ export default function ProfileEditModal({ open, onClose, onSaved, required = fa
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // 열릴 때마다 불러오는 중으로 되돌립니다.
+  const [seenOpen, setSeenOpen] = useState(false);
+  if (open !== seenOpen) {
+    setSeenOpen(open);
+    if (open) setLoading(true);
+  }
 
   // 열릴 때마다 최신 프로필을 다시 불러옵니다.
   useEffect(() => {
     if (!open) return;
     let mounted = true;
-    setLoading(true);
 
     const fetchProfile = async () => {
       const { data: userData } = await supabase.auth.getUser();

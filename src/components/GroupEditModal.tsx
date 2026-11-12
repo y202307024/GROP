@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { createScaledPortal } from './AppScaleLayer';
 import { supabase } from '../services/supabaseClient';
 import { getAvatarSrc } from '../utils/avatarOptions';
@@ -72,16 +72,19 @@ export default function GroupEditModal({
 
   const nameInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // 모달을 열 때마다 입력값을 현재 그룹 이름/메모 기준으로 되돌립니다.
-  useEffect(() => {
-    if (!open) return;
-    setName(groupName);
-    setMemo(groupMemo);
-    setAvatarUrl(groupAvatarUrl);
-    setRoleDraft({});
-    setProfileOpen(false);
-  }, [open, groupName, groupMemo, groupAvatarUrl]);
+  // 닫혀 있으면 빈 키입니다. 열리거나 그룹 값이 바뀌면 입력칸을 그 값으로 되돌립니다.
+  const formKey = open ? `${groupName}\0${groupMemo}\0${groupAvatarUrl ?? ''}` : '';
+  const [appliedFormKey, setAppliedFormKey] = useState(formKey);
+  if (formKey !== appliedFormKey) {
+    setAppliedFormKey(formKey);
+    if (open) {
+      setName(groupName);
+      setMemo(groupMemo);
+      setAvatarUrl(groupAvatarUrl);
+      setRoleDraft({});
+      setProfileOpen(false);
+    }
+  }
 
   if (!open) return null;
 

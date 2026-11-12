@@ -23,6 +23,7 @@ import AiMeetingList from './pages/AiMeetingList'
 import CalendarPage from './pages/CalendarPage'
 import JoinGroupPage from './pages/JoinGroupPage'
 import TimelapsePage from './pages/TimelapsePage'
+import ServerLogsPage from './pages/ServerLogsPage'
 import NotFound from './pages/NotFound'
 
 
@@ -60,6 +61,7 @@ export default function App() {
         <Route path="/ai/:meetingId" element={<AiSummaryPage />} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/timelapse" element={<TimelapsePage />} />
+        <Route path="/server-logs" element={<ServerLogsPage />} />
         {/* 등록되지 않은 경로는 흰 화면 대신 안내 페이지로 */}
         <Route path="*" element={<NotFound />} />
       </Routes>

@@ -46,6 +46,40 @@ function loadDocBookmarks(): Set<string> {
   }
 }
 
+/**
+ * 지운 파일 경로.
+ * 회의 기록 갱신이 실패해도 이 브라우저에서 새로고침하면 목록에 다시 넣지 않습니다.
+ * 저장 파일명은 시각마다 달라서 같은 경로가 다시 쓰이지 않습니다.
+ */
+const DELETED_DOC_PATHS_KEY = 'grop.deletedDocumentPaths';
+
+function loadDeletedDocPaths(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DELETED_DOC_PATHS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((item): item is string => typeof item === 'string' && item.length > 0));
+  } catch {
+    return new Set();
+  }
+}
+
+function rememberDeletedDocPath(path: string) {
+  if (!path) return;
+  const next = loadDeletedDocPaths();
+  next.add(path);
+  try {
+    localStorage.setItem(DELETED_DOC_PATHS_KEY, JSON.stringify([...next].slice(-400)));
+  } catch {
+    // 저장이 막혀도 이번 화면에서는 지운 상태로 둡니다.
+  }
+}
+
+function withoutDeletedPaths<T extends { path: string }>(files: T[], deleted: Set<string>): T[] {
+  if (deleted.size === 0) return files;
+  return files.filter((file) => !deleted.has(file.path));
+}
+
 type MeetingAttachment = Pick<MeetingSharedFile, 'id' | 'name' | 'path' | 'size' | 'mime' | 'ts' | 'uploadedBy'>;
 
 /** 파일 탐색기에서 고른 뒤, 회의를 고르고 체크하기 전까지 화면에만 있는 파일 */
@@ -296,8 +330,9 @@ export default function DocumentList() {
     let mounted = true;
 
     const load = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
+      // 저장소의 토큰을 그대로 믿지 않고 Supabase가 확인한 사용자만 목록을 봅니다.
+      const { data: userData, error: authError } = await supabase.auth.getUser();
+      if (authError || !userData.user) {
         navigate('/');
         return;
       }
@@ -305,11 +340,11 @@ export default function DocumentList() {
       const { data: memberRows } = await supabase
         .from('group_members')
         .select('group_id')
-        .eq('user_id', sessionData.session.user.id);
+        .eq('user_id', userData.user.id);
 
       const ids = [...new Set((memberRows ?? []).map((row) => row.group_id).filter(Boolean))];
       if (!mounted) return;
-      setMyUserId(sessionData.session.user.id);
+      setMyUserId(userData.user.id);
 
       if (ids.length === 0) {
         setDocs([]);
@@ -333,7 +368,7 @@ export default function DocumentList() {
       }
 
       // attachments·created_by 컬럼이 있으면 함께 읽고, 없으면 기본 컬럼만 다시 조회합니다.
-      let meetings: MeetingDoc[] = [];
+      let meetings: MeetingDoc[];
       const withAttach = await supabase
         .from('meetings')
         .select('id, title, date, summary, group_id, attachments, created_by')
@@ -352,11 +387,16 @@ export default function DocumentList() {
       }
 
       // 서버 meeting-docs 와 병합 — DB에 첨부가 없어도 파일이 보이게 합니다.
+      // 한 번 지운 경로는 어떤 기록에 남아 있어도 목록에 다시 넣지 않습니다.
+      const deletedPaths = loadDeletedDocPaths();
+      // 회의 문서 파일이 있는 회의는, 첨부를 비운 뒤 디스크 파일로 다시 채우지 않습니다.
+      const serverDocIds = new Set<string>();
       const byId = new Map<string, MeetingDoc>();
       for (const m of meetings) {
         byId.set(m.id, {
           ...m,
           group_name: groupNameById.get(m.group_id) ?? null,
+          attachments: withoutDeletedPaths(normalizeAttachments(m.attachments), deletedPaths),
         });
       }
 
@@ -364,18 +404,20 @@ export default function DocumentList() {
         ids.map(async (gid) => {
           const serverDocs = await fetchGroupMeetingDocs(gid);
           for (const sd of serverDocs) {
+            serverDocIds.add(sd.id);
+            const sdFiles = withoutDeletedPaths(sd.files, deletedPaths);
             const prev = byId.get(sd.id);
             const groupId = sd.groupId || gid;
             const groupName = groupNameById.get(groupId) ?? null;
             if (prev) {
               // 서버 목록만 쓰면, 끝난 회의에 DB로 남아 있는 업로드 파일이 문서 탭에서 빠집니다.
-              const merged = unionAttachments(prev.attachments, sd.files);
+              const merged = unionAttachments(prev.attachments, sdFiles);
               byId.set(sd.id, {
                 ...prev,
                 attachments: merged,
                 group_name: prev.group_name || groupName,
               });
-            } else if (sd.files.length > 0) {
+            } else if (sdFiles.length > 0) {
               byId.set(sd.id, {
                 id: sd.id,
                 title: sd.title || null,
@@ -383,7 +425,7 @@ export default function DocumentList() {
                 summary: null,
                 group_id: groupId,
                 group_name: groupName,
-                attachments: sd.files,
+                attachments: sdFiles,
               });
             }
           }
@@ -402,26 +444,34 @@ export default function DocumentList() {
         });
       }
 
-      // 첨부가 없으면 같은 날 파일을 채우고, 있으면 저장용 이름을 원래 이름으로 바꿉니다.
+      // 첨부가 있으면 디스크는 원래 이름만 채웁니다. 같은 날 파일을 다시 붙이면 지운 파일이 되살아납니다.
+      // 첨부가 없는 회의만 디스크 파일을 채우되, 회의 문서 목록을 비워 둔 회의는 채우지 않습니다.
       await Promise.all(
         ids.map(async (gid) => {
           const diskFiles = await fetchGroupChatFiles(gid);
-          if (diskFiles.length === 0) return;
+          const visibleDisk = withoutDeletedPaths(diskFiles, deletedPaths);
+          if (visibleDisk.length === 0) return;
           for (const [id, doc] of byId) {
             if (doc.group_id !== gid) continue;
-            // 회의가 끝난 뒤에도, 그 날 올린 파일은 문서 탭 행에 붙입니다.
-            const sameDay = diskFiles.filter((f) => f.ts && isSameLocalDay(f.ts, doc.date));
             const current = normalizeAttachments(doc.attachments);
-            if (sameDay.length === 0 && current.length === 0) continue;
-            // 회의 기록의 이름을 먼저 둡니다. 디스크의 저장용 이름은 기록이 없을 때만 채웁니다.
-            const mergedFiles = sameDay.length > 0 ? unionAttachments(current, sameDay) : current;
-            byId.set(id, { ...doc, attachments: withResolvedFileNames(mergedFiles, diskFiles) });
+            if (current.length > 0) {
+              byId.set(id, { ...doc, attachments: withResolvedFileNames(current, visibleDisk) });
+              continue;
+            }
+            if (serverDocIds.has(id)) continue;
+            const sameDay = visibleDisk.filter((f) => f.ts && isSameLocalDay(f.ts, doc.date));
+            if (sameDay.length === 0) continue;
+            byId.set(id, { ...doc, attachments: withResolvedFileNames(sameDay, visibleDisk) });
           }
         }),
       );
 
       // 올린 파일이 있는 회의만 문서 탭에 둡니다. 끝난 회의도 파일이 있으면 여기 포함됩니다.
       const merged = mergeSameDayMeetings([...byId.values()])
+        .map((doc) => ({
+          ...doc,
+          attachments: withoutDeletedPaths(normalizeAttachments(doc.attachments), deletedPaths),
+        }))
         .filter((doc) => isListedMeeting(doc))
         .filter((doc) => normalizeAttachments(doc.attachments).length > 0);
 
@@ -485,18 +535,34 @@ export default function DocumentList() {
     try {
       // 디스크에만 남은 파일은 저장용 이름이라, 서버가 원래 이름을 찾으면 그걸로 바꿉니다.
       const groupFiles = await fetchGroupChatFiles(doc.group_id);
-      const applyNames = (files: MeetingAttachment[]) => withResolvedFileNames(files, groupFiles);
+      const deletedPaths = loadDeletedDocPaths();
+      const visibleGroupFiles = withoutDeletedPaths(groupFiles, deletedPaths);
+      const applyNames = (files: MeetingAttachment[]) => withResolvedFileNames(files, visibleGroupFiles);
 
-      // 1) 서버 meeting-docs와 모아 둔 첨부를 함께 엽니다.
-      const serverFiles = await fetchMeetingDocAttachments(doc.id, doc.group_id);
-      const mergedFiles = unionAttachments(doc.attachments, serverFiles);
+      // 화면용 id(회의id::경로)로 조회하면 원래 회의 문서를 못 찾습니다.
+      const meetingId = doc.sourceId || doc.id.split('::')[0];
+      const serverFiles = withoutDeletedPaths(
+        await fetchMeetingDocAttachments(meetingId, doc.group_id),
+        deletedPaths,
+      );
+      // 파일 한 줄은 그 파일만 엽니다. 회의 전체를 합치면 옆 파일까지 같이 열립니다.
+      const mergedFiles = withoutDeletedPaths(
+        doc.fileRow
+          ? withResolvedFileNames(normalizeAttachments(doc.attachments), serverFiles)
+          : unionAttachments(doc.attachments, serverFiles),
+        deletedPaths,
+      );
       if (mergedFiles.length > 0) {
         setOpenFiles(applyNames(mergedFiles));
         return;
       }
+      if (doc.fileRow) {
+        setOpenFiles([]);
+        return;
+      }
 
       // 첨부가 없으면, 같은 그룹·같은 날짜에 올라간 실제 파일로 엽니다.
-      const sameDay = groupFiles.filter((f) => f.ts && isSameLocalDay(f.ts, doc.date));
+      const sameDay = visibleGroupFiles.filter((f) => f.ts && isSameLocalDay(f.ts, doc.date));
       setOpenFiles(sameDay);
     } finally {
       setLoadingFiles(false);
@@ -608,8 +674,9 @@ export default function DocumentList() {
         return;
       }
     }
+    // 전체 문서 행 id는 "회의id::경로"입니다. 그 값으로 저장하면 회의 행을 못 찾아 새로고침 때 파일이 돌아옵니다.
+    rememberDeletedDocPath(file.path);
     const strip = (files: MeetingAttachment[]) => files.filter((item) => item.path !== file.path);
-    const targets = docs.filter((doc) => normalizeAttachments(doc.attachments).some((item) => item.path === file.path));
     setDocs((prev) => prev
       .map((doc) => {
         const files = normalizeAttachments(doc.attachments);
@@ -617,19 +684,49 @@ export default function DocumentList() {
         return { ...doc, attachments: strip(files) };
       })
       .filter((doc) => normalizeAttachments(doc.attachments).length > 0));
-    await Promise.all(targets.map(async (doc) => {
-      const files = strip(normalizeAttachments(doc.attachments));
-      const { error } = await supabase.from('meetings').update({ attachments: files }).eq('id', doc.id);
-      if (error && !/attachments/i.test(error.message)) {
-        console.warn('첨부 삭제 DB 반영 실패:', error.message);
+    setOpenFiles((prev) => strip(prev));
+
+    const groupIds = new Set<string>();
+    const pathGroupId = file.path.split('/').filter(Boolean)[0];
+    if (pathGroupId) groupIds.add(pathGroupId);
+    for (const doc of docs) {
+      if (!doc.group_id) continue;
+      if (normalizeAttachments(doc.attachments).some((item) => item.path === file.path)) {
+        groupIds.add(doc.group_id);
       }
-      await saveMeetingDocToServer({
-        meetingId: doc.id,
-        groupId: doc.group_id,
-        title: doc.title || '',
-        date: doc.date,
-        files,
-      });
+    }
+
+    await Promise.all([...groupIds].map(async (groupId) => {
+      // 같은 파일이 여러 회의 행에 있으면 전부 뺍니다. 한 곳만 지우면 다음 조회에서 다시 합쳐집니다.
+      const { data: rows, error: readError } = await supabase
+        .from('meetings')
+        .select('id, attachments')
+        .eq('group_id', groupId);
+      if (readError && !/attachments/i.test(readError.message)) {
+        console.warn('첨부 삭제 DB 조회 실패:', readError.message);
+      }
+      await Promise.all((rows ?? []).map(async (row) => {
+        const files = normalizeAttachments(row.attachments);
+        if (!files.some((item) => item.path === file.path)) return;
+        const nextFiles = strip(files);
+        const { error } = await supabase.from('meetings').update({ attachments: nextFiles }).eq('id', row.id);
+        if (error && !/attachments/i.test(error.message)) {
+          console.warn('첨부 삭제 DB 반영 실패:', error.message);
+        }
+      }));
+
+      // 서버 문서도 실제 회의 id로 갱신합니다. 화면용 id로 저장하면 원래 목록이 그대로 남습니다.
+      const serverDocs = await fetchGroupMeetingDocs(groupId);
+      await Promise.all(serverDocs.map(async (sd) => {
+        if (!sd.files.some((item) => item.path === file.path)) return;
+        await saveMeetingDocToServer({
+          meetingId: sd.id,
+          groupId,
+          title: sd.title || '',
+          date: sd.date,
+          files: sd.files.filter((item) => item.path !== file.path),
+        });
+      }));
     }));
   };
 

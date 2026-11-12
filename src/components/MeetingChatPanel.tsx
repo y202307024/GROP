@@ -146,10 +146,10 @@ export default function MeetingChatPanel({
   const [archive, setArchive] = useState<MeetingChatMessage[]>([]);
   /** 이번 접속에서 주고받은 채팅. 저장 전에도 화면에 바로 붙입니다. */
   const [live, setLive] = useState<MeetingChatMessage[]>([]);
-  /** 저장된 메시지 id → 그 메시지가 속한 회의 행. 요약에는 이번 회의만 넘기기 위해 구분합니다. */
-  const meetingOf = useRef(new Map<string, string>());
-  /** 이번 회의 행 id. LiveMeetingPresence가 ref에 넣은 값을 따라갑니다. */
-  const [meetingId, setMeetingId] = useState<string | null>(sessionMeetingIdRef?.current ?? null);
+  /** 저장된 메시지 id → 그 메시지가 속한 회의 행. 요약에는 이번 회의만 넘기기 위해 state로 둡니다. */
+  const [meetingOf, setMeetingOf] = useState<Map<string, string>>(() => new Map());
+  /** 이번 회의 행 id. LiveMeetingPresence가 ref에 넣은 값은 아래 effect가 따라갑니다. */
+  const [meetingId, setMeetingId] = useState<string | null>(null);
   /** 녹화·요약·늦게 들어온 사람에게 넘길 이번 회의 채팅만 담습니다. */
   const sessionMessagesRef = useRef<MeetingChatMessage[]>([]);
   /** 채팅 저장이 겹치면 앞선 저장이 끝난 뒤에 이어서 씁니다. */
@@ -159,6 +159,12 @@ export default function MeetingChatPanel({
   const [remoteHeadsetOff, setRemoteHeadsetOff] = useState<Record<string, boolean>>({});
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(groupName);
+  const [seenName, setSeenName] = useState({ groupName, editingName: false });
+  // 이름을 고치는 중이 아니면 화면 이름을 입력칸에 맞춥니다.
+  if (groupName !== seenName.groupName || editingName !== seenName.editingName) {
+    setSeenName({ groupName, editingName });
+    if (!editingName) setNameDraft(groupName);
+  }
   const [savingName, setSavingName] = useState(false);
   /** identity(userId) → 프로필 아바타(key 또는 URL) */
   const [avatarByUserId, setAvatarByUserId] = useState<Record<string, string>>({});
@@ -166,12 +172,23 @@ export default function MeetingChatPanel({
   const nameInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (!editingName) setNameDraft(groupName);
-  }, [groupName, editingName]);
-
-  useEffect(() => {
     if (editingName) nameInputRef.current?.focus();
   }, [editingName]);
+
+  // 날짜 줄의 "오늘"은 렌더마다 Date.now()를 부르지 않고, 분이 바뀌거나 탭으로 돌아올 때 갱신합니다.
+  const [todayKey, setTodayKey] = useState(() => chatDayKey(Date.now()));
+  useEffect(() => {
+    const refresh = () => {
+      const next = chatDayKey(Date.now());
+      setTodayKey((prev) => (prev === next ? prev : next));
+    };
+    const id = window.setInterval(refresh, 60_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
 
   // 헤드셋은 내 스피커만 끄는 로컬 상태라 다른 사람에게 자동으로 전달되지 않습니다.
   // 채팅과 같은 데이터 채널로 내 상태를 보내, 다른 참가자 화면의 헤드셋 아이콘이 따라 바뀌게 합니다.
@@ -225,13 +242,16 @@ export default function MeetingChatPanel({
     .filter((id) => UUID_RE.test(id))
     .sort()
     .join(',');
+  const [seenParticipantIds, setSeenParticipantIds] = useState(participantIdsKey);
+  // 참가자가 없으면 아바타 목록을 비웁니다.
+  if (participantIdsKey !== seenParticipantIds) {
+    setSeenParticipantIds(participantIdsKey);
+    if (!participantIdsKey) setAvatarByUserId({});
+  }
 
   useEffect(() => {
     const ids = participantIdsKey ? participantIdsKey.split(',') : [];
-    if (ids.length === 0) {
-      setAvatarByUserId({});
-      return;
-    }
+    if (ids.length === 0) return;
 
     let cancelled = false;
     const load = async () => {
@@ -280,11 +300,14 @@ export default function MeetingChatPanel({
   // 예전 회의 글은 화면 기록입니다. 이번 회의 행에 속한 글과 방금 주고받은 글만 저장·요약에 넘깁니다.
   const sessionLog = useMemo(() => {
     if (!meetingId) return live;
-    const mine = archive.filter((m) => meetingOf.current.get(m.id) === meetingId);
+    const mine = archive.filter((m) => meetingOf.get(m.id) === meetingId);
     return mergeChatMessages(mine, live, DISPLAY_CHAT_LIMIT);
-  }, [archive, live, meetingId]);
-  sessionMessagesRef.current = sessionLog;
-  if (chatLogRef) chatLogRef.current = sessionLog;
+  }, [archive, live, meetingId, meetingOf]);
+  // ref는 이벤트(저장·기록 공유)에서만 읽습니다. 렌더 중에 쓰면 그 렌더의 채팅이 반영되기 전에 읽힐 수 있습니다.
+  useEffect(() => {
+    sessionMessagesRef.current = sessionLog;
+    if (chatLogRef) chatLogRef.current = sessionLog;
+  }, [sessionLog, chatLogRef]);
 
   useEffect(() => {
     const read = () => {
@@ -310,7 +333,7 @@ export default function MeetingChatPanel({
           all.push(msg);
         }
       }
-      meetingOf.current = map;
+      setMeetingOf(map);
       const next = mergeChatMessages([], all, DISPLAY_CHAT_LIMIT);
       // 같은 목록이면 참조를 유지해, 회의 id가 잡힐 때마다 채팅이 맨 아래로 다시 스크롤되지 않게 합니다.
       setArchive((prev) => (
@@ -490,7 +513,6 @@ export default function MeetingChatPanel({
     onSpeakerMutedChange?.(!speakerMuted);
   };
 
-  const todayKey = chatDayKey(Date.now());
   // 오늘 채팅만 있으면 날짜 줄은 생략합니다. 예전 날짜가 섞여 있을 때만 구분합니다.
   const hasOlderChat = shown.some((item) => chatDayKey(item.ts) !== todayKey);
 

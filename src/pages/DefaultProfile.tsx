@@ -66,6 +66,7 @@ export default function DefaultProfile() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
@@ -84,6 +85,13 @@ export default function DefaultProfile() {
       if (!userData.user) { navigate('/'); return; }
       setUserId(userData.user.id);
       setEmail(userData.user.email ?? '');
+      const admin = await supabase
+        .from('profiles')
+        .select('is_admin')
+        .eq('id', userData.user.id)
+        .maybeSingle();
+      // 칸이 없는 DB(스크립트 실행 전)는 관리자 버튼만 숨깁니다.
+      setIsAdmin(!admin.error && Boolean(admin.data?.is_admin));
 
       // 이름·연락처·소속 칸이 있으면 같이 읽고, 없는 DB면 닉네임만 다시 읽습니다.
       const full = await supabase
@@ -249,6 +257,11 @@ export default function DefaultProfile() {
         <div className={styles.header}>
           <h1 className={styles.title}>설정</h1>
           <p className={styles.subtitle}>GROP의 기본 설정을 변경하고, 나에게 맞는 환경을 만들어보세요.</p>
+          {isAdmin ? (
+            <button type="button" className="primary-button" onClick={() => navigate('/server-logs')}>
+              서버 로그
+            </button>
+          ) : null}
         </div>
 
         <div className={styles.tabs}>

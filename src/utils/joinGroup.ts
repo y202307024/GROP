@@ -59,13 +59,18 @@ export async function joinGroupByInviteCode(inviteCode: string, userId: string):
   const code = inviteCode.trim().toUpperCase();
   if (!code) return { ok: false, error: '초대코드를 입력해주세요.' };
 
-  const { data: group, error: findError } = await supabase
-    .from('groups')
-    .select('id, name')
-    .eq('invite_code', code)
-    .maybeSingle();
+  // 그룹 목록은 멤버만 보입니다. 가입 전에는 코드를 아는 사람에게 id·이름만 돌려주는 함수를 씁니다.
+  const { data: found, error: findError } = await supabase.rpc('find_group_by_invite', { p_code: code });
+  const foundRow = Array.isArray(found) ? found[0] : found;
+  let group = foundRow?.id ? { id: String(foundRow.id), name: String(foundRow.name ?? '') } : null;
 
-  if (findError) return { ok: false, error: findError.message };
+  if (findError?.message?.includes('find_group_by_invite')) {
+    const legacy = await supabase.from('groups').select('id, name').eq('invite_code', code).maybeSingle();
+    if (legacy.error) return { ok: false, error: legacy.error.message };
+    group = legacy.data?.id ? { id: legacy.data.id, name: legacy.data.name } : null;
+  } else if (findError) {
+    return { ok: false, error: findError.message };
+  }
   if (!group) return { ok: false, error: '그룹을 찾을 수 없어요. 초대코드를 확인해 주세요.' };
 
   // 이미 두 줄 이상이면 maybeSingle 이 실패해서 또 한 줄을 넣게 되므로, 한 줄만 확인합니다.

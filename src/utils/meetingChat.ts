@@ -1,4 +1,6 @@
 import { getApiBase } from './apiBase';
+import { bearerHeaders } from './authHeader';
+import { issueSignedMediaUrl } from './signedMediaUrl';
 
 export const MEETING_CHAT_TOPIC = 'meeting-chat';
 /** 하단 파일 도구로 올린 첨부 — 채팅이 아닌 사이드바 목록용 */
@@ -89,10 +91,9 @@ export async function uploadMeetingAttachment(file: File, groupId?: string, user
   body.append('originalName', file.name);
   body.append('groupId', groupId || 'unknown');
   if (userId) body.append('userId', userId);
-  const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
   const res = await fetch(`${getApiBase()}/api/chat-files/upload`, {
     method: 'POST',
-    headers: uploadToken ? { 'x-upload-token': uploadToken } : undefined,
+    headers: await bearerHeaders(),
     body,
   });
   if (!res.ok) {
@@ -108,14 +109,10 @@ export function formatChatFileSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export function chatFileUrl(relPath: string) {
-  return `${getApiBase()}/files/${relPath.split('/').map(encodeURIComponent).join('/')}`;
-}
-
-/** 첨부 파일을 브라우저에서 다운로드합니다. (CORS·인라인 응답에도 동작) */
+/** 첨부 파일을 브라우저에서 다운로드합니다. 짧은 주소를 받은 뒤 blob 으로 저장합니다. */
 export async function downloadMeetingFile(file: Pick<MeetingChatFile, 'name' | 'path'>) {
-  const url = chatFileUrl(file.path);
-  const res = await fetch(url);
+  const issued = await issueSignedMediaUrl('file', file.path);
+  const res = await fetch(issued.url);
   if (!res.ok) {
     throw new Error(`다운로드 실패 (${res.status})`);
   }
@@ -133,13 +130,9 @@ export async function downloadMeetingFile(file: Pick<MeetingChatFile, 'name' | '
 
 /** 화면에 보이는 첨부 이름만 바꿉니다. 서버의 저장 파일명은 그대로입니다. */
 export async function renameMeetingFile(path: string, name: string): Promise<string> {
-  const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
   const res = await fetch(`${getApiBase()}/api/chat-files/name`, {
     method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(uploadToken ? { 'x-upload-token': uploadToken } : {}),
-    },
+    headers: await bearerHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ path, name }),
   });
   const body = await res.json().catch(() => ({}));
@@ -152,13 +145,9 @@ export async function renameMeetingFile(path: string, name: string): Promise<str
 
 /** 첨부 파일과 회의 문서 목록의 그 항목을 지웁니다. */
 export async function deleteMeetingFile(path: string) {
-  const uploadToken = import.meta.env.VITE_MEETING_UPLOAD_TOKEN as string | undefined;
   const res = await fetch(`${getApiBase()}/api/chat-files`, {
     method: 'DELETE',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(uploadToken ? { 'x-upload-token': uploadToken } : {}),
-    },
+    headers: await bearerHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ path }),
   });
   const body = await res.json().catch(() => ({}));

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Icon from './Icon';
 import {
   getMicrophoneExceptionMessage,
@@ -58,7 +58,10 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
   const gainNodeRef = useRef<GainNode | null>(null);
   const playbackRef = useRef<HTMLAudioElement | null>(null);
   const settingsRef = useRef(settings);
-  settingsRef.current = settings;
+  // 테스트 시작은 클릭 이후라, 페인트 전에 ref만 맞추면 됩니다.
+  useLayoutEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   /** 마이크 드롭다운 바로 아래의 실시간 입력 레벨 (0~1) — "마이크 테스트"를 누르지 않아도 항상 표시됩니다 */
   const [liveMicLevel, setLiveMicLevel] = useState(0);
@@ -70,6 +73,13 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
 
   const micNone = isNoneDevice(settings.micDeviceId);
   const speakerNone = isNoneDevice(settings.speakerDeviceId);
+  const micKey = micNone ? '' : (settings.micDeviceId || 'default');
+  const [seenMicKey, setSeenMicKey] = useState(micKey);
+  // 마이크를 바꾸거나 끄면 입력 막대를 0으로 되돌립니다.
+  if (micKey !== seenMicKey) {
+    setSeenMicKey(micKey);
+    setLiveMicLevel(0);
+  }
 
   useEffect(() => {
     if (gainNodeRef.current) gainNodeRef.current.gain.value = settings.micVolume / 100;
@@ -115,7 +125,6 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
   useEffect(() => {
     liveMicCleanupRef.current?.();
     liveMicCleanupRef.current = null;
-    setLiveMicLevel(0);
 
     if (micNone || !isSecureMediaContext() || !navigator.mediaDevices?.getUserMedia) return;
 
@@ -168,7 +177,6 @@ export default function VoiceSettingsPanel({ hideHeading = false }: Props) {
       liveMicCleanupRef.current?.();
       liveMicCleanupRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.micDeviceId, micNone]);
 
   const stopTest = () => {

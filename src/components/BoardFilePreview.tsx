@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { clipPreviewText, extractDocxPlainText, getFilePreviewKind } from '../filePreviewUtils';
+import { useSignedMediaUrl } from '../utils/signedMediaUrl';
 import cb from '../CanvasBoard.module.css';
 
 type Props = {
@@ -9,6 +10,25 @@ type Props = {
   /** 손 도구일 때만 PDF 스크롤을 받고, 그릴 때는 포커스를 빼 단축키가 보드로 가게 합니다. */
   interactive?: boolean;
 };
+
+/** 펼친 파일 카드. 저장된 경로로 짧은 주소를 받은 뒤에 미리보기를 넣습니다. */
+export function SignedBoardFilePreview({
+  path,
+  name,
+  mime,
+  interactive = false,
+}: {
+  path: string;
+  name: string;
+  mime: string;
+  interactive?: boolean;
+}) {
+  const { url, error } = useSignedMediaUrl('file', path);
+  if (!url) {
+    return <div className={cb.filePreviewEmpty}>{error || '파일을 불러오는 중…'}</div>;
+  }
+  return <BoardFilePreview url={url} name={name} mime={mime} interactive={interactive} />;
+}
 
 /** 펼친 파일 카드 안에 넣는 미리보기입니다. */
 export default function BoardFilePreview({ url, name, mime, interactive = false }: Props) {
@@ -66,9 +86,14 @@ function DocxTextPreview({ url }: { url: string }) {
 /** 미리보기 텍스트를 한 번만 받아 오고, 실패하면 안내 문구를 보여줍니다. */
 function useRemoteText(url: string, parse: (res: Response) => Promise<string>) {
   const [text, setText] = useState('불러오는 중…');
+  const [seenUrl, setSeenUrl] = useState(url);
+  // 주소가 바뀌면 effect 밖에서 로딩 문구로 되돌립니다. effect 안의 setState는 린트 에러입니다.
+  if (url !== seenUrl) {
+    setSeenUrl(url);
+    setText('불러오는 중…');
+  }
   useEffect(() => {
     let cancelled = false;
-    setText('불러오는 중…');
     void fetch(url)
       .then((res) => {
         if (!res.ok) throw new Error(`미리보기 실패 (${res.status})`);

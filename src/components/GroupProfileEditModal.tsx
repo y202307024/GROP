@@ -30,12 +30,18 @@ export default function GroupProfileEditModal({ open, groupId, onClose, onSaved 
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // 열리거나 그룹이 바뀌면 불러오는 중으로 되돌립니다.
+  const profileKey = open ? groupId : '';
+  const [seenProfileKey, setSeenProfileKey] = useState('');
+  if (profileKey !== seenProfileKey) {
+    setSeenProfileKey(profileKey);
+    if (open) setLoading(true);
+  }
 
   // 열릴 때마다 최신 값을 다시 불러옵니다.
   useEffect(() => {
     if (!open) return;
     let mounted = true;
-    setLoading(true);
 
     const fetchProfile = async () => {
       const { data: userData } = await supabase.auth.getUser();

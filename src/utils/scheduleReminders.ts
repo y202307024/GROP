@@ -4,6 +4,7 @@
  */
 import { notifyGroupMembers } from './notifications';
 import { supabase } from '../services/supabaseClient';
+import { signedInUserId } from './authHeader';
 import { loadLocalSchedules, occurrenceStart, occursOn, type LocalSchedule } from './localSchedules';
 
 const SENT_KEY = 'grop.calendar.sentReminders';
@@ -48,8 +49,11 @@ const inflight = new Set<string>();
 
 /** 로그인된 동안, 시각이 된 일정 알림을 그룹 멤버 종에 넣습니다. */
 export async function dispatchDueScheduleReminders(now = new Date()) {
-  const { data } = await supabase.auth.getSession();
-  if (!data.session) return;
+  // 세션이 없으면 getUser()를 호출하지 않습니다. 로그아웃은 오류가 아닙니다.
+  if (!(await signedInUserId())) return;
+  // 저장소의 세션을 그대로 믿지 않고, Supabase가 확인한 사용자가 있을 때만 알림을 보냅니다.
+  const { data, error } = await supabase.auth.getUser();
+  if (error || !data.user) return;
 
   const schedules = loadLocalSchedules();
   const sent = loadSent();

@@ -24,9 +24,9 @@
    마이그레이션 전이었고, *.module.css를 쓰는 화면(AiSummaryPage/DocumentList/
    MeetingList 등)도 일부만 모듈로 옮겨졌을 뿐 나머지 요소는 여전히 이 전역
    클래스명(className="list-row"/"doc-attach-modal"/"page" 등)에 의존하고
-   있었습니다. 즉 common.css를 뺀 이 아래 파일들 전부가 지금도 필요합니다.
-   (common.css는 :root 변수/리셋/.stage만 담당해서 tokens.css+reset.css+base.css+
-   stage.css로 이미 대체됐으므로 빼고, 나머지 페이지 전용 파일만 가져옵니다.)
+   있었습니다. 아래 파일들은 지금도 전역 클래스명으로 필요해서 가져옵니다.
+   (common.css는 :root 변수/리셋/.stage만 담당했고, tokens.css+reset.css+base.css+
+   stage.css로 대체된 뒤 파일 자체를 지웠습니다.)
    실제 프로젝트에서 이 파일들은 src/styles가 아니라 프로젝트 루트의 grop/css/
    폴더에 그대로 남아있어서 상대경로를 ../../grop/css/ 로 맞췄습니다. */
 @import '../../grop/css/login.css';

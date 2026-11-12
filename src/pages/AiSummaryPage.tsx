@@ -19,8 +19,8 @@ export default function AiSummaryPage() {
   useEffect(() => {
     let mounted = true;
     const load = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
+      const { data: userData, error: authError } = await supabase.auth.getUser();
+      if (authError || !userData.user) {
         navigate('/');
         return;
       }

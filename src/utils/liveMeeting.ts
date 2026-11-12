@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { getApiBase } from './apiBase';
+import { bearerHeaders } from './authHeader';
 import { addGroupMember } from './joinGroup';
 import { mergeChatMessages, realChatMessages, type MeetingChatMessage } from './meetingChat';
 import { localDayKey } from './meetingDocs';
@@ -55,7 +56,9 @@ export type LiveRoomSnapshot = {
 /** 지금 사람이 있는 LiveKit 방. meetingId 가 목록에서 진행중으로 보일 행입니다. */
 export async function fetchLiveRooms(): Promise<LiveRoomSnapshot[]> {
   try {
-    const res = await fetch(`${getApiBase()}/api/live-rooms`);
+    const res = await fetch(`${getApiBase()}/api/live-rooms`, {
+      headers: await bearerHeaders(),
+    });
     if (!res.ok) return [];
     const data = (await res.json()) as { rooms?: LiveRoomSnapshot[] };
     if (!Array.isArray(data.rooms)) return [];
@@ -153,7 +156,7 @@ async function claimMeeting(roomName: string, meetingId: string): Promise<string
   try {
     const res = await fetch(`${getApiBase()}/api/live-room-meeting`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: await bearerHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ roomName, meetingId }),
     });
     if (!res.ok) return null;
