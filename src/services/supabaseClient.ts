@@ -13,6 +13,7 @@ assertPublishableSupabaseKey(supabaseAnonKey);
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
+    flowType: 'pkce',
     storage: browserAuthStorage,
     persistSession: true,
     autoRefreshToken: true,

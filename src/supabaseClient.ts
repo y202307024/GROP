@@ -14,6 +14,7 @@ assertPublishableSupabaseKey(supabaseAnonKey);
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     // 브라우저를 닫으면 세션이 사라지게 sessionStorage를 기본으로 씁니다.
+    flowType: 'pkce',
     storage: browserAuthStorage,
     persistSession: true,
     autoRefreshToken: true,

@@ -38,15 +38,10 @@ export default function Login() {
   const afterLogin = (location.state as { afterLogin?: string } | null)?.afterLogin;
 
   useEffect(() => {
-    if (!window.location.hash.includes('access_token')) return;
-    let cancelled = false;
-    supabase.auth.getSession().then(({ data }) => {
-      if (cancelled || !data.session) return;
-      navigate(afterLogin || '/main', { replace: true });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN' && session) navigate(afterLogin || '/main', { replace: true });
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => subscription.unsubscribe();
   }, [afterLogin, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
